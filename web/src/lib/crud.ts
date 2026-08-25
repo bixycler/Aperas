@@ -5,7 +5,8 @@
  * over TerminusDB document APIs.
  */
 
-import { ParsedDocument, createReifiedSpan, ParsedBlock } from './astParser';
+import type { ParsedDocument, ParsedBlock } from './astParser';
+import { createReifiedSpan } from './astParser';
 
 export interface TripleAssertionInput {
   subjectId: string;
@@ -126,6 +127,24 @@ export async function deleteDocumentIfExists(
 }
 
 /**
+ * Deletes a batch of documents by their full ids in a single commit — best-effort, same as
+ * deleteDocumentIfExists, but for callers clearing many ids at once (e.g. bulk cleanup/reset)
+ * where a commit per id would otherwise flood the history with one-line "Reset" commits.
+ */
+export async function deleteDocumentsIfExist(
+  client: any,
+  fullIds: string[],
+  commitMessage: string = 'Reset demo state'
+): Promise<void> {
+  if (fullIds.length === 0) return;
+  try {
+    await client.deleteDocument({ id: fullIds }, client.db(), commitMessage);
+  } catch (err) {
+    // Not found (for one or all ids) is the expected outcome on a clean database — nothing to reset.
+  }
+}
+
+/**
  * Deletes every TripleAssertion whose subjectId or objectId matches nodeId — used to clear
  * prior demo assertions before re-asserting the same edge on a re-run.
  */
@@ -136,8 +155,6 @@ export async function deleteTripleAssertionsInvolvingNode(client: any, nodeId: s
   const matches: any[] = (Array.isArray(docs) ? docs : []).filter(
     (d: any) => d.subjectId === nodeId || d.objectId === nodeId
   );
-  for (const match of matches) {
-    await deleteDocumentIfExists(client, `terminusdb:///data/${match['@id']}`);
-  }
+  await deleteDocumentsIfExist(client, matches.map((match) => `terminusdb:///data/${match['@id']}`));
   return matches.length;
 }

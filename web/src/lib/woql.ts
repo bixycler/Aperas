@@ -13,7 +13,7 @@ import TerminusDB from 'terminusdb';
  * binding every field so the caller gets full assertion records back, not just the node id.
  */
 export function buildNodeAssertionsQuery(nodeId: string) {
-  const WOQL = TerminusDB.WOQL || TerminusDB.woql || TerminusDB;
+  const WOQL: any = (TerminusDB as any).WOQL || (TerminusDB as any).woql || TerminusDB;
   const v = WOQL.Vars("Assertion", "SubjectId", "ObjectId", "Predicate", "Provenance", "Timestamp");
 
   return WOQL.and(
@@ -33,7 +33,7 @@ export function buildNodeAssertionsQuery(nodeId: string) {
  * Returns a WOQL query object to trace downstream dependency paths along target predicates (e.g. "impacts", "affects").
  */
 export function buildImpactPropagationQuery(startNodeId: string, targetPredicate: string = "impacts") {
-  const WOQL = TerminusDB.WOQL || TerminusDB.woql || TerminusDB;
+  const WOQL: any = (TerminusDB as any).WOQL || (TerminusDB as any).woql || TerminusDB;
 
   return WOQL.and(
     WOQL.triple("v:Assertion", "subjectId", WOQL.string(startNodeId)),

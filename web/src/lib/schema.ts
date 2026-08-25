@@ -70,6 +70,30 @@ export interface TripleAssertionSchema {
   timestamp: "xsd:string";
 }
 
+export interface ArtifactNodeSchema {
+  "@type": "Class";
+  "@id": "ArtifactNode";
+  "@key": {
+    "@type": "Lexical";
+    "@fields": ["path"];
+  };
+  path: "xsd:string";
+  contentHash: "xsd:string";
+  lastTrackedAt: "xsd:string";
+  ingestedHash?: {
+    "@type": "Optional";
+    "@class": "xsd:string";
+  };
+  lastIngestedAt?: {
+    "@type": "Optional";
+    "@class": "xsd:string";
+  };
+  docId?: {
+    "@type": "Optional";
+    "@class": "xsd:string";
+  };
+}
+
 /**
  * Returns the full JSON-LD schema array to be committed to TerminusDB schema context.
  *
@@ -143,6 +167,29 @@ export function getAperasSchemaObjects(): any[] {
       "objectId": "xsd:string",
       "provenance": "xsd:string",
       "timestamp": "xsd:string"
+    },
+    {
+      "@type": "Class",
+      "@id": "ArtifactNode",
+      "@key": {
+        "@type": "Lexical",
+        "@fields": ["path"]
+      },
+      "path": "xsd:string",
+      "contentHash": "xsd:string",
+      "lastTrackedAt": "xsd:string",
+      "ingestedHash": {
+        "@type": "Optional",
+        "@class": "xsd:string"
+      },
+      "lastIngestedAt": {
+        "@type": "Optional",
+        "@class": "xsd:string"
+      },
+      "docId": {
+        "@type": "Optional",
+        "@class": "xsd:string"
+      }
     }
   ];
 }

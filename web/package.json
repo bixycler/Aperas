@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "verify:phase0": "npx tsx src/lib/verifyPhase0.ts"
+    "verify:phase0": "npx tsx src/lib/verifyPhase0.ts",
+    "kg:track": "npx tsx src/lib/kgCli.ts track",
+    "kg:ingest": "npx tsx src/lib/kgCli.ts ingest"
   },
   "dependencies": {
     "clsx": "^2.1.1",

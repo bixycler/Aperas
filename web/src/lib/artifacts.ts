@@ -60,20 +60,26 @@ export function computeContentHash(content: string): string {
 
 /**
  * Registers or refreshes the lightweight ArtifactNode for a single file. Idempotent — a
- * no-op re-run (unchanged content) still updates lastTrackedAt but leaves ingestion state alone.
+ * no-op re-run (unchanged content) skips the KG write entirely rather than bumping
+ * lastTrackedAt, so repeated/unscoped sweeps (e.g. the post-index-change hook) don't spam
+ * a commit per artifact when nothing on disk actually changed.
  */
 export async function trackArtifact(client: any, artifactPath: string): Promise<ArtifactRecord> {
   const artifactsDir = getArtifactsDir();
   const content = readFileSync(join(artifactsDir, artifactPath), 'utf-8');
   const contentHash = computeContentHash(content);
-  const now = new Date().toISOString();
 
   const existing = await getArtifactRecord(client, artifactPath);
+
+  if (existing?.contentHash === contentHash) {
+    console.log(`[Aperas Artifacts] Skipping '${artifactPath}' — content unchanged (hash: ${contentHash.slice(0, 12)}...)`);
+    return existing;
+  }
 
   const record: ArtifactRecord = {
     path: artifactPath,
     contentHash,
-    lastTrackedAt: now,
+    lastTrackedAt: new Date().toISOString(),
     ...(existing?.ingestedHash ? { ingestedHash: existing.ingestedHash } : {}),
     ...(existing?.lastIngestedAt ? { lastIngestedAt: existing.lastIngestedAt } : {}),
     ...(existing?.docId ? { docId: existing.docId } : {})

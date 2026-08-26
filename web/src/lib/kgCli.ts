@@ -1,18 +1,19 @@
 /**
  * Aperas Phase 0: Knowledge Graph CLI
  *
- * `npm run kg:track`  — register/refresh lightweight ArtifactNodes for every file under AperasKG/artifacts/.
- * `npm run kg:ingest` — AST-parse and commit DocumentNode/BlockNodes for artifacts changed since last ingestion.
+ * `npm run kg:track`               — register/refresh lightweight ArtifactNodes for every file under AperasKG/artifacts/.
+ * `npm run kg:track -- <path...>`  — register/refresh ArtifactNodes for only the given file(s) (relative to artifacts/).
+ * `npm run kg:ingest`              — AST-parse and commit DocumentNode/BlockNodes for artifacts changed since last ingestion.
  */
 
 import { createTerminusClient, initializeAperasDatabase } from './client';
-import { trackAllArtifacts, ingestAllArtifacts } from './artifacts';
+import { trackArtifact, trackAllArtifacts, ingestAllArtifacts } from './artifacts';
 
 async function main() {
-  const command = process.argv[2];
+  const [command, ...paths] = process.argv.slice(2);
 
   if (command !== 'track' && command !== 'ingest') {
-    console.error('Usage: kg:track | kg:ingest');
+    console.error('Usage: kg:track [path...] | kg:ingest');
     process.exit(1);
   }
 
@@ -20,7 +21,9 @@ async function main() {
   const client = createTerminusClient();
 
   if (command === 'track') {
-    const tracked = await trackAllArtifacts(client);
+    const tracked = paths.length > 0
+      ? await Promise.all(paths.map((p) => trackArtifact(client, p)))
+      : await trackAllArtifacts(client);
     console.log(`[Aperas KG CLI] Tracked ${tracked.length} artifact(s).`);
   } else {
     const ingested = await ingestAllArtifacts(client);

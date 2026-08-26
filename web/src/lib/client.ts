@@ -6,7 +6,26 @@
 
 // @ts-ignore - terminusdb npm package exports WOQLClient
 import TerminusDB from 'terminusdb';
+import { createHash } from 'node:crypto';
 import { getAperasSchemaObjects } from './schema';
+
+// Recursively sorts object keys so two structurally-identical schemas hash the same
+// regardless of property insertion order (JSON.stringify key order is insertion order).
+function stableStringify(value: any): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashSchema(docs: any[]): string {
+  const sorted = [...docs].sort((a, b) => (a['@id'] ?? a['@type']).localeCompare(b['@id'] ?? b['@type']));
+  return createHash('sha256').update(stableStringify(sorted)).digest('hex');
+}
 
 export interface TerminusConfig {
   serverUrl?: string;
@@ -68,6 +87,19 @@ export async function initializeAperasDatabase(config: TerminusConfig = {}): Pro
   // full_replace scopes to the schema graph only — it lets re-running this stay idempotent
   // instead of failing with "document already exists" on every schema class after the first run.
   const schemaObjects = getAperasSchemaObjects();
+
+  let existingSchema: any[] = [];
+  try {
+    existingSchema = await client.getDocument({ graph_type: 'schema', as_list: true });
+  } catch {
+    // No schema graph yet (brand-new database) — fall through to applying it.
+  }
+
+  if (existingSchema.length > 0 && hashSchema(existingSchema) === hashSchema(schemaObjects)) {
+    console.log(`[Aperas Substrate] Schema unchanged (${schemaObjects.length} classes) — skipping apply.`);
+    return;
+  }
+
   console.log(`[Aperas Substrate] Applying JSON-LD schema (${schemaObjects.length} classes)...`);
   await client.addDocument(
     schemaObjects,

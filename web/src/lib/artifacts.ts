@@ -42,7 +42,9 @@ export function listArtifactFiles(artifactsDir: string = getArtifactsDir()): str
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
         walk(fullPath);
-      } else {
+      } else if (entry.endsWith('.md') && !entry.startsWith('.')) {
+        // Only tracked markdown artifacts — excludes editor swap/lock files (.foo.md.swp),
+        // dotfiles, and any other transient junk that can appear alongside real content.
         files.push(relative(artifactsDir, fullPath));
       }
     }

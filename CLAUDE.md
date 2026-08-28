@@ -20,3 +20,4 @@ state summary above it.
 When in doubt: would this sentence still make sense to someone reading the doc a month
 from now, with no memory of the conversation that produced it? If not, it's ephemeral —
 leave it out of the artifact.
+

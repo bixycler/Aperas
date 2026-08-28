@@ -22,24 +22,31 @@ async function main() {
   const client = createTerminusClient();
 
   if (command === 'track') {
-    const results = paths.length > 0
-      ? await Promise.all(paths.map((p) => trackArtifact(client, p)))
-      : await trackAllArtifacts(client);
-    const trackedCount = results.filter((r) => r.tracked).length;
-    const skippedCount = results.length - trackedCount;
-    console.log(`[Aperas KG CLI] Tracked ${trackedCount} artifact(s), skipped ${skippedCount} unchanged.`);
+    if (paths.length > 0) {
+      const results = await Promise.all(paths.map((p) => trackArtifact(client, p)));
+      const trackedCount = results.filter((r) => r.tracked).length;
+      const skippedCount = results.length - trackedCount;
+      console.log(`[Aperas KG CLI] Tracked ${trackedCount} artifact(s), skipped ${skippedCount} unchanged.`);
+    } else {
+      const { results, sweep } = await trackAllArtifacts(client);
+      const trackedCount = results.filter((r) => r.tracked).length;
+      const skippedCount = results.length - trackedCount;
+      console.log(`[Aperas KG CLI] Tracked ${trackedCount} artifact(s), skipped ${skippedCount} unchanged, ${sweep.renamed} renamed, ${sweep.removed} removed.`);
+    }
   } else {
     const ingested = await ingestAllArtifacts(client);
     if (ingested.length === 0) {
       console.log('[Aperas KG CLI] No artifacts required ingestion.');
     } else {
       for (const r of ingested) {
-        console.log(`[Aperas KG CLI] Ingested '${r.path}' fractal tree (${r.blockCount} blocks).`);
+        const recon = r.reconciliation;
+        const reconSummary = recon ? ` (reconciled: ${recon.unchanged} unchanged, ${recon.moved} moved, ${recon.added} added, ${recon.removed} removed)` : '';
+        console.log(`[Aperas KG CLI] Ingested '${r.path}' fractal tree (${r.blockCount} blocks)${reconSummary}.`);
       }
     }
 
-    const { folderCount } = await ingestFolderTree(client);
-    console.log(`[Aperas KG CLI] Rebuilt FolderNode structural tree (${folderCount} folder(s)).`);
+    const { folderCount, sweep } = await ingestFolderTree(client);
+    console.log(`[Aperas KG CLI] Rebuilt FolderNode structural tree (${folderCount} folder(s), ${sweep.renamed} renamed, ${sweep.removed} removed).`);
   }
 }
 

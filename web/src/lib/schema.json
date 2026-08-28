@@ -11,7 +11,8 @@
     "links": {
       "@type": "Set",
       "@class": "BaseLink"
-    }
+    },
+    "tombstonedAt": { "@type": "Optional", "@class": "xsd:dateTime" }
   },
   {
     "@id": "BaseLink",
@@ -42,6 +43,7 @@
       "@fields": ["blockId"]
     },
     "blockId": "xsd:string",
+    "type": "xsd:string",
     "title": "xsd:string",
     "text": { "@type": "Optional", "@class": "xsd:string" },
     "children": { "@type": "List", "@class": "BlockNode" },
@@ -53,9 +55,12 @@
     "@inherits": ["BaseNode"],
     "@key": {
       "@type": "Lexical",
-      "@fields": ["path"]
+      "@fields": ["artifactId"]
     },
+    "artifactId": "xsd:string",
     "path": "xsd:string",
+    "title": "xsd:string",
+    "text": { "@type": "Optional", "@class": "xsd:string" },
     "fileHash": "xsd:string",
     "lastTrackedAt": "xsd:dateTime",
     "ingestedHash": { "@type": "Optional", "@class": "xsd:string" },
@@ -68,8 +73,9 @@
     "@inherits": ["BaseNode"],
     "@key": {
       "@type": "Lexical",
-      "@fields": ["path"]
+      "@fields": ["folderId"]
     },
+    "folderId": "xsd:string",
     "title": "xsd:string",
     "path": "xsd:string",
     "text": { "@type": "Optional", "@class": "xsd:string" },

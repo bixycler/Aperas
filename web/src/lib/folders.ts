@@ -16,11 +16,14 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { parseMarkdownTree } from './astParser';
+import { parseMarkdownTree, extractAbstract } from './astParser';
 import { getArtifactsDir } from './artifacts';
+import { generateNodeId } from './snowflake';
+import { matchLeftoverByAbstract } from './reconcile';
 
 export interface ParsedFolderNode {
   "@type": "FolderNode";
+  folderId: string;
   path: string;
   title: string;
   text?: string;
@@ -29,11 +32,17 @@ export interface ParsedFolderNode {
 
 const README_NAME = 'readme.md';
 
-function buildFolderTree(absoluteDir: string, artifactsDir: string): ParsedFolderNode {
+function buildFolderTree(
+  absoluteDir: string,
+  artifactsDir: string,
+  folderIdByPath: Map<string, string>,
+  artifactIdByPath: Map<string, string>
+): ParsedFolderNode {
   const relPath = relative(artifactsDir, absoluteDir);
   const isRoot = relPath === '';
   const path = isRoot ? '.' : relPath;
   const title = isRoot ? 'Artifacts' : relPath.split('/').pop()!;
+  const folderId = folderIdByPath.get(path) ?? generateNodeId();
 
   const entries = readdirSync(absoluteDir).sort();
 
@@ -47,7 +56,7 @@ function buildFolderTree(absoluteDir: string, artifactsDir: string): ParsedFolde
     const stat = statSync(fullPath);
 
     if (stat.isDirectory()) {
-      structuralChildren.push(buildFolderTree(fullPath, artifactsDir));
+      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath));
       continue;
     }
     if (!entry.endsWith('.md')) continue;
@@ -56,22 +65,40 @@ function buildFolderTree(absoluteDir: string, artifactsDir: string): ParsedFolde
       const content = readFileSync(fullPath, 'utf-8');
       const parsedRoot = parseMarkdownTree(content);
       readmeChildren = parsedRoot.children;
-      readmeText = parsedRoot.text ?? '';
+      readmeText = extractAbstract(parsedRoot);
     } else {
       const artifactPath = relative(artifactsDir, fullPath);
-      // Reference an independently tracked/ingested ArtifactNode by id rather than
-      // re-embedding it — its own content lifecycle is owned by artifacts.ts.
-      structuralChildren.push(`ArtifactNode/${artifactPath}`);
+      // Reference an independently tracked/ingested ArtifactNode by its actual (Snowflake)
+      // id rather than by path — path is no longer the key, so `ArtifactNode/${path}` would
+      // be a broken reference. A file not yet tracked (no artifactId assigned) is skipped
+      // rather than referenced incorrectly; kg:track runs before kg:ingest in the normal flow.
+      const artifactId = artifactIdByPath.get(artifactPath);
+      if (artifactId) {
+        structuralChildren.push(`ArtifactNode/${artifactId}`);
+      } else {
+        console.warn(`[Aperas Folders] '${artifactPath}' has no tracked ArtifactNode yet — omitting from folder tree until tracked.`);
+      }
     }
   }
 
   return {
     "@type": "FolderNode",
+    folderId,
     path,
     title,
     ...(readmeText ? { text: readmeText } : {}),
     children: [...readmeChildren, ...structuralChildren]
   };
+}
+
+/** Every FolderNode path in a freshly-built tree, root included, for rename-detection bookkeeping. */
+function collectFolderPaths(node: ParsedFolderNode, out: Map<string, ParsedFolderNode>): void {
+  out.set(node.path, node);
+  for (const child of node.children) {
+    if (typeof child === 'object' && child !== null && (child as any)['@type'] === 'FolderNode') {
+      collectFolderPaths(child as ParsedFolderNode, out);
+    }
+  }
 }
 
 function countFolders(node: ParsedFolderNode): number {
@@ -81,15 +108,75 @@ function countFolders(node: ParsedFolderNode): number {
   return 1 + nested.reduce((sum, c) => sum + countFolders(c), 0);
 }
 
+export interface FolderSweepStats {
+  renamed: number;
+  removed: number;
+}
+
 /**
  * Builds and commits the entire FolderNode tree rooted at AperasKG/artifacts/ in a
- * single write. Idempotent — FolderNode's Lexical key on `path` means re-running
- * upserts the same documents rather than duplicating them.
+ * single write. Idempotent — existing folders reuse their `folderId` (looked up by `path`
+ * against the live FolderNode set) rather than minting a fresh one each run. A path that
+ * disappeared alongside a new, previously-untracked path is checked for a rename via the same
+ * abstract-similarity leftover matching used for artifacts (design §4, "one mechanism, three
+ * fractal layers") before falling back to treating them as an unrelated removal + addition.
  */
-export async function ingestFolderTree(client: any): Promise<{ folderCount: number }> {
+export async function ingestFolderTree(client: any): Promise<{ folderCount: number; sweep: FolderSweepStats }> {
   const artifactsDir = getArtifactsDir();
-  const tree = buildFolderTree(artifactsDir, artifactsDir);
+
+  const existingDocs: any[] = await client.getDocument({ type: 'FolderNode', as_list: true }).catch(() => []);
+  const liveExisting = (Array.isArray(existingDocs) ? existingDocs : []).filter((d) => !d.tombstonedAt);
+  const existingByPath = new Map(liveExisting.map((d) => [d.path, d]));
+  const folderIdByPath = new Map(liveExisting.map((d) => [d.path, d.folderId]));
+
+  const artifactDocs: any[] = await client.getDocument({ type: 'ArtifactNode', as_list: true }).catch(() => []);
+  const artifactIdByPath = new Map(
+    (Array.isArray(artifactDocs) ? artifactDocs : []).filter((d) => !d.tombstonedAt).map((d) => [d.path, d.artifactId])
+  );
+
+  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath);
   const folderCount = countFolders(tree);
+
+  const newByPath = new Map<string, ParsedFolderNode>();
+  collectFolderPaths(tree, newByPath);
+
+  const diskOnlyPaths = [...newByPath.keys()].filter((p) => !existingByPath.has(p));
+  const dbOnlyPaths = [...existingByPath.keys()].filter((p) => !newByPath.has(p));
+
+  const removedCandidates = dbOnlyPaths.map((p) => ({ key: existingByPath.get(p).text ?? '', item: existingByPath.get(p) }));
+  const addedCandidates = diskOnlyPaths.map((p) => ({ key: newByPath.get(p)!.text ?? '', item: newByPath.get(p)! }));
+  const { matched, stillRemoved } = matchLeftoverByAbstract(removedCandidates, addedCandidates);
+
+  const sweep: FolderSweepStats = { renamed: 0, removed: 0 };
+
+  for (const { old: oldDoc, new: newNode } of matched) {
+    console.log(`[Aperas Folders] Detected rename '${oldDoc.path}' -> '${newNode.path}'`);
+    newNode.folderId = oldDoc.folderId;
+    sweep.renamed++;
+  }
+
+  for (const doc of stillRemoved) {
+    console.log(`[Aperas Folders] Tombstoning removed folder '${doc.path}'`);
+    await client.updateDocument(
+      {
+        "@type": "FolderNode",
+        folderId: doc.folderId,
+        path: doc.path,
+        title: doc.title,
+        ...(doc.text ? { text: doc.text } : {}),
+        children: [],
+        tombstonedAt: new Date().toISOString()
+      },
+      {},
+      client.db(),
+      `Tombstone removed folder '${doc.path}'`,
+      undefined,
+      undefined,
+      undefined,
+      true
+    );
+    sweep.removed++;
+  }
 
   console.log(`[Aperas Folders] Ingesting folder tree (${folderCount} folder(s))...`);
   await client.updateDocument(
@@ -102,5 +189,5 @@ export async function ingestFolderTree(client: any): Promise<{ folderCount: numb
     undefined,
     true
   );
-  return { folderCount };
+  return { folderCount, sweep };
 }

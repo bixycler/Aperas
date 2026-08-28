@@ -5,6 +5,7 @@
  * - Markdown AST parsing into a fractal BlockNode tree
  * - TerminusDB JSON-LD schema initialization
  * - Artifact tracking & on-demand ingestion (ArtifactNode + BlockNode tree)
+ * - Reconciliation matching on re-ingestion of an edited artifact
  * - FolderNode structural tree ingestion
  * - Extrinsic Assertion storage & WOQL impact propagation
  * - GraphQL tree read path
@@ -15,7 +16,7 @@ import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseMarkdownTree } from './astParser';
 import { createTerminusClient, initializeAperasDatabase } from './client';
-import { getArtifactsDir, trackArtifact, ingestArtifact } from './artifacts';
+import { getArtifactsDir, trackArtifact, ingestArtifact, getArtifactRecord } from './artifacts';
 import { ingestFolderTree } from './folders';
 import { insertAssertion, deleteAssertionsInvolvingNode, deleteDocumentIfExists, deleteDocumentsIfExist } from './crud';
 import { queryNodeAssertions, traceImpactPropagation } from './woql';
@@ -47,7 +48,12 @@ async function resetDemoState(client: any, demoPath: string): Promise<void> {
   if (existsSync(demoPath)) unlinkSync(demoPath);
   await ingestFolderTree(client);
   const tree = await getArtifactTreeViaGraphQL(client, DEMO_ARTIFACT_NAME);
-  await deleteDocumentIfExists(client, `terminusdb:///data/ArtifactNode/${DEMO_ARTIFACT_NAME}`);
+  // ArtifactNode's key is its Snowflake-generated artifactId, not path (Appendix G) — look up
+  // its actual @id via a path-filtered query rather than guessing `ArtifactNode/<path>`.
+  const record = await getArtifactRecord(client, DEMO_ARTIFACT_NAME);
+  if (record) {
+    await deleteDocumentIfExists(client, `terminusdb:///data/ArtifactNode/${record.artifactId}`);
+  }
   if (tree?.root) {
     const ids = collectBlockIds(tree.root);
     for (const id of ids) {
@@ -112,12 +118,32 @@ Aperas operates over a fluid, unconditioned semantic core (Apeiron) and crystall
       console.log(`   - Blocks resolved via GraphQL: ${collectBlockIds(artifactTree.root).length}`);
       console.log("   [✓] GraphQL read path verified successfully.\n");
 
-      console.log("5. Ingesting FolderNode structural tree...");
+      console.log("5. Re-ingesting an edited version and verifying reconciliation...");
+      const editedMarkdown = sampleMarkdown + `\n\n## A New Section\n\nA freshly added paragraph.`;
+      writeFileSync(demoPath, editedMarkdown, 'utf-8');
+      await trackArtifact(client, DEMO_ARTIFACT_NAME);
+      const reingestResult = await ingestArtifact(client, DEMO_ARTIFACT_NAME);
+      if (!reingestResult?.reconciliation) {
+        throw new Error('Expected a reconciliation report on re-ingestion of an already-ingested artifact.');
+      }
+      const { unchanged, moved, added, removed } = reingestResult.reconciliation;
+      console.log(`   - Reconciliation: ${unchanged} unchanged, ${moved} moved, ${added} added, ${removed} removed.`);
+      if (unchanged === 0 || added === 0) {
+        throw new Error(`Expected both unchanged and added blocks from this edit, got unchanged=${unchanged} added=${added}.`);
+      }
+      const reingestedTree = await getArtifactTreeViaGraphQL(client, DEMO_ARTIFACT_NAME);
+      const reingestedIds = new Set(collectBlockIds(reingestedTree.root));
+      if (!reingestedIds.has(artifactTree.root.blockId) || !reingestedIds.has(artifactTree.root.children[0].blockId)) {
+        throw new Error('Expected the root and first child to keep their blockId across reconciliation — identity was not preserved.');
+      }
+      console.log("   [✓] Reconciliation matching verified successfully.\n");
+
+      console.log("6. Ingesting FolderNode structural tree...");
       const { folderCount } = await ingestFolderTree(client);
       console.log(`   - Folders in tree: ${folderCount}`);
       console.log("   [✓] Folder ingestion verified successfully.\n");
 
-      console.log("6. Committing an extrinsic Assertion & querying it back via WOQL...");
+      console.log("7. Committing an extrinsic Assertion & querying it back via WOQL...");
       await insertAssertion(client, { source: rootId, predicate: "impacts", target: childId });
       const assertions = await queryNodeAssertions(client, rootId);
       console.log(`   - Assertions found for ${rootId}: ${assertions.length}`);
@@ -128,7 +154,7 @@ Aperas operates over a fluid, unconditioned semantic core (Apeiron) and crystall
       }
       console.log("   [✓] Assertion CRUD & WOQL traversal verified successfully.\n");
 
-      console.log("7. Verifying Temporal Commit Management (branch + commit log)...");
+      console.log("8. Verifying Temporal Commit Management (branch + commit log)...");
       await createBranch(client, branchId);
       const commitHistory = await getCommitHistory(client, 0, 5);
       console.log(`   - Branch '${branchId}' created.`);

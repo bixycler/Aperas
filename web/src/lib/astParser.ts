@@ -14,10 +14,44 @@ import { generateNodeId } from './snowflake';
 export interface ParsedBlockNode {
   "@type": "BlockNode";
   blockId: string;
+  type: string;
   title: string;
   text?: string;
   children: ParsedBlockNode[];
   unfolded?: boolean;
+}
+
+// Container-type nodes carry no content of their own — see the reconciliation design's Stage B
+// ("containers have no content to compare, by design, not by omission").
+const CONTAINER_TYPES = new Set(['list', 'listItem', 'blockquote']);
+
+/**
+ * Nests a flat mdast sibling array by heading depth, in one linear pass: each `heading` node
+ * becomes a wrapper carrying a `headingChildren` bucket, and every subsequent sibling routes
+ * into the current deepest open heading's bucket until a heading of depth <= it appears (which
+ * pops back out first). Remark parses headings as flat siblings of their own section content —
+ * this is what makes heading level actually define tree structure instead of a flat list.
+ */
+function groupByHeadings(nodes: any[]): any[] {
+  const result: any[] = [];
+  const stack: Array<{ depth: number; bucket: any[] }> = [];
+
+  const currentBucket = () => (stack.length ? stack[stack.length - 1].bucket : result);
+
+  for (const node of nodes) {
+    if (node.type === 'heading') {
+      while (stack.length && stack[stack.length - 1].depth >= node.depth) {
+        stack.pop();
+      }
+      const wrapper = { ...node, headingChildren: [] as any[] };
+      currentBucket().push(wrapper);
+      stack.push({ depth: node.depth, bucket: wrapper.headingChildren });
+    } else {
+      currentBucket().push(node);
+    }
+  }
+
+  return result;
 }
 
 function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
@@ -44,21 +78,28 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
   } else if (node.type === 'root') {
     title = "Document Root";
     text = "";
+  } else if (CONTAINER_TYPES.has(node.type)) {
+    text = "";
   }
 
+  // Headings' own `children` are their inline title content, already captured above via the
+  // raw-text slice — their *structural* children were diverted into `headingChildren` by
+  // groupByHeadings at the point they were found as a flat sibling, and are already fully
+  // nested (including their own sub-headings), so they're used as-is, never re-grouped.
+  const rawChildren = node.type === 'heading' ? (node.headingChildren ?? []) : groupByHeadings(node.children ?? []);
+
   const children: ParsedBlockNode[] = [];
-  if (node.children) {
-    for (const child of node.children) {
-      const childBlock = convertAstNode(child, markdown);
-      if (childBlock) {
-        children.push(childBlock);
-      }
+  for (const child of rawChildren) {
+    const childBlock = convertAstNode(child, markdown);
+    if (childBlock) {
+      children.push(childBlock);
     }
   }
 
   const block: ParsedBlockNode = {
     "@type": "BlockNode",
     blockId,
+    type: node.type,
     title,
     children,
     unfolded: false
@@ -69,6 +110,24 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
   }
 
   return block;
+}
+
+/**
+ * First pre-order descendant (excluding the root itself) with non-empty `text` — the naive
+ * "first paragraph" abstract used for ArtifactNode/FolderNode.text (§5 folding philosophy,
+ * AI-driven summarization is a future enhancement). Root's own `text` is always blank, so the
+ * abstract necessarily comes from a descendant.
+ */
+export function extractAbstract(root: ParsedBlockNode): string {
+  function findFirst(node: ParsedBlockNode, isRoot: boolean): string | null {
+    if (!isRoot && node.text) return node.text;
+    for (const child of node.children) {
+      const found = findFirst(child, false);
+      if (found) return found;
+    }
+    return null;
+  }
+  return findFirst(root, true) ?? '';
 }
 
 /**

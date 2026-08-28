@@ -1,0 +1,78 @@
+[
+  {
+    "@type": "@context",
+    "@base": "terminusdb:///data/",
+    "@schema": "terminusdb:///schema#"
+  },
+  {
+    "@id": "BaseNode",
+    "@type": "Class",
+    "@abstract": [],
+    "links": {
+      "@type": "Set",
+      "@class": "BaseLink"
+    }
+  },
+  {
+    "@id": "BaseLink",
+    "@type": "Class",
+    "@abstract": [],
+    "@inherits": ["BaseNode"],
+    "target": "BaseNode",
+    "predicate": "xsd:string"
+  },
+  {
+    "@id": "BaseEdge",
+    "@type": "Class",
+    "@abstract": [],
+    "@inherits": ["BaseLink"],
+    "source": "BaseNode"
+  },
+  {
+    "@id": "Assertion",
+    "@type": "Class",
+    "@inherits": ["BaseEdge"]
+  },
+  {
+    "@id": "BlockNode",
+    "@type": "Class",
+    "@inherits": ["BaseNode"],
+    "@key": {
+      "@type": "Lexical",
+      "@fields": ["blockId"]
+    },
+    "blockId": "xsd:string",
+    "title": "xsd:string",
+    "text": { "@type": "Optional", "@class": "xsd:string" },
+    "children": { "@type": "List", "@class": "BlockNode" },
+    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" }
+  },
+  {
+    "@id": "ArtifactNode",
+    "@type": "Class",
+    "@inherits": ["BaseNode"],
+    "@key": {
+      "@type": "Lexical",
+      "@fields": ["path"]
+    },
+    "path": "xsd:string",
+    "fileHash": "xsd:string",
+    "lastTrackedAt": "xsd:dateTime",
+    "ingestedHash": { "@type": "Optional", "@class": "xsd:string" },
+    "lastIngestedAt": { "@type": "Optional", "@class": "xsd:dateTime" },
+    "root": { "@type": "Optional", "@class": "BlockNode" }
+  },
+  {
+    "@id": "FolderNode",
+    "@type": "Class",
+    "@inherits": ["BaseNode"],
+    "@key": {
+      "@type": "Lexical",
+      "@fields": ["path"]
+    },
+    "title": "xsd:string",
+    "path": "xsd:string",
+    "text": { "@type": "Optional", "@class": "xsd:string" },
+    "children": { "@type": "List", "@class": "BaseNode" }
+  }
+]

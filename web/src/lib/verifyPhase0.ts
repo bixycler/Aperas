@@ -1,30 +1,65 @@
 /**
- * Aperas Phase 0: Verification & Test Harness
- * 
- * Validates the core Apeiron substrate without UI overhead:
- * - AST parsing & offset tracking
+ * Aperas Phase 1: Verification & Test Harness
+ *
+ * Validates the fractal-ontology substrate without UI overhead:
+ * - Markdown AST parsing into a fractal BlockNode tree
  * - TerminusDB JSON-LD schema initialization
- * - Coarse Markdown block tree storage
- * - On-demand lazy span atomization
- * - Triple assertion storage & WOQL impact propagation
+ * - Artifact tracking & on-demand ingestion (ArtifactNode + BlockNode tree)
+ * - FolderNode structural tree ingestion
+ * - Extrinsic Assertion storage & WOQL impact propagation
+ * - GraphQL tree read path
+ * - Temporal commit management
  */
 
-import { parseMarkdownDocument, createReifiedSpan } from './astParser';
+import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseMarkdownTree } from './astParser';
 import { createTerminusClient, initializeAperasDatabase } from './client';
-import {
-  insertDocumentAndBlocks,
-  reifySpanOnDemand,
-  insertTripleAssertion,
-  deleteDocumentIfExists,
-  deleteTripleAssertionsInvolvingNode
-} from './crud';
+import { getArtifactsDir, trackArtifact, ingestArtifact } from './artifacts';
+import { ingestFolderTree } from './folders';
+import { insertAssertion, deleteAssertionsInvolvingNode, deleteDocumentIfExists, deleteDocumentsIfExist } from './crud';
 import { queryNodeAssertions, traceImpactPropagation } from './woql';
-import { getDocumentBlocksViaGraphQL } from './graphql';
+import { getArtifactTreeViaGraphQL } from './graphql';
 import { getCommitHistory, createBranch, deleteBranchIfExists } from './versionControl';
+
+const DEMO_ARTIFACT_NAME = '__verify_phase0_demo.md';
+
+function collectBlockIds(node: any): string[] {
+  if (!node) return [];
+  const ids = [node.blockId as string];
+  for (const child of node.children || []) {
+    ids.push(...collectBlockIds(child));
+  }
+  return ids;
+}
+
+/**
+ * Tears down the demo ArtifactNode/BlockNode tree, if any exists, so re-runs (and a
+ * fresh start) are idempotent. Order matters: TerminusDB enforces referential
+ * integrity, so FolderNode/. has to stop referencing the demo ArtifactNode (by
+ * rebuilding the folder tree from a demo-file-free disk) before the ArtifactNode can
+ * be deleted, which in turn has to happen before its BlockNodes (still pointed to via
+ * `root`) can be deleted. Re-derives the block ids fresh via GraphQL each call rather
+ * than trusting a caller-tracked list, so it's correct whether there's fresh state
+ * from this run or stale state left over from an earlier crashed one.
+ */
+async function resetDemoState(client: any, demoPath: string): Promise<void> {
+  if (existsSync(demoPath)) unlinkSync(demoPath);
+  await ingestFolderTree(client);
+  const tree = await getArtifactTreeViaGraphQL(client, DEMO_ARTIFACT_NAME);
+  await deleteDocumentIfExists(client, `terminusdb:///data/ArtifactNode/${DEMO_ARTIFACT_NAME}`);
+  if (tree?.root) {
+    const ids = collectBlockIds(tree.root);
+    for (const id of ids) {
+      await deleteAssertionsInvolvingNode(client, `BlockNode/${id}`);
+    }
+    await deleteDocumentsIfExist(client, ids.map((id) => `terminusdb:///data/BlockNode/${id}`));
+  }
+}
 
 export async function runPhase0Verification(opts: { connectToDb?: boolean } = {}) {
   console.log("=================================================");
-  console.log("   Aperas Phase 0: Substrate Verification Test   ");
+  console.log("   Aperas Phase 1: Substrate Verification Test   ");
   console.log("=================================================\n");
 
   // 1. Sample Markdown AST Parsing
@@ -36,86 +71,90 @@ Aperas operates over a fluid, unconditioned semantic core (Apeiron) and crystall
 - Unbound: Aperas microcosm
 - Bound: Peras transient interface`;
 
-  console.log("1. Testing AST Transducer & Character Offset Tracking...");
-  const parsedDoc = parseMarkdownDocument("doc_demo_1", "Metaphysics of Aperas", sampleMarkdown);
-  console.log(`   - Document ID: ${parsedDoc.docId}`);
-  console.log(`   - Blocks Extracted: ${parsedDoc.blocks.length}`);
-  parsedDoc.blocks.forEach((b, idx) => {
-    console.log(`     [Block ${idx + 1}] Type: ${b.nodeType} | Offsets: [${b.startOffset}, ${b.endOffset}] | Snippet: "${b.content.slice(0, 40).replace(/\n/g, ' ')}..."`);
-  });
+  console.log("1. Testing AST Transducer (Fractal BlockNode Tree)...");
+  const rootBlock = parseMarkdownTree(sampleMarkdown);
+  const allIds = collectBlockIds(rootBlock);
+  console.log(`   - Root title: "${rootBlock.title}"`);
+  console.log(`   - Blocks parsed: ${allIds.length}`);
+  console.log(`   - Ids unique: ${new Set(allIds).size === allIds.length}`);
   console.log("   [✓] AST Transduction verified successfully.\n");
 
-  // 2. Lazy Atomization Check
-  console.log("2. Testing On-Demand Inline Span Reification (Lazy Atomization)...");
-  const targetBlock = parsedDoc.blocks[1]; // paragraph block
-  const span = createReifiedSpan(
-    targetBlock,
-    "span_apeiron_1",
-    35, 42, // slices "Apeiron"
-    "refers_to"
-  );
-  console.log(`   - Reified Span ID: ${span.spanId}`);
-  console.log(`   - Target Text: "${span.text}"`);
-  console.log(`   - Absolute Offsets: [${span.startOffset}, ${span.endOffset}]`);
-  console.log("   [✓] Lazy span atomization verified successfully.\n");
-
-  // 3. Database Connection Check if DB server is available
+  // 2. Database Connection Check if DB server is available
   if (opts.connectToDb) {
+    const artifactsDir = getArtifactsDir();
+    const demoPath = join(artifactsDir, DEMO_ARTIFACT_NAME);
+    let branchId = '';
+
     try {
-      console.log("3. Connecting to TerminusDB & Initializing Schema...");
+      console.log("2. Connecting to TerminusDB & Initializing Schema...");
       await initializeAperasDatabase();
       const client = createTerminusClient();
 
       console.log("   Resetting prior demo state for an idempotent re-run...");
-      await deleteTripleAssertionsInvolvingNode(client, span.spanId);
-      await deleteDocumentIfExists(client, `terminusdb:///data/SpanNode/${span.spanId}`);
-      for (const block of parsedDoc.blocks) {
-        await deleteDocumentIfExists(client, `terminusdb:///data/BlockNode/${block.blockId}`);
+      await resetDemoState(client, demoPath);
+      branchId = `verify_phase0_${Date.now()}`;
+      await deleteBranchIfExists(client, branchId);
+
+      console.log("3. Tracking & Ingesting a demo ArtifactNode + fractal BlockNode tree...");
+      writeFileSync(demoPath, sampleMarkdown, 'utf-8');
+      await trackArtifact(client, DEMO_ARTIFACT_NAME);
+      const ingestResult = await ingestArtifact(client, DEMO_ARTIFACT_NAME);
+      console.log(`   - Blocks ingested: ${ingestResult?.blockCount}`);
+      console.log("   [✓] Artifact tracking & ingestion verified successfully.\n");
+
+      console.log("4. Reading the ingested tree back via the GraphQL endpoint...");
+      const artifactTree = await getArtifactTreeViaGraphQL(client, DEMO_ARTIFACT_NAME);
+      if (!artifactTree?.root) {
+        throw new Error('GraphQL returned no root for the ingested ArtifactNode — cannot continue verification.');
       }
-      await deleteDocumentIfExists(client, `terminusdb:///data/DocumentNode/${parsedDoc.docId}`);
-      await deleteBranchIfExists(client, `verify_phase0_${parsedDoc.docId}`);
+      const rootId = `BlockNode/${artifactTree.root.blockId}`;
+      const childId = `BlockNode/${artifactTree.root.children[0].blockId}`;
+      console.log(`   - Blocks resolved via GraphQL: ${collectBlockIds(artifactTree.root).length}`);
+      console.log("   [✓] GraphQL read path verified successfully.\n");
 
-      console.log("4. Committing Document & Blocks to TerminusDB Substrate...");
-      await insertDocumentAndBlocks(client, parsedDoc);
+      console.log("5. Ingesting FolderNode structural tree...");
+      const { folderCount } = await ingestFolderTree(client);
+      console.log(`   - Folders in tree: ${folderCount}`);
+      console.log("   [✓] Folder ingestion verified successfully.\n");
 
-      console.log("5. Committing Reified Span to TerminusDB Substrate...");
-      await reifySpanOnDemand(client, targetBlock, span.spanId, 35, 42, "refers_to");
+      console.log("6. Committing an extrinsic Assertion & querying it back via WOQL...");
+      await insertAssertion(client, { source: rootId, predicate: "impacts", target: childId });
+      const assertions = await queryNodeAssertions(client, rootId);
+      console.log(`   - Assertions found for ${rootId}: ${assertions.length}`);
+      const affected = await traceImpactPropagation(client, rootId, "impacts");
+      console.log(`   - Impact sweep results from ${rootId}: ${JSON.stringify(affected)}`);
+      if (!affected.includes(childId)) {
+        throw new Error(`Expected impact propagation to include ${childId}, got ${JSON.stringify(affected)}`);
+      }
+      console.log("   [✓] Assertion CRUD & WOQL traversal verified successfully.\n");
 
-      console.log("6. Committing TripleAssertion & Graph Traversal...");
-      await insertTripleAssertion(client, {
-        subjectId: span.spanId,
-        predicate: "impacts",
-        objectId: "doc_demo_1_block_3",
-        provenance: "Agent reasoning sweep"
-      });
-
-      const assertions = await queryNodeAssertions(client, span.spanId);
-      console.log(`   - Assertions found for ${span.spanId}: ${assertions.length}`);
-
-      const affected = await traceImpactPropagation(client, span.spanId, "impacts");
-      console.log(`   - Impact sweep results from ${span.spanId}: ${JSON.stringify(affected)}`);
-
-      console.log("7. Querying BlockNodes via auto-generated GraphQL endpoint...");
-      const gqlBlocks = await getDocumentBlocksViaGraphQL(client, parsedDoc.docId);
-      console.log(`   - Blocks returned via GraphQL: ${gqlBlocks.length}`);
-
-      console.log("8. Verifying Temporal Commit Management (branch + commit log)...");
-      await createBranch(client, `verify_phase0_${parsedDoc.docId}`);
+      console.log("7. Verifying Temporal Commit Management (branch + commit log)...");
+      await createBranch(client, branchId);
       const commitHistory = await getCommitHistory(client, 0, 5);
-      console.log(`   - Branch 'verify_phase0_${parsedDoc.docId}' created.`);
+      console.log(`   - Branch '${branchId}' created.`);
       console.log(`   - Recent commits on main: ${commitHistory.length}`);
+      console.log("   [✓] Temporal commit management verified successfully.\n");
 
-      console.log("\n   [✓] TerminusDB Substrate Integration complete & verified!");
+      console.log("   [✓] TerminusDB Substrate Integration complete & verified!");
     } catch (err: any) {
       console.warn("\n   [!] TerminusDB substrate verification failed:", err.message || err);
       console.log("   Note: Ensure TerminusDB container is running locally (`docker run -p 6363:6363 terminusdb/terminusdb-server`).");
+    } finally {
+      console.log("\n   Cleaning up demo state...");
+      try {
+        const client = createTerminusClient();
+        await resetDemoState(client, demoPath);
+        if (branchId) await deleteBranchIfExists(client, branchId);
+      } catch (cleanupErr: any) {
+        console.warn("   [!] Cleanup of demo KG state failed:", cleanupErr.message || cleanupErr);
+      }
     }
   } else {
-    console.log("3. Database connectivity test skipped (run with connectToDb: true when TerminusDB server is running).");
+    console.log("2. Database connectivity test skipped (run with connectToDb: true when TerminusDB server is running).");
   }
 
   console.log("\n=================================================");
-  console.log("   Phase 0 Substrate Verification Complete!     ");
+  console.log("   Phase 1 Substrate Verification Complete!      ");
   console.log("=================================================");
 }
 

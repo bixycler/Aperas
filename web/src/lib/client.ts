@@ -7,7 +7,7 @@
 // @ts-ignore - terminusdb npm package exports WOQLClient
 import TerminusDB from 'terminusdb';
 import { createHash } from 'node:crypto';
-import { getAperasSchemaObjects } from './schema';
+import schemaObjects from './schema.json';
 
 // Recursively sorts object keys so two structurally-identical schemas hash the same
 // regardless of property insertion order (JSON.stringify key order is insertion order).
@@ -86,7 +86,7 @@ export async function initializeAperasDatabase(config: TerminusConfig = {}): Pro
   // Apply or update JSON-LD schema (real client method is `addDocument`, not `insertDocument`).
   // full_replace scopes to the schema graph only — it lets re-running this stay idempotent
   // instead of failing with "document already exists" on every schema class after the first run.
-  const schemaObjects = getAperasSchemaObjects();
+  // const schemaObjects = getAperasSchemaObjects(); (now imported directly)
 
   let existingSchema: any[] = [];
   try {

@@ -19,6 +19,11 @@ export interface ParsedBlockNode {
   text?: string;
   children: ParsedBlockNode[];
   unfolded?: boolean;
+  /** `list` nodes only — numbered vs. bulleted, and the starting number. */
+  ordered?: boolean;
+  start?: number;
+  /** `listItem` nodes only — task-list checkbox state; absent (not `false`) means "not a task item". */
+  checked?: boolean;
 }
 
 // Container-type nodes carry no content of their own — see the reconciliation design's Stage B
@@ -107,6 +112,15 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
 
   if (text) {
     block.text = text;
+  }
+
+  // Captured here (not derived at projection time) — these sit directly on the mdast node
+  // already, but nothing previously read them since ingestion never needed to round-trip.
+  if (node.type === 'list') {
+    block.ordered = Boolean(node.ordered);
+    block.start = typeof node.start === 'number' ? node.start : 1;
+  } else if (node.type === 'listItem' && node.checked !== null && node.checked !== undefined) {
+    block.checked = Boolean(node.checked);
   }
 
   return block;

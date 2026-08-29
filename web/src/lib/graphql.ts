@@ -80,7 +80,7 @@ export async function executeGraphQLQuery<T = any>(
  * depth bound) is never silently returned incomplete.
  */
 function blockFieldSelection(depth: number): string {
-  const ownFields = 'blockId type title text unfolded';
+  const ownFields = 'blockId type title text unfolded ordered start checked';
   if (depth <= 0) return ownFields;
   return `${ownFields} children { ${blockFieldSelection(depth - 1)} }`;
 }

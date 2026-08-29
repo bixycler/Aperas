@@ -9,9 +9,9 @@ import TerminusDB from 'terminusdb';
 import { createHash } from 'node:crypto';
 import schemaObjects from './schema.json';
 
-// Recursively sorts object keys so two structurally-identical schemas hash the same
+// Recursively sorts object keys so two structurally-identical document sets hash the same
 // regardless of property insertion order (JSON.stringify key order is insertion order).
-function stableStringify(value: any): string {
+export function stableStringify(value: any): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableStringify).join(',')}]`;
   }
@@ -22,7 +22,13 @@ function stableStringify(value: any): string {
   return JSON.stringify(value);
 }
 
-function hashSchema(docs: any[]): string {
+/**
+ * Order-independent content hash for a set of JSON-LD documents (schema classes or
+ * instances — anything keyed by `@id`/`@type`). Used to detect "nothing actually
+ * changed" before an expensive write, e.g. schema apply (below) or JSON-LD import
+ * (`export.ts`'s `importJsonLd`).
+ */
+export function hashDocSet(docs: any[]): string {
   const sorted = [...docs].sort((a, b) => (a['@id'] ?? a['@type']).localeCompare(b['@id'] ?? b['@type']));
   return createHash('sha256').update(stableStringify(sorted)).digest('hex');
 }
@@ -37,7 +43,7 @@ export interface TerminusConfig {
 
 export const DEFAULT_TERMINUS_CONFIG: Required<TerminusConfig> = {
   serverUrl: process.env.TERMINUSDB_SERVER || 'http://localhost:6363/',
-  dbName: process.env.TERMINUSDB_DB || 'aperas_apeiron',
+  dbName: process.env.TERMINUSDB_DB || 'aperas',
   user: process.env.TERMINUSDB_USER || 'admin',
   key: process.env.TERMINUSDB_KEY || 'root',
   organization: process.env.TERMINUSDB_ORG || 'admin'
@@ -95,7 +101,7 @@ export async function initializeAperasDatabase(config: TerminusConfig = {}): Pro
     // No schema graph yet (brand-new database) — fall through to applying it.
   }
 
-  if (existingSchema.length > 0 && hashSchema(existingSchema) === hashSchema(schemaObjects)) {
+  if (existingSchema.length > 0 && hashDocSet(existingSchema) === hashDocSet(schemaObjects)) {
     console.log(`[Aperas Substrate] Schema unchanged (${schemaObjects.length} classes) — skipping apply.`);
     return;
   }

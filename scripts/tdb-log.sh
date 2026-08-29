@@ -16,7 +16,7 @@
 set -euo pipefail
 
 CONTAINER="${TERMINUSDB_CONTAINER:-terminusdb}"
-DB_SPEC="${TERMINUSDB_DB_SPEC:-admin/aperas_apeiron}"
+DB_SPEC="${TERMINUSDB_DB_SPEC:-admin/aperas}"
 TDB_BIN="/app/terminusdb/terminusdb"
 
 count=20

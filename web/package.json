@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "verify:phase0": "npx tsx src/lib/verifyPhase0.ts",
     "kg:track": "npx tsx src/lib/kgCli.ts track",
-    "kg:ingest": "npx tsx src/lib/kgCli.ts ingest"
+    "kg:ingest": "npx tsx src/lib/kgCli.ts ingest",
+    "kg:export": "npx tsx src/lib/kgCli.ts export",
+    "kg:import": "npx tsx src/lib/kgCli.ts import",
+    "kg:project": "npx tsx src/lib/kgCli.ts project"
   },
   "dependencies": {
     "clsx": "^2.1.1",

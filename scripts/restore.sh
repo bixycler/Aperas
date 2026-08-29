@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CONTAINER="${TERMINUSDB_CONTAINER:-terminusdb}"
-DB_SPEC="${TERMINUSDB_DB_SPEC:-admin/aperas_apeiron}"
+DB_SPEC="${TERMINUSDB_DB_SPEC:-admin/aperas}"
 VOLUME="${TERMINUSDB_VOLUME:-terminusdb_storage}"
 SNAPSHOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/snapshots"
 TDB_BIN="/app/terminusdb/terminusdb"

@@ -47,7 +47,10 @@
     "title": "xsd:string",
     "text": { "@type": "Optional", "@class": "xsd:string" },
     "children": { "@type": "List", "@class": "BlockNode" },
-    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" }
+    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" },
+    "ordered": { "@type": "Optional", "@class": "xsd:boolean" },
+    "start": { "@type": "Optional", "@class": "xsd:integer" },
+    "checked": { "@type": "Optional", "@class": "xsd:boolean" }
   },
   {
     "@id": "ArtifactNode",

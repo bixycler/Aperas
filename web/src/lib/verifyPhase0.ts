@@ -6,6 +6,7 @@
  * - TerminusDB JSON-LD schema initialization
  * - Artifact tracking & on-demand ingestion (ArtifactNode + BlockNode tree)
  * - Reconciliation matching on re-ingestion of an edited artifact
+ * - Artifact Projection round-trip (serialize a BlockNode tree back to Markdown)
  * - FolderNode structural tree ingestion
  * - Extrinsic Assertion storage & WOQL impact propagation
  * - GraphQL tree read path
@@ -22,6 +23,8 @@ import { insertAssertion, deleteAssertionsInvolvingNode, deleteDocumentIfExists,
 import { queryNodeAssertions, traceImpactPropagation } from './woql';
 import { getArtifactTreeViaGraphQL } from './graphql';
 import { getCommitHistory, createBranch, deleteBranchIfExists } from './versionControl';
+import { serializeBlock } from './project';
+import { reconcileTree } from './reconcile';
 
 const DEMO_ARTIFACT_NAME = '__verify_phase0_demo.md';
 
@@ -75,7 +78,20 @@ Aperas operates over a fluid, unconditioned semantic core (Apeiron) and crystall
 
 - Unbounded: Apeiron macrocosm
 - Unbound: Aperas microcosm
-- Bound: Peras transient interface`;
+- Bound: Peras transient interface
+  - A nested clarification
+- [ ] An open question
+- [x] A settled one
+
+1. First ordered step
+2. Second ordered step
+
+> A note on terminology:
+> Apeiron and Peras derive from Anaximander.
+
+\`\`\`ts
+const example = 1;
+\`\`\``;
 
   console.log("1. Testing AST Transducer (Fractal BlockNode Tree)...");
   const rootBlock = parseMarkdownTree(sampleMarkdown);
@@ -84,6 +100,18 @@ Aperas operates over a fluid, unconditioned semantic core (Apeiron) and crystall
   console.log(`   - Blocks parsed: ${allIds.length}`);
   console.log(`   - Ids unique: ${new Set(allIds).size === allIds.length}`);
   console.log("   [✓] AST Transduction verified successfully.\n");
+
+  console.log("1b. Testing Artifact Projection (serialize -> re-parse -> reconcile round-trip)...");
+  const projected = serializeBlock(rootBlock);
+  const reparsedBlock = parseMarkdownTree(projected);
+  const { stats: roundTripStats } = reconcileTree(rootBlock, reparsedBlock);
+  console.log(`   - vs. re-parsed projection: ${roundTripStats.unchanged} unchanged, ${roundTripStats.moved} moved, ${roundTripStats.added} added, ${roundTripStats.removed} removed.`);
+  if (roundTripStats.added !== 0 || roundTripStats.removed !== 0) {
+    throw new Error(
+      `Round-trip projection mismatch: expected zero added/removed, got added=${roundTripStats.added} removed=${roundTripStats.removed}.\nProjected Markdown:\n${projected}`
+    );
+  }
+  console.log("   [✓] Artifact Projection round-trip verified successfully.\n");
 
   // 2. Database Connection Check if DB server is available
   if (opts.connectToDb) {
@@ -189,3 +217,4 @@ if (typeof process !== 'undefined' && process.argv && process.argv[1]?.includes(
   const shouldConnect = process.argv.includes('--db');
   runPhase0Verification({ connectToDb: shouldConnect });
 }
+

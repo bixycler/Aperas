@@ -17,8 +17,8 @@
  * callers in artifacts.ts/folders.ts).
  */
 
-const LEAF_TYPES = new Set(['heading', 'paragraph', 'code']);
-const CONTAINER_TYPES = new Set(['list', 'listItem', 'blockquote']);
+const LEAF_TYPES = new Set(['heading', 'paragraph', 'code', 'thematicBreak', 'html', 'table', 'blockquote']);
+const CONTAINER_TYPES = new Set(['list', 'listItem']);
 
 export interface MatchingBlock {
   aStart: number;

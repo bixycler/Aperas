@@ -13,10 +13,12 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { parseMarkdownTree, extractAbstract } from './astParser';
+import { parseMarkdownTree, extractAbstract, type ParsedBlockNode } from './astParser';
 import { generateNodeId } from './snowflake';
 import { getArtifactTreeViaGraphQL } from './graphql';
 import { reconcileTree, matchLeftoverByAbstract, type ReconciliationStats } from './reconcile';
+import type { PropEntry } from './props';
+import { resolveDirectOrSnowflake } from './directResolve';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +32,7 @@ export interface ArtifactRecord {
   ingestedHash?: string;
   lastIngestedAt?: string;
   root?: any;
+  props?: PropEntry[];
 }
 
 export function getArtifactsDir(): string {
@@ -37,8 +40,20 @@ export function getArtifactsDir(): string {
   return resolve(__dirname, '..', '..', '..', 'AperasKG', 'artifacts');
 }
 
+/** A directory's own `README.md` is absorbed directly into its `FolderNode` (`folders.ts`'s
+ *  `buildFolderTree`) and must never also be tracked/ingested as an ordinary `ArtifactNode` —
+ *  shared here (not duplicated in `folders.ts`) so both file-walkers agree on one definition. */
+export function isReadmeFilename(filename: string): boolean {
+  return filename.toLowerCase() === 'readme.md';
+}
+
 /**
- * Recursively lists every artifact file path, relative to the artifacts directory.
+ * Recursively lists every artifact file path, relative to the artifacts directory. Excludes
+ * each directory's own `README.md` — that file is absorbed into its `FolderNode`, never
+ * exposed as a separate `ArtifactNode` (previously a real bug: this list had no such exclusion,
+ * so `ingestAllArtifacts` ingested every README as an ordinary artifact *in addition to*
+ * `folders.ts`'s own absorption, leaving a redundant, orphaned `ArtifactNode` nothing
+ * referenced — see `Aperas-dev-status.md`).
  */
 export function listArtifactFiles(artifactsDir: string = getArtifactsDir()): string[] {
   const files: string[] = [];
@@ -49,7 +64,7 @@ export function listArtifactFiles(artifactsDir: string = getArtifactsDir()): str
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
         walk(fullPath);
-      } else if (entry.endsWith('.md') && !entry.startsWith('.')) {
+      } else if (entry.endsWith('.md') && !entry.startsWith('.') && !isReadmeFilename(entry)) {
         // Only tracked markdown artifacts — excludes editor swap/lock files (.foo.md.swp),
         // dotfiles, and any other transient junk that can appear alongside real content.
         files.push(relative(artifactsDir, fullPath));
@@ -81,7 +96,8 @@ function normalizeArtifactDoc(doc: any): ArtifactRecord {
     lastTrackedAt: doc.lastTrackedAt,
     ...(doc.ingestedHash ? { ingestedHash: doc.ingestedHash } : {}),
     ...(doc.lastIngestedAt ? { lastIngestedAt: doc.lastIngestedAt } : {}),
-    ...(doc.root ? { root: doc.root } : {})
+    ...(doc.root ? { root: doc.root } : {}),
+    ...(doc.props?.length ? { props: doc.props } : {})
   };
 }
 
@@ -158,7 +174,7 @@ export async function trackAllArtifacts(client: any): Promise<{ results: TrackRe
   const artifactsDir = getArtifactsDir();
   const addedCandidates = diskOnlyPaths.map((path) => {
     const content = readFileSync(join(artifactsDir, path), 'utf-8');
-    return { key: extractAbstract(parseMarkdownTree(content)), item: { path, content } };
+    return { key: extractAbstract(parseMarkdownTree(content).root), item: { path, content } };
   });
   const removedCandidates = dbOnlyDocs.map((doc) => ({ key: doc.text ?? '', item: doc }));
 
@@ -231,6 +247,45 @@ function countBlocks(node: any): number {
 }
 
 /**
+ * Resolves each block's raw `linkCodes` (astParser.ts — a pure, DB-less parser can only capture
+ * the raw `[[code]]` text, not resolve it) into real `BlockNode.links` entries, in place.
+ * Best-effort per link (Aperas-markdown-fractal-mapping-design.md §4): a code that doesn't
+ * resolve to any live node is skipped with a warning, never fails the whole ingestion. `Link`
+ * (the one concrete `BaseLink` leaf — `schema.json`) is written as a plain embedded object with
+ * no `@id`, the same way a nested `BlockNode` child already is; TerminusDB creates it as its own
+ * independent document as a side effect of the parent's write.
+ *
+ * Known limitation, disclosed not fixed: re-ingesting an edited artifact resolves fresh `Link`
+ * objects for every link-bearing block reconciliation matches (reusing that block's `blockId`),
+ * but nothing here diffs against the block's *previous* `links` — so a `Link` document from an
+ * earlier ingestion becomes orphaned (unreferenced, undeleted) once the block's `links` field is
+ * overwritten with newly-resolved ones, even if the actual target didn't change. Same class of
+ * gap `deleteAssertionsInvolvingNode` exists to guard against for `Assertion`, just not yet
+ * extended to cover this case.
+ */
+async function resolveBlockLinks(client: any, node: ParsedBlockNode): Promise<void> {
+  const codes = node.linkCodes;
+  if (codes && codes.length > 0) {
+    const links: Array<{ "@type": "Link"; target: string; predicate: string }> = [];
+    for (const code of codes) {
+      const target = await resolveDirectOrSnowflake(client, code);
+      if (target) {
+        links.push({ "@type": "Link", target, predicate: "references" });
+      } else {
+        console.warn(`[Aperas Artifacts] Link target '[[${code}]]' in block ${node.blockId} didn't resolve to any live node — skipping.`);
+      }
+    }
+    if (links.length > 0) {
+      (node as any).links = links;
+    }
+  }
+  delete node.linkCodes;
+  for (const child of node.children ?? []) {
+    await resolveBlockLinks(client, child);
+  }
+}
+
+/**
  * AST-parses and commits a tracked artifact into a fractal tree of BlockNodes, only if its file
  * hash has changed since the last ingestion. Returns null when skipped as a no-op.
  *
@@ -252,8 +307,13 @@ export async function ingestArtifact(client: any, artifactPath: string): Promise
   const artifactsDir = getArtifactsDir();
   const content = readFileSync(join(artifactsDir, artifactPath), 'utf-8');
 
-  const newRoot = parseMarkdownTree(content);
+  const { root: newRoot, frontmatter } = parseMarkdownTree(content);
   const now = new Date().toISOString();
+  // Frontmatter is file-level metadata, not a block (§5) — realized as one `props` entry,
+  // opaque (raw YAML body, not parsed into key/value pairs) for this stage.
+  const props: PropEntry[] | undefined = frontmatter !== undefined
+    ? [{ "@type": "StringProp", key: "frontmatter", value: frontmatter }]
+    : undefined;
 
   let finalRoot = newRoot;
   let reconciliation: ReconciliationStats | null = null;
@@ -281,6 +341,8 @@ export async function ingestArtifact(client: any, artifactPath: string): Promise
     }
   }
 
+  await resolveBlockLinks(client, finalRoot);
+
   const blockCount = countBlocks(finalRoot);
   console.log(`[Aperas Artifacts] Ingesting '${artifactPath}' as fractal tree (${blockCount} blocks)...`);
 
@@ -300,7 +362,8 @@ export async function ingestArtifact(client: any, artifactPath: string): Promise
       lastTrackedAt: record.lastTrackedAt,
       ingestedHash: record.fileHash,
       lastIngestedAt: now,
-      root: finalRoot
+      root: finalRoot,
+      ...(props ? { props } : {})
     },
     {},
     client.db(),

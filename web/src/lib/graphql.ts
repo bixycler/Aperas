@@ -79,13 +79,44 @@ export async function executeGraphQLQuery<T = any>(
  * tree deeper than `maxDepth` (e.g. an uncut Logseq-style outline with no natural
  * depth bound) is never silently returned incomplete.
  */
+// `props: Set<Prop>` (Prop abstract, StringProp its one concrete leaf — see props.ts) can't be
+// queried with an inline fragment (`... on StringProp { value }`): TerminusDB's auto-generated
+// GraphQL schema materializes `Prop` as its own concrete OBJECT type (confirmed live via
+// introspection — `possibleTypes: null`), not an interface/union StringProp implements, so
+// `value` (StringProp-only) is simply absent from the `Prop` object type altogether — asking
+// for it errors ("objects of type Prop can never be of type StringProp"). `_json` is the escape
+// hatch every generated type carries (a JSON-encoded dump of the full subdocument, `value`
+// included) — `normalizeProps` below parses it back into the ordinary `{key, value}` shape
+// every other reader/writer (astParser.ts, project.ts) already uses.
 function blockFieldSelection(depth: number): string {
-  const ownFields = 'blockId type title text unfolded ordered start checked';
+  const ownFields = 'blockId type title text unfolded props { key _json }';
   if (depth <= 0) return ownFields;
   return `${ownFields} children { ${blockFieldSelection(depth - 1)} }`;
 }
 
-async function fetchBlockSubtree(client: any, blockId: string, maxDepth: number): Promise<any | null> {
+/** Parses each prop's `_json` dump back into a plain `{key, value}` StringProp, recursively. */
+function normalizeProps(node: any): void {
+  if (!node) return;
+  if (Array.isArray(node.props)) {
+    node.props = node.props.map((p: any) => {
+      if (typeof p._json !== 'string') return p;
+      try {
+        const parsed = JSON.parse(p._json);
+        return { "@type": "StringProp", key: p.key, value: parsed.value };
+      } catch {
+        return { "@type": "StringProp", key: p.key, value: undefined };
+      }
+    });
+  }
+  for (const child of node.children ?? []) {
+    normalizeProps(child);
+  }
+}
+
+/** Exported for `getFolderTreeViaGraphQL`, which reuses this to fetch each `BlockNode` child's
+ *  own concrete subtree — homogeneous below the one polymorphic `FolderNode.children` hop, so
+ *  the normal bounded-depth/truncation machinery applies unchanged from there. */
+export async function fetchBlockSubtree(client: any, blockId: string, maxDepth: number): Promise<any | null> {
   const query = `
     query BlockSubtree($blockId: String!) {
       BlockNode(filter: { blockId: { eq: $blockId } }) {
@@ -143,6 +174,7 @@ export async function getArtifactTreeViaGraphQL(client: any, path: string, maxDe
         path
         fileHash
         ingestedHash
+        props { key _json }
         root {
           ${blockFieldSelection(maxDepth)}
         }
@@ -153,8 +185,68 @@ export async function getArtifactTreeViaGraphQL(client: any, path: string, maxDe
   const result = await executeGraphQLQuery(client, query, { path });
   const matches: any[] = result.data?.ArtifactNode ?? [];
   const artifact = matches[0] ?? null;
-  if (!artifact?.root) return artifact;
+  if (!artifact) return artifact;
 
-  await resolveTruncatedSubtrees(client, artifact.root, maxDepth);
+  normalizeProps(artifact);
+  if (artifact.root) {
+    await resolveTruncatedSubtrees(client, artifact.root, maxDepth);
+    normalizeProps(artifact.root);
+  }
   return artifact;
+}
+
+/**
+ * Fetches a FolderNode and its full content via GraphQL, using the hybrid polymorphism pattern
+ * (Aperas-markdown-fractal-mapping-design.md §7): `FolderNode.children: List<BaseNode>` is
+ * genuinely polymorphic (a real mix of `BlockNode` content and `ArtifactNode`/`FolderNode`
+ * references), so that one hop is queried with `_type`/`_json` instead of typed field
+ * selections — GraphQL rejects nesting a concrete-only field selection under an abstract type
+ * outright (confirmed live: "Unknown field \"children\" on type \"BaseNode\""), so there is no
+ * way to ask for more than one level through this field in a single query. Once a child's
+ * concrete `_type` is known, though, a `BlockNode` child is homogeneous underneath — its own
+ * `children: List<BlockNode>` — so `fetchBlockSubtree`'s ordinary bounded-depth/truncation
+ * machinery fetches its full concrete subtree in the normal, fast way. `ArtifactNode`/
+ * `FolderNode` children are left as bare references (id + path) — never inlined, since neither
+ * one's own content is part of *this* folder's README.
+ */
+export async function getFolderTreeViaGraphQL(client: any, path: string, maxDepth: number = 10): Promise<any | null> {
+  const query = `
+    query FolderTree($path: String!) {
+      FolderNode(filter: { path: { eq: $path } }) {
+        folderId path title text
+        props { key _json }
+        children { _id _type _json }
+      }
+    }
+  `;
+
+  const result = await executeGraphQLQuery(client, query, { path });
+  const matches: any[] = result.data?.FolderNode ?? [];
+  const folder = matches[0] ?? null;
+  if (!folder) return folder;
+
+  normalizeProps(folder);
+
+  const children: any[] = [];
+  for (const child of folder.children ?? []) {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(child._json);
+    } catch {
+      continue;
+    }
+    if (child._type === 'BlockNode') {
+      const subtree = await fetchBlockSubtree(client, parsed.blockId, maxDepth);
+      if (subtree) {
+        await resolveTruncatedSubtrees(client, subtree, maxDepth);
+        normalizeProps(subtree);
+        children.push(subtree);
+      }
+    } else {
+      // ArtifactNode/FolderNode reference — not inlined, just identified.
+      children.push({ _type: child._type, ...parsed });
+    }
+  }
+  folder.children = children;
+  return folder;
 }

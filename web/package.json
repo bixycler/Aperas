@@ -12,12 +12,21 @@
     "kg:ingest": "npx tsx src/lib/kgCli.ts ingest",
     "kg:export": "npx tsx src/lib/kgCli.ts export",
     "kg:import": "npx tsx src/lib/kgCli.ts import",
-    "kg:project": "npx tsx src/lib/kgCli.ts project"
+    "kg:project": "npx tsx src/lib/kgCli.ts project",
+    "kg:assert": "npx tsx src/lib/kgCli.ts assert",
+    "kg:assertions": "npx tsx src/lib/kgCli.ts assertions",
+    "kg:unassert": "npx tsx src/lib/kgCli.ts unassert",
+    "kg:tree": "npx tsx src/lib/kgCli.ts tree",
+    "kg:unfold": "npx tsx src/lib/kgCli.ts unfold",
+    "kg:fold": "npx tsx src/lib/kgCli.ts fold",
+    "kg:search": "npx tsx src/lib/kgCli.ts search"
   },
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-solid": "^1.34.0",
     "rehype-stringify": "^10.0.1",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
     "solid-js": "^1.9.15",

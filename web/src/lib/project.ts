@@ -2,15 +2,25 @@
  * Aperas Artifact Projection
  *
  * Serializes an ArtifactNode's ingested BlockNode tree back into Markdown — the inverse of
- * astParser.ts's parse. Design settled in AperasKG/artifacts/Aperas-artifact-projection-design.md:
- * canonical regeneration (headings/paragraphs/code round-trip exactly via their raw `title`/
- * `text`; containers like `list`/`blockquote` are regenerated as clean, valid Markdown rather
- * than reproducing original whitespace), list items always blank-line-separated regardless of
- * the source's original tight/loose style (§2), and blockquote `> ` prefixing normalized here
- * rather than at ingestion (§3).
+ * astParser.ts's parse. Design settled in AperasKG/artifacts/Aperas-artifact-projection-design.md
+ * and Aperas-markdown-fractal-mapping-design.md: canonical (not byte-exact) regeneration,
+ * list items always blank-line-separated regardless of the source's original tight/loose style,
+ * blockquote `> ` prefixing normalized here, and — per the mapping design's §2/§8/§9 — a
+ * heading/listItem's own `text` (its consumed leading paragraph) is emitted before its children,
+ * and any contiguous run of `listItem`s among a node's children is rendered as a list using
+ * *that node's own* `orderedList`/`startIndex` props, wherever in `children` the run occurs.
  */
 
-import { getArtifactTreeViaGraphQL } from './graphql';
+import { getArtifactTreeViaGraphQL, getFolderTreeViaGraphQL } from './graphql';
+import { getProp } from './props';
+
+/** Prepends a re-emitted `---\n...\n---` frontmatter block, if this node's `props` (§5) carries
+ *  one, ahead of its otherwise-serialized body. Applies uniformly to ArtifactNode and
+ *  FolderNode — both were the exact same `frontmatter` prop scope decided in §5. */
+function withFrontmatter(body: string, node: any): string {
+  const frontmatter = getProp(node, 'frontmatter');
+  return frontmatter !== undefined ? `---\n${frontmatter}\n---\n\n${body}` : body;
+}
 
 /** Strips one optional leading `> ` (with or without the trailing space) from a single line. */
 function stripBlockquoteMarker(line: string): string {
@@ -52,25 +62,58 @@ function indentContinuationLines(text: string, prefixWidth: number): string {
     .join('\n');
 }
 
-/** Renders a node's children, each via `serializeBlock`, joined by a blank line. */
+/**
+ * Renders a node's children, joined by a blank line — but a contiguous run of `listItem`
+ * children (anywhere among `children`, not just at the end — §8) is rendered as one list using
+ * *this* node's own `orderedList`/`startIndex` props, since a list-hosting node (an orphaned
+ * `list` block, or whatever adopted the list per §8) is the sole owner of that list's numbering.
+ * Everything else renders one block at a time via the ordinary per-type dispatch.
+ */
 function renderChildren(node: any): string {
-  return (node.children ?? []).map(serializeBlock).join('\n\n');
+  const children = node.children ?? [];
+  const parts: string[] = [];
+  let i = 0;
+  while (i < children.length) {
+    if (children[i].type === 'listItem') {
+      let j = i;
+      while (j < children.length && children[j].type === 'listItem') j++;
+      const orderedList = getProp(node, 'orderedList') === 'true';
+      const startIndex = Number(getProp(node, 'startIndex') ?? '1');
+      const run = children.slice(i, j);
+      parts.push(run.map((item: any, k: number) => serializeListItem(item, orderedList, startIndex + k)).join('\n\n'));
+      i = j;
+    } else {
+      parts.push(serializeBlock(children[i]));
+      i++;
+    }
+  }
+  return parts.join('\n\n');
 }
 
 /**
  * Recursively serializes one BlockNode (and its subtree) back into Markdown. Dispatches on the
- * node's `type` (§5 of the design doc) — `list` delegates each child to `serializeListItem`
- * rather than this function, since a list item's marker/indent depends on its parent list's
- * `ordered`/`start`, not on anything the item carries alone.
+ * node's `type`. `list` has no case of its own — an orphaned list block's entire `children` is
+ * one contiguous `listItem` run, already handled generically by `renderChildren`'s default case.
  */
 export function serializeBlock(node: any): string {
   switch (node.type) {
     case 'heading': {
+      const parts = [node.title];
+      if (node.text) parts.push(node.text);
       const body = renderChildren(node);
-      return body ? `${node.title}\n\n${body}` : node.title;
+      if (body) parts.push(body);
+      return parts.join('\n\n');
     }
     case 'paragraph':
-      return dedent(node.text ?? '', true);
+    case 'thematicBreak':
+    case 'html':
+    case 'table': {
+      // These are opaque leaves whose own content is `text`, but a paragraph specifically may
+      // also host an adopted list (§8) as `children` — rendered after its own text, if present.
+      const own = dedent(node.text ?? '', true);
+      const body = renderChildren(node);
+      return body ? `${own}\n\n${body}` : own;
+    }
     case 'code': {
       const raw = node.text ?? '';
       // A fenced block's raw slice starts with its own ``` (or ~~~) marker on line 1, same as
@@ -83,19 +126,14 @@ export function serializeBlock(node: any): string {
       return FENCE_RE.test(raw) ? dedent(raw, true) : `\`\`\`\n${dedent(raw, false)}\n\`\`\``;
     }
     case 'blockquote': {
-      const inner = renderChildren(node);
+      // Opaque leaf now (Aperas-markdown-fractal-mapping-design.md §3) — no children to recurse
+      // into, `node.text` is the full raw slice (markers included, as the source wrote them).
+      const inner: string = node.text ?? '';
       return inner
         .split('\n')
         .map((line) => stripBlockquoteMarker(line))
         .map((line) => (line ? `> ${line}` : '>'))
         .join('\n');
-    }
-    case 'list': {
-      const ordered = Boolean(node.ordered);
-      const start = typeof node.start === 'number' ? node.start : 1;
-      return (node.children ?? [])
-        .map((item: any, i: number) => serializeListItem(item, ordered, start + i))
-        .join('\n\n');
     }
     default:
       // root, and any other container fallback: just join my children.
@@ -103,12 +141,16 @@ export function serializeBlock(node: any): string {
   }
 }
 
-function serializeListItem(item: any, ordered: boolean, ordinal: number): string {
-  const marker = ordered ? `${ordinal}. ` : '- ';
-  const checkbox = item.checked === true ? '[x] ' : item.checked === false ? '[ ] ' : '';
+function serializeListItem(item: any, orderedList: boolean, ordinal: number): string {
+  const marker = orderedList ? `${ordinal}. ` : '- ';
+  const checkedProp = getProp(item, 'checked');
+  const checkbox = checkedProp === 'true' ? '[x] ' : checkedProp === 'false' ? '[ ] ' : '';
   const prefix = marker + checkbox;
+  const parts: string[] = [];
+  if (item.text) parts.push(item.text);
   const body = renderChildren(item);
-  return prefix + indentContinuationLines(body, prefix.length);
+  if (body) parts.push(body);
+  return prefix + indentContinuationLines(parts.join('\n\n'), prefix.length);
 }
 
 /**
@@ -120,5 +162,32 @@ function serializeListItem(item: any, ordered: boolean, ordinal: number): string
 export async function projectArtifactToMarkdown(client: any, path: string): Promise<string | null> {
   const artifact = await getArtifactTreeViaGraphQL(client, path);
   if (!artifact?.root) return null;
-  return serializeBlock(artifact.root);
+  return withFrontmatter(serializeBlock(artifact.root), artifact);
+}
+
+/**
+ * Serializes a FolderNode's own content (its README's consumed leading text, plus its
+ * README-derived block children) back into `README.md` Markdown. `renderChildren` never
+ * switches on `node.type` itself — only `serializeBlock`'s dispatch does — so it works directly
+ * against a FolderNode with no wrapper needed. Nested `FolderNode`/`ArtifactNode` references in
+ * `children` are structural, not textual content — they were never part of the README's own
+ * source, so they're filtered out here (Aperas-markdown-fractal-mapping-design.md §6).
+ */
+export function serializeFolderToReadme(folder: any): string {
+  const blockChildren = (folder.children ?? []).filter((c: any) => c._type === undefined);
+  const parts: string[] = [];
+  if (folder.text) parts.push(folder.text);
+  const body = renderChildren({ ...folder, children: blockChildren });
+  if (body) parts.push(body);
+  return withFrontmatter(parts.join('\n\n'), folder);
+}
+
+/**
+ * Fetches a FolderNode's content and serializes it back to a `README.md`. Returns null when the
+ * folder isn't found.
+ */
+export async function projectFolderToReadme(client: any, path: string): Promise<string | null> {
+  const folder = await getFolderTreeViaGraphQL(client, path);
+  if (!folder) return null;
+  return serializeFolderToReadme(folder);
 }

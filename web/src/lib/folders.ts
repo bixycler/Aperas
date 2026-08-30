@@ -16,10 +16,11 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { parseMarkdownTree, extractAbstract } from './astParser';
-import { getArtifactsDir } from './artifacts';
+import { parseMarkdownTree } from './astParser';
+import { getArtifactsDir, isReadmeFilename } from './artifacts';
 import { generateNodeId } from './snowflake';
 import { matchLeftoverByAbstract } from './reconcile';
+import type { PropEntry } from './props';
 
 export interface ParsedFolderNode {
   "@type": "FolderNode";
@@ -28,9 +29,8 @@ export interface ParsedFolderNode {
   title: string;
   text?: string;
   children: unknown[];
+  props?: PropEntry[];
 }
-
-const README_NAME = 'readme.md';
 
 function buildFolderTree(
   absoluteDir: string,
@@ -49,6 +49,7 @@ function buildFolderTree(
   const structuralChildren: unknown[] = [];
   let readmeChildren: unknown[] = [];
   let readmeText = '';
+  let readmeProps: PropEntry[] | undefined;
 
   for (const entry of entries) {
     if (entry.startsWith('.')) continue;
@@ -61,11 +62,24 @@ function buildFolderTree(
     }
     if (!entry.endsWith('.md')) continue;
 
-    if (entry.toLowerCase() === README_NAME) {
+    if (isReadmeFilename(entry)) {
       const content = readFileSync(fullPath, 'utf-8');
-      const parsedRoot = parseMarkdownTree(content);
-      readmeChildren = parsedRoot.children;
-      readmeText = extractAbstract(parsedRoot);
+      const { root: parsedRoot, frontmatter } = parseMarkdownTree(content);
+      // Same consuming rule as heading/listItem (§2/§6): the README's own leading paragraph
+      // becomes the FolderNode's own `text`, not a separately duplicated child. If that
+      // paragraph had itself adopted a list (§8 — e.g. an intro sentence immediately followed
+      // by a list), those adopted items become the FolderNode's own leading children, exactly
+      // as they would have if the FolderNode were a heading/listItem consuming the same content.
+      const [firstChild, ...restChildren] = parsedRoot.children;
+      if (firstChild?.type === 'paragraph') {
+        readmeText = firstChild.text ?? '';
+        readmeChildren = [...(firstChild.children ?? []), ...restChildren];
+      } else {
+        readmeChildren = parsedRoot.children;
+      }
+      readmeProps = frontmatter !== undefined
+        ? [{ "@type": "StringProp", key: "frontmatter", value: frontmatter }]
+        : undefined;
     } else {
       const artifactPath = relative(artifactsDir, fullPath);
       // Reference an independently tracked/ingested ArtifactNode by its actual (Snowflake)
@@ -87,6 +101,7 @@ function buildFolderTree(
     path,
     title,
     ...(readmeText ? { text: readmeText } : {}),
+    ...(readmeProps ? { props: readmeProps } : {}),
     children: [...readmeChildren, ...structuralChildren]
   };
 }
@@ -106,6 +121,31 @@ function countFolders(node: ParsedFolderNode): number {
     (c): c is ParsedFolderNode => typeof c === 'object' && c !== null && (c as any)['@type'] === 'FolderNode'
   );
   return 1 + nested.reduce((sum, c) => sum + countFolders(c), 0);
+}
+
+export interface FolderRecord {
+  folderId: string;
+  path: string;
+  title: string;
+  text?: string;
+}
+
+/**
+ * Looks up a live (non-tombstoned) FolderNode by its path — the from-memory addressing
+ * counterpart to artifacts.ts's getArtifactRecord. Folders are navigated by path exactly the
+ * same way artifacts are (nobody remembers a folderId either), so the two go together rather
+ * than treating FolderNode as raw-id-only (see Aperas-basic-assertion-skill-design.md §2).
+ */
+export async function getFolderRecord(client: any, folderPath: string): Promise<FolderRecord | null> {
+  try {
+    const docs = await client.getDocument({ type: 'FolderNode', query: { path: folderPath }, as_list: true });
+    const matches = Array.isArray(docs) ? docs : [docs];
+    const doc = matches.find((d: any) => d && typeof d !== 'string' && !d.tombstonedAt);
+    if (!doc) return null;
+    return { folderId: doc.folderId, path: doc.path, title: doc.title, ...(doc.text ? { text: doc.text } : {}) };
+  } catch (err) {
+    return null;
+  }
 }
 
 export interface FolderSweepStats {

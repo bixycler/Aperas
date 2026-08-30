@@ -12,7 +12,26 @@
       "@type": "Set",
       "@class": "BaseLink"
     },
+    "props": {
+      "@type": "Set",
+      "@class": "Prop"
+    },
     "tombstonedAt": { "@type": "Optional", "@class": "xsd:dateTime" }
+  },
+  {
+    "@id": "Prop",
+    "@type": "Class",
+    "@abstract": [],
+    "@subdocument": [],
+    "key": "xsd:string"
+  },
+  {
+    "@id": "StringProp",
+    "@type": "Class",
+    "@subdocument": [],
+    "@key": { "@type": "Random" },
+    "@inherits": ["Prop"],
+    "value": "xsd:string"
   },
   {
     "@id": "BaseLink",
@@ -21,6 +40,11 @@
     "@inherits": ["BaseNode"],
     "target": "BaseNode",
     "predicate": "xsd:string"
+  },
+  {
+    "@id": "Link",
+    "@type": "Class",
+    "@inherits": ["BaseLink"]
   },
   {
     "@id": "BaseEdge",
@@ -47,10 +71,7 @@
     "title": "xsd:string",
     "text": { "@type": "Optional", "@class": "xsd:string" },
     "children": { "@type": "List", "@class": "BlockNode" },
-    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" },
-    "ordered": { "@type": "Optional", "@class": "xsd:boolean" },
-    "start": { "@type": "Optional", "@class": "xsd:integer" },
-    "checked": { "@type": "Optional", "@class": "xsd:boolean" }
+    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" }
   },
   {
     "@id": "ArtifactNode",

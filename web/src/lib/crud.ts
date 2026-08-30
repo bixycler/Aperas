@@ -91,3 +91,42 @@ export async function deleteAssertionsInvolvingNode(client: any, nodeId: string)
   await deleteDocumentsIfExist(client, matches.map((match) => `terminusdb:///data/${match['@id']}`));
   return matches.length;
 }
+
+/**
+ * Finds every `Link` (the one concrete `BaseLink` leaf — inline `BlockNode.links`, see
+ * Aperas-markdown-fractal-mapping-design.md §4) targeting any of nodeIds — returns full ids
+ * rather than deleting them directly, because a `Link` sits in a genuine reference *cycle* with
+ * the blocks around it (the owning block's own `links` field points at the `Link`, which in
+ * turn `target`s some other block — e.g. a self-link makes this a 3-node cycle back to the same
+ * root). TerminusDB's referential-integrity-on-delete check only allows a reference from
+ * *outside* the set of documents being deleted in one call — sequential separate deletes (Link
+ * first, or blocks first) each fail as still-referenced by the other; deleting the `Link` ids
+ * *together with* the blocks that form the cycle, in one combined `deleteDocument` batch, is the
+ * only order that succeeds. Callers should merge this with whatever block ids they're already
+ * deleting rather than calling this and `deleteDocumentsIfExist` as two separate steps.
+ */
+export async function findLinkIdsTargeting(client: any, nodeIds: string[]): Promise<string[]> {
+  const targets = new Set(nodeIds);
+  const docs = await client.getDocument({ type: 'Link', as_list: true }).catch(() => []);
+  const matches: any[] = (Array.isArray(docs) ? docs : []).filter((d: any) => targets.has(d.target));
+  return matches.map((match) => `terminusdb:///data/${match['@id']}`);
+}
+
+/**
+ * Deletes only the Assertion(s) matching this exact source/predicate/target triple — the
+ * narrow counterpart to deleteAssertionsInvolvingNode's blunt "wipe everything touching this
+ * node" (which stays reserved for demo/reset cleanup). This is the real "undo this one claim"
+ * operation (see Aperas-basic-assertion-skill-design.md §3).
+ */
+export async function deleteAssertion(client: any, assertion: AssertionInput): Promise<number> {
+  const docs = await client.getDocument({ type: 'Assertion', as_list: true });
+  const matches: any[] = (Array.isArray(docs) ? docs : []).filter(
+    (d: any) => d.source === assertion.source && d.predicate === assertion.predicate && d.target === assertion.target
+  );
+  await deleteDocumentsIfExist(
+    client,
+    matches.map((match) => `terminusdb:///data/${match['@id']}`),
+    `Unassert (${assertion.source}) --[${assertion.predicate}]--> (${assertion.target})`
+  );
+  return matches.length;
+}

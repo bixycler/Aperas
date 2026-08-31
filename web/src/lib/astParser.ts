@@ -27,6 +27,17 @@ export interface ParsedBlockNode {
   text?: string;
   children: ParsedBlockNode[];
   unfolded?: boolean;
+  /** Direct container's full id (`BlockNode/…`, or `ArtifactNode/…`/`FolderNode/…` for a tree's
+   *  own root) — id→path resolution's reverse-walk primitive (Aperas-deep-path-resolution-
+   *  design.md), a plain field read rather than a WOQL backlink query, since `children` is
+   *  `List`-typed and TerminusDB doesn't index `List` membership as a direct triple (confirmed
+   *  live: `t(X, 'children', Target)` returns nothing, unlike a `Set`-typed field). Stamped here
+   *  for every node's *direct* children in one post-pass over the finished tree — correct
+   *  regardless of the adoption/splice logic above, since it only reads final structure, never
+   *  participates in building it. A tree's own root has no `parent` set by this pass (nothing to
+   *  point it at yet); the caller that attaches the root to its owning `ArtifactNode`/
+   *  `FolderNode` (artifacts.ts/folders.ts) sets that one field externally. */
+  parent?: string;
   props?: PropEntry[];
   /** Raw `[[code]]` targets found in this block's own `title`/`text` — ephemeral, resolved
    *  into real `BlockNode.links` entries by `artifacts.ts` (which has DB access this pure
@@ -227,7 +238,7 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
   const rawText = rawSlice(node, markdown);
   const blockId = generateNodeId();
 
-  let title = blockId; // fallback title (to be replaced by AI agent in the future)
+  let title = blockId; // fallback title; kg:title (Aperas-interactive-summarization-design.md §3) overrides it interactively
   let text = rawText;
   let linkCodes: string[] = [];
 
@@ -335,6 +346,25 @@ export interface ParsedMarkdown {
  * Parses raw Markdown content into a structured, nested tree of BlockNodes, plus any leading
  * YAML frontmatter extracted separately (file-level metadata, not a block — §5).
  */
+/**
+ * Sets `child.parent` to `node`'s own full id for every direct child, recursively — see
+ * `ParsedBlockNode.parent`'s doc comment. Run once over the finished tree, not during
+ * construction — and **must** be re-run by any caller that reassigns `blockId`s afterward
+ * (`reconcile.ts`'s `carryForwardFields`, for a matched pair, replaces a fresh parse's
+ * transient `blockId` with the old carried-forward one). Confirmed live as a real bug before
+ * this was understood: stamping only once, pre-reconciliation, left every reconciled child's
+ * `parent` pointing at its container's *discarded* pre-reassignment id — a dangling reference
+ * to a document that never gets written, rejected by TerminusDB's schema check
+ * (`references_untyped_object`) on the next write, not silently. Exported so `artifacts.ts` can
+ * call it again after `reconcileTree` reassigns ids, on the same tree this parses.
+ */
+export function stampParents(node: ParsedBlockNode): void {
+  for (const child of node.children ?? []) {
+    child.parent = `BlockNode/${node.blockId}`;
+    stampParents(child);
+  }
+}
+
 export function parseMarkdownTree(markdown: string): ParsedMarkdown {
   const processor = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter, ['yaml']);
   const ast = processor.parse(markdown);
@@ -342,6 +372,7 @@ export function parseMarkdownTree(markdown: string): ParsedMarkdown {
   const yamlNode: any = (ast.children ?? []).find((c: any) => c.type === 'yaml');
   const frontmatter = typeof yamlNode?.value === 'string' ? (yamlNode.value as string) : undefined;
 
-  const rootBlock = convertAstNode(ast, markdown);
-  return { root: rootBlock!, ...(frontmatter !== undefined ? { frontmatter } : {}) };
+  const rootBlock = convertAstNode(ast, markdown)!;
+  stampParents(rootBlock);
+  return { root: rootBlock, ...(frontmatter !== undefined ? { frontmatter } : {}) };
 }

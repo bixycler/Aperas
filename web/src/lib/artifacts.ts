@@ -13,12 +13,13 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { parseMarkdownTree, extractAbstract, WIKILINK_PREDICATE, type ParsedBlockNode } from './astParser';
+import { parseMarkdownTree, extractAbstract, stampParents, WIKILINK_PREDICATE, type ParsedBlockNode } from './astParser';
 import { generateNodeId } from './snowflake';
 import { getArtifactTreeViaGraphQL } from './graphql';
 import { reconcileTree, matchLeftoverByAbstract, type ReconciliationStats } from './reconcile';
 import type { PropEntry } from './props';
-import { resolveDirectOrSnowflake } from './directResolve';
+import { resolveNodeRefOrNull, resolveIdToPath } from './nodeRef';
+import { updateBlockNode } from './crud';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -27,12 +28,19 @@ export interface ArtifactRecord {
   path: string;
   title: string;
   text?: string;
-  fileHash: string;
-  lastTrackedAt: string;
+  /** Optional (not just always-present-in-practice): a holder ArtifactNode (Aperas-deep-path-
+   *  resolution-design.md §7.2) has no real file on disk yet, so no hash/track-time to record —
+   *  cleared to a real value once `trackArtifact` genuinely tracks it. */
+  fileHash?: string;
+  lastTrackedAt?: string;
   ingestedHash?: string;
   lastIngestedAt?: string;
   root?: any;
   props?: PropEntry[];
+  /** BaseNode field (Aperas-agentic-query-tools-design.md §4) — carried forward across re-track
+   *  the same way text/ingestedHash/root already are, so re-tracking changed content doesn't
+   *  silently reset a kg:unfold'd artifact back to folded. */
+  unfolded?: boolean;
 }
 
 export function getArtifactsDir(): string {
@@ -97,7 +105,8 @@ function normalizeArtifactDoc(doc: any): ArtifactRecord {
     ...(doc.ingestedHash ? { ingestedHash: doc.ingestedHash } : {}),
     ...(doc.lastIngestedAt ? { lastIngestedAt: doc.lastIngestedAt } : {}),
     ...(doc.root ? { root: doc.root } : {}),
-    ...(doc.props?.length ? { props: doc.props } : {})
+    ...(doc.props?.length ? { props: doc.props } : {}),
+    ...(doc.unfolded ? { unfolded: doc.unfolded } : {})
   };
 }
 
@@ -130,7 +139,8 @@ export async function trackArtifact(client: any, artifactPath: string): Promise<
     ...(existing?.text ? { text: existing.text } : {}),
     ...(existing?.ingestedHash ? { ingestedHash: existing.ingestedHash } : {}),
     ...(existing?.lastIngestedAt ? { lastIngestedAt: existing.lastIngestedAt } : {}),
-    ...(existing?.root ? { root: existing.root } : {})
+    ...(existing?.root ? { root: existing.root } : {}),
+    ...(existing?.unfolded ? { unfolded: existing.unfolded } : {})
   };
 
   console.log(`[Aperas Artifacts] Tracking '${artifactPath}' (hash: ${fileHash.slice(0, 12)}...)`);
@@ -246,46 +256,92 @@ function countBlocks(node: any): number {
   return 1 + (node.children || []).reduce((sum: number, child: any) => sum + countBlocks(child), 0);
 }
 
+interface PendingLinkCodes {
+  blockId: string;
+  codes: string[];
+}
+
 /**
- * Resolves each block's raw `linkCodes` (astParser.ts — a pure, DB-less parser can only capture
- * the raw `[[code]]` text, not resolve it) into real `BlockNode.links` entries, in place.
- * Best-effort per link (Aperas-markdown-fractal-mapping-design.md §4): a code that doesn't
- * resolve to any live node is skipped with a warning, never fails the whole ingestion. `Link`
- * (the one concrete `BaseLink` leaf — `schema.json`) is written as a plain embedded object with
- * no `@id`, the same way a nested `BlockNode` child already is; TerminusDB creates it as its own
- * independent document as a side effect of the parent's write. Every `Link` created here uses the
- * reserved `WIKILINK_PREDICATE` (astParser.ts) — never `"references"`, which is `kg:link`'s own
- * fixed predicate for manually-authored entries (Aperas-interactive-summarization-design.md §7).
- *
- * `node.links` at the point this runs already carries forward only non-wikilink-predicate entries
- * (`reconcile.ts`'s `carryForwardFields` via `graphql.ts`'s `normalizeLinks`, which drops any
- * `WIKILINK_PREDICATE` entry before it ever reaches here) — so appending this call's freshly-
- * resolved batch on top is safe and complete: it's always this block's *entire* current set of
- * wikilink-derived links, replacing whatever wikilink-derived links existed before rather than
- * accumulating duplicates alongside them, while `kg:link`-authored entries are left untouched.
- * Confirmed live: re-ingesting an unchanged wikilink-bearing block previously grew its `links`
- * array by one duplicate `Link` document every single pass (same target, new id, orphaning the
- * old one) — fixed by this predicate split, not just disclosed.
+ * Strips `linkCodes` off every node in the tree (it's parser-only bookkeeping — `schema.json`
+ * has no such field, so leaving it in on the big write below fails schema check with
+ * `unknown_property_for_type`, confirmed live), collecting `{blockId, codes}` pairs along the
+ * way for `resolveBlockLinks` to resolve in its own separate pass afterward. Called *before* the
+ * write; `resolveBlockLinks` itself runs *after* it (see that function's own doc comment).
  */
-async function resolveBlockLinks(client: any, node: ParsedBlockNode): Promise<void> {
-  const codes = node.linkCodes;
-  if (codes && codes.length > 0) {
-    const links: Array<{ "@type": "Link"; target: string; predicate: string }> = [];
-    for (const code of codes) {
-      const target = await resolveDirectOrSnowflake(client, code);
-      if (target) {
-        links.push({ "@type": "Link", target, predicate: WIKILINK_PREDICATE });
-      } else {
-        console.warn(`[Aperas Artifacts] Link target '[[${code}]]' in block ${node.blockId} didn't resolve to any live node — skipping.`);
-      }
-    }
-    if (links.length > 0) {
-      (node as any).links = [...((node as any).links ?? []), ...links];
-    }
+function extractLinkCodes(node: ParsedBlockNode, out: PendingLinkCodes[] = []): PendingLinkCodes[] {
+  if (node.linkCodes && node.linkCodes.length > 0) {
+    out.push({ blockId: node.blockId, codes: node.linkCodes });
   }
   delete node.linkCodes;
   for (const child of node.children ?? []) {
-    await resolveBlockLinks(client, child);
+    extractLinkCodes(child, out);
+  }
+  return out;
+}
+
+/**
+ * Resolves each block's raw `linkCodes` (astParser.ts — a pure, DB-less parser can only capture
+ * the raw `[[code]]` text, not resolve it — collected pre-write by `extractLinkCodes`) into real
+ * `BlockNode.links` entries, patched onto the already-persisted block. `Link` (the one concrete
+ * `BaseLink` leaf — `schema.json`) is written as a plain embedded object with no `@id`, the same
+ * way a nested `BlockNode` child already is; TerminusDB creates it as its own independent
+ * document as a side effect of the update. Every `Link` created here uses the reserved
+ * `WIKILINK_PREDICATE` (astParser.ts) — never `"references"`, which is `kg:link`'s own fixed
+ * predicate for manually-authored entries (Aperas-interactive-summarization-design.md §7).
+ *
+ * **Deliberately runs *after* the tree's own big write, not before**: a `[[wikilink]]` target
+ * can be a deep path (Aperas-deep-path-resolution-design.md §2.1) whose implicit base is *this
+ * block's own path* — and `resolveIdToPath` (used to compute that base) only works on an
+ * already-persisted `.parent` chain. Resolving before the write would see the *previous*
+ * ingestion's stale tree for anything inside this same artifact (including a heading newly added
+ * in this very edit) — a real chicken-and-egg bug, not just a theoretical one, since the whole
+ * point of this pass is to resolve links against content that may be brand new. Running after
+ * costs one extra `updateBlockNode` round trip per block that actually has a wikilink (accepted
+ * — the same per-block-write cost `kg:title`/`kg:link` already pay), in exchange for seeing the
+ * real, current tree, including itself, and `--create-holder` (passed unconditionally here — a
+ * forward reference is exactly what it's for, Aperas-deep-path-resolution-design.md §7.3) for
+ * whatever doesn't exist yet.
+ *
+ * Best-effort per link: a code that doesn't resolve (and can't even be imagined — no title
+ * available or an ambiguous segment) is skipped with a warning, never fails the whole ingestion.
+ * `updateBlockNode`'s patch is the *complete* desired `links` array, so this fetches the block's
+ * current (already carried-forward, non-wikilink) links fresh and appends this pass's freshly-
+ * resolved batch on top — always this block's entire current set of wikilink-derived links,
+ * replacing whatever existed before rather than accumulating duplicates, while `kg:link`-authored
+ * entries are left untouched. Confirmed live: re-ingesting an unchanged wikilink-bearing block
+ * previously grew its `links` array by one duplicate `Link` document every single pass (same
+ * target, new id, orphaning the old one) — fixed by the predicate split this builds on.
+ */
+async function resolveBlockLinks(client: any, pending: PendingLinkCodes[]): Promise<void> {
+  for (const { blockId, codes } of pending) {
+    const fullId = `BlockNode/${blockId}`;
+    const basePath = await resolveIdToPath(client, fullId);
+    const links: Array<{ "@type": "Link"; target: string; predicate: string }> = [];
+    for (const code of codes) {
+      let target: string | null = null;
+      try {
+        target = await resolveNodeRefOrNull(client, code, {
+          base: basePath ?? undefined,
+          createHolder: true,
+          // Only the name segments — `--titles` tail-aligns against nameCount (Aperas-deep-path-
+          // resolution-design.md §7.1), which excludes `.`/`..` navigation tokens entirely; a
+          // raw `code.split('/')` would include those literally and overshoot that count.
+          titles: code.split('/').filter((s) => s !== '.' && s !== '..'),
+        });
+      } catch (err: any) {
+        console.warn(`[Aperas Artifacts] Link target '[[${code}]]' in block ${blockId} failed to resolve: ${err.message || err}`);
+      }
+      if (target) {
+        links.push({ "@type": "Link", target, predicate: WIKILINK_PREDICATE });
+      } else {
+        console.warn(`[Aperas Artifacts] Link target '[[${code}]]' in block ${blockId} didn't resolve to any live node — skipping.`);
+      }
+    }
+    if (links.length > 0) {
+      const current = await client.getDocument({ id: fullId }).catch(() => null);
+      const existingLinks = current && typeof current !== 'string' ? (current.links ?? []) : [];
+      await updateBlockNode(client, fullId, { links: [...existingLinks, ...links] });
+    }
   }
 }
 
@@ -345,7 +401,16 @@ export async function ingestArtifact(client: any, artifactPath: string): Promise
     }
   }
 
-  await resolveBlockLinks(client, finalRoot);
+  // Re-stamp every descendant's `parent` now, after reconciliation may have reassigned blockIds
+  // (carryForwardFields) — the original parse-time stamp (astParser.ts) would otherwise leave
+  // stale references to discarded pre-reassignment ids. Then the one external stamp: the tree's
+  // own root has no parent yet, since nothing inside the parser knows the owning ArtifactNode.
+  stampParents(finalRoot);
+  (finalRoot as any).parent = `ArtifactNode/${record.artifactId}`;
+
+  // Pulled off (and deleted from) the tree before the write below — `linkCodes` is parser-only
+  // bookkeeping, not a real schema field (see extractLinkCodes's own doc comment).
+  const pendingLinks = extractLinkCodes(finalRoot);
 
   const blockCount = countBlocks(finalRoot);
   console.log(`[Aperas Artifacts] Ingesting '${artifactPath}' as fractal tree (${blockCount} blocks)...`);
@@ -377,6 +442,10 @@ export async function ingestArtifact(client: any, artifactPath: string): Promise
     undefined,
     true
   );
+
+  // After, not before (see resolveBlockLinks's own doc comment): the tree just written is now
+  // the queryable, current one — including whatever's brand new in this very edit.
+  await resolveBlockLinks(client, pendingLinks);
 
   return { blockCount, reconciliation };
 }

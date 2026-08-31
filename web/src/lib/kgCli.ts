@@ -10,12 +10,15 @@
  * `npm run kg:assert -- <source> <predicate> <target>`   — commit a real extrinsic Assertion (see Aperas-basic-assertion-skill-design.md). source/target accept a full node id (BlockNode/…, ArtifactNode/…, FolderNode/…) or a bare artifact path.
  * `npm run kg:assertions -- <node>`                       — list every Assertion touching a node (both directions).
  * `npm run kg:unassert -- <source> <predicate> <target>`  — delete exactly the matching Assertion(s).
- * `npm run kg:tree -- [path] [--depth N]`                 — deep, title-only structural map (Aperas-agentic-query-tools-design.md §3).
- * `npm run kg:unfold -- <path>`                            — one breadth-first step: this node's title plus each immediate child's full text; persists BlockNode.unfolded = true (§4).
- * `npm run kg:fold -- <path>`                               — inverse of kg:unfold; persists BlockNode.unfolded = false.
+ * `npm run kg:tree -- [path] [--depth N] [--no-holders] [--unfolded]` — deep structural map (Aperas-agentic-query-tools-design.md §3); title-only by default. `--unfolded` renders the combined kg:fold/kg:unfold shape instead — full text at nodes whose parent is unfolded, stopping (with a hint) at folded ones (§4.1).
+ * `npm run kg:unfold -- <path>`                            — one breadth-first step: this node's title plus each immediate child's full text; persists unfolded = true (§4).
+ * `npm run kg:fold -- <path>`                               — inverse of kg:unfold; persists unfolded = false.
  * `npm run kg:search -- <pattern>`                          — regex/keyword search over every node's title/text (§5).
  * `npm run kg:title -- <path> [--recursive]`                 — interactively prompt for a real title on every still-unlabeled BlockNode in scope (Aperas-interactive-summarization-design.md §3). No `--recursive`: just <path> itself, if it's a BlockNode. `--recursive`: <path>'s full uniform tree.
  * `npm run kg:link -- <path> [--recursive] [--all]`          — interactively prompt for cross-links on BlockNodes in scope (§7). `--all` re-prompts blocks that already have links, not just unlinked ones.
+ * `npm run kg:path -- <id>`                                   — id → path: walks BlockNode.parent up to the owning ArtifactNode/FolderNode, printing the reconstructed folder/file/heading/title path (Aperas-deep-path-resolution-design.md).
+ * `npm run kg:resolve -- [--base <path>] <path> [<path>...]`  — path → id: deep addressing through folder/file/heading/title, `.`/`..`/leading `/` grammar, exact-then-prefix matching (Aperas-deep-path-resolution-design.md §1-6).
+ * `npm run kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]` — same, but creates a holder (tombstone-like placeholder) for whatever's missing instead of declining (§7).
  */
 
 import { writeFileSync } from 'node:fs';
@@ -28,7 +31,7 @@ import { exportJsonLd, importJsonLd } from './export';
 import { projectArtifactToMarkdown, projectFolderToReadme } from './project';
 import { insertAssertion, deleteAssertion, updateBlockNode } from './crud';
 import { queryNodeAssertions, searchNodes } from './woql';
-import { resolveNodeRefOrNull } from './nodeRef';
+import { resolveNodeRefOrNull, resolveNodeRefDetail, resolveIdToPath } from './nodeRef';
 
 const FULL_NODE_ID_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
 
@@ -59,21 +62,55 @@ function displayLabel(id: string, doc: any): string {
   return kind === 'BlockNode' ? doc.type : kind;
 }
 
-async function printTree(client: any, id: string, depth: number, maxDepth: number | undefined, lines: string[]): Promise<void> {
-  const indent = '  '.repeat(depth);
+/**
+ * `noHolders` (Aperas-deep-path-resolution-design.md §7.5) hides a holder's own line but still
+ * recurses into its children *at the same depth* it would have used for the hidden node itself —
+ * a holder is per-node, not per-subtree (§7.2: a still-holder FolderNode can have a real
+ * ArtifactNode underneath once that one piece gets tracked), so hiding the parent line can't also
+ * hide what might be real beneath it. A holder whose entire subtree is also holders just produces
+ * no output for that whole branch, one hidden line at a time — reads the same as pruning, without
+ * a separate subtree-level check to get wrong.
+ *
+ * `unfoldedMode`/`revealed` render the combined `kg:fold`/`kg:unfold` shape (Aperas-agentic-
+ * query-tools-design.md §4.1): `revealed` says whether *this* node's own parent had
+ * `unfolded === true` — if so, this node prints full `text` instead of `title`. Whether *this*
+ * node's own children get recursed into (and, if so, revealed) depends on this node's own
+ * `unfolded` flag, checked below — `revealed` and "does this node gate its children" are
+ * different questions about two different nodes, one level apart.
+ */
+async function printTree(client: any, id: string, depth: number, maxDepth: number | undefined, noHolders: boolean, unfoldedMode: boolean, revealed: boolean, lines: string[]): Promise<void> {
   const doc = await getNode(client, id);
   if (!doc) {
-    lines.push(`${indent}${id}  [?]  <not found>`);
+    lines.push(`${'  '.repeat(depth)}${id}  [?]  <not found>`);
     return;
   }
-  lines.push(`${indent}${id}  [${displayLabel(id, doc)}]  ${doc.title}`);
+  const hidden = noHolders && doc.holder === true;
+  if (!hidden) {
+    const indent = '  '.repeat(depth);
+    const holderTag = doc.holder === true ? '  (holder)' : '';
+    let content: string;
+    if (unfoldedMode && revealed) {
+      content = nodeKindFromId(id) === 'BlockNode' && doc.type === 'list'
+        ? `(no text of its own — see kg:unfold ${id})`
+        : (doc.text ?? '');
+    } else {
+      content = doc.title;
+    }
+    lines.push(`${indent}${id}  [${displayLabel(id, doc)}]  ${content}${holderTag}`);
+  }
   const refs = childRefs(doc, nodeKindFromId(id));
-  if (maxDepth !== undefined && depth >= maxDepth) {
+  const childDepth = hidden ? depth : depth + 1;
+  if (!hidden && maxDepth !== undefined && depth >= maxDepth) {
     if (refs.length > 0) lines.push(`${'  '.repeat(depth + 1)}…`);
     return;
   }
+  if (unfoldedMode && doc.unfolded !== true) {
+    if (!hidden && refs.length > 0) lines.push(`${'  '.repeat(childDepth)}…  (folded — kg:unfold ${id} to expand)`);
+    return;
+  }
+  const childRevealed = unfoldedMode && doc.unfolded === true;
   for (const childId of refs) {
-    await printTree(client, childId, depth + 1, maxDepth, lines);
+    await printTree(client, childId, childDepth, maxDepth, noHolders, unfoldedMode, childRevealed, lines);
   }
 }
 
@@ -127,16 +164,13 @@ function createLineReader(rl: any): { next: () => Promise<string | null> } {
 }
 
 /**
- * Sets BlockNode.unfolded, fetch-then-resubmit (children is a required List — see
- * Aperas-agentic-query-tools-design.md §4). `unfolded` only exists on BlockNode — kg:unfold/
- * kg:fold still work uniformly against an ArtifactNode/FolderNode target (display an id/kind/
- * title and its immediate children, same as any node), just with nothing to persist there, so
- * this is a no-op note rather than a hard failure for those kinds.
+ * Sets `unfolded`, fetch-then-resubmit (`children`, or for ArtifactNode the singular `root`, is a
+ * required field — see Aperas-agentic-query-tools-design.md §4). `unfolded` lives on `BaseNode`
+ * (promoted from a `BlockNode`-only field — that scoping was a loophole from before
+ * ArtifactNode/FolderNode existed as separate concrete classes, not a deliberate restriction), so
+ * this persists uniformly against any node kind now.
  */
 async function setUnfolded(client: any, id: string, value: boolean): Promise<boolean> {
-  if (nodeKindFromId(id) !== 'BlockNode') {
-    return false;
-  }
   const doc = await getNode(client, id);
   if (!doc) {
     console.error(`[Aperas KG CLI] Node '${id}' not found.`);
@@ -146,7 +180,7 @@ async function setUnfolded(client: any, id: string, value: boolean): Promise<boo
     { ...doc, unfolded: value },
     {},
     client.db(),
-    `${value ? 'Unfold' : 'Fold'} BlockNode ${id}`,
+    `${value ? 'Unfold' : 'Fold'} ${id}`,
     undefined,
     undefined,
     undefined,
@@ -171,7 +205,7 @@ async function resolveNodeRef(client: any, ref: string): Promise<string> {
 async function main() {
   const [command, ...paths] = process.argv.slice(2);
 
-  const COMMANDS = ['track', 'ingest', 'export', 'import', 'project', 'assert', 'assertions', 'unassert', 'tree', 'unfold', 'fold', 'search', 'title', 'link'];
+  const COMMANDS = ['track', 'ingest', 'export', 'import', 'project', 'assert', 'assertions', 'unassert', 'tree', 'unfold', 'fold', 'search', 'title', 'link', 'path', 'resolve'];
   if (!COMMANDS.includes(command)) {
     console.error(`Usage: kg:${COMMANDS.join(' | kg:')}`);
     process.exit(1);
@@ -260,19 +294,22 @@ async function main() {
       console.log(`[Aperas KG CLI] Projected '${path}' to '${targetFile}'.`);
     }
   } else if (command === 'tree') {
-    const depthFlagIdx = paths.indexOf('--depth');
+    const noHolders = paths.includes('--no-holders');
+    const unfoldedMode = paths.includes('--unfolded');
+    const withoutFlag = paths.filter((p) => p !== '--no-holders' && p !== '--unfolded');
+    const depthFlagIdx = withoutFlag.indexOf('--depth');
     let maxDepth: number | undefined;
     let pathArg = '.';
     if (depthFlagIdx !== -1) {
-      maxDepth = Number(paths[depthFlagIdx + 1]);
-      const rest = paths.filter((_, i) => i !== depthFlagIdx && i !== depthFlagIdx + 1);
+      maxDepth = Number(withoutFlag[depthFlagIdx + 1]);
+      const rest = withoutFlag.filter((_, i) => i !== depthFlagIdx && i !== depthFlagIdx + 1);
       if (rest[0]) pathArg = rest[0];
-    } else if (paths[0]) {
-      pathArg = paths[0];
+    } else if (withoutFlag[0]) {
+      pathArg = withoutFlag[0];
     }
     const id = await resolveNodeRef(client, pathArg);
     const lines: string[] = [];
-    await printTree(client, id, 0, maxDepth, lines);
+    await printTree(client, id, 0, maxDepth, noHolders, unfoldedMode, false, lines);
     console.log(lines.join('\n'));
   } else if (command === 'unfold' || command === 'fold') {
     const [pathArg] = paths;
@@ -282,8 +319,8 @@ async function main() {
     }
     const id = await resolveNodeRef(client, pathArg);
     if (command === 'fold') {
-      const persisted = await setUnfolded(client, id, false);
-      console.log(persisted ? `[Aperas KG CLI] Folded ${id}.` : `[Aperas KG CLI] '${id}' has no 'unfolded' state to fold (only BlockNode does) — nothing to do.`);
+      await setUnfolded(client, id, false);
+      console.log(`[Aperas KG CLI] Folded ${id}.`);
     } else {
       const doc = await getNode(client, id);
       if (!doc) {
@@ -307,22 +344,88 @@ async function main() {
       await setUnfolded(client, id, true);
     }
   } else if (command === 'search') {
-    const [pattern] = paths;
+    const noHolders = paths.includes('--no-holders');
+    const [pattern] = paths.filter((p) => p !== '--no-holders');
     if (!pattern) {
-      console.error('Usage: kg:search -- <pattern>');
+      console.error('Usage: kg:search -- <pattern> [--no-holders]');
       process.exit(1);
     }
     const matches = await searchNodes(client, pattern);
-    if (matches.length === 0) {
+    let shown = 0;
+    for (const m of matches) {
+      let label = nodeKindFromId(m.id);
+      // Fetched unconditionally now, not just for BlockNode (Aperas-deep-path-resolution-
+      // design.md §7.5) — also the only way to know `.holder` for the mark/filter, since
+      // searchNodes' bare {id, field, value} never carries it.
+      const doc = await getNode(client, m.id);
+      if (label === 'BlockNode' && doc?.type) label = doc.type;
+      const isHolder = doc?.holder === true;
+      if (noHolders && isHolder) continue;
+      shown++;
+      console.log(`${m.id}  [${label}]  ${m.field}  ${m.value}${isHolder ? '  (holder)' : ''}`);
+    }
+    if (shown === 0) {
       console.log(`[Aperas KG CLI] No matches for /${pattern}/.`);
-    } else {
-      for (const m of matches) {
-        let label = nodeKindFromId(m.id);
-        if (label === 'BlockNode') {
-          const doc = await getNode(client, m.id);
-          if (doc?.type) label = doc.type;
+    }
+  } else if (command === 'path') {
+    const [idArg] = paths;
+    if (!idArg) {
+      console.error('Usage: kg:path -- <id>');
+      process.exit(1);
+    }
+    const id = await resolveNodeRef(client, idArg);
+    const path = await resolveIdToPath(client, id);
+    if (path === null) {
+      console.error(`[Aperas KG CLI] '${id}' has no walkable parent chain — a Link/Assertion (no structural parent), or a BlockNode ingested before the 'parent' field existed (needs re-ingestion).`);
+      process.exit(1);
+    }
+    console.log(path);
+  } else if (command === 'resolve') {
+    const baseIdx = paths.indexOf('--base');
+    const base = baseIdx !== -1 ? paths[baseIdx + 1] : undefined;
+    const createHolder = paths.includes('--create-holder');
+    const titlesIdx = paths.indexOf('--titles');
+    const titles = titlesIdx !== -1 ? paths.slice(titlesIdx + 1) : undefined;
+
+    const consumed = new Set<number>();
+    if (baseIdx !== -1) { consumed.add(baseIdx); consumed.add(baseIdx + 1); }
+    if (titlesIdx !== -1) { for (let i = titlesIdx; i < paths.length; i++) consumed.add(i); }
+    const createHolderIdx = paths.indexOf('--create-holder');
+    if (createHolderIdx !== -1) consumed.add(createHolderIdx);
+    const rest = paths.filter((_, i) => !consumed.has(i));
+
+    if (rest.length === 0) {
+      console.error('Usage: kg:resolve -- [--base <path>] <path> [<path>...]');
+      console.error('       kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]');
+      process.exit(1);
+    }
+
+    if (createHolder && rest.length !== 1) {
+      console.error('[Aperas KG CLI] --create-holder takes exactly one <path> (Aperas-deep-path-resolution-design.md §1).');
+      process.exit(1);
+    }
+
+    for (const pathArg of rest) {
+      let detail;
+      try {
+        detail = await resolveNodeRefDetail(client, pathArg, { base, createHolder, titles: createHolder ? (titles ?? []) : undefined });
+      } catch (err: any) {
+        console.error(`[Aperas KG CLI] '${pathArg}': ${err.message || err}`);
+        process.exit(1);
+      }
+      if (!detail) {
+        console.error(`[Aperas KG CLI] '${pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
+        process.exit(1);
+      }
+      if (createHolder) {
+        // §7.1's "Output": one line per segment actually walked, existing vs. created.
+        for (const entry of detail.trace) {
+          console.log(`${entry.id}  [${entry.kind}]  ${entry.title}  ${entry.created ? '(created holder)' : '(existing)'}`);
         }
-        console.log(`${m.id}  [${label}]  ${m.field}  ${m.value}`);
+      } else {
+        // §1's plain form: one line per input, the end result only — not a per-segment trace.
+        const doc = await getNode(client, detail.id);
+        console.log(`${detail.id}  [${displayLabel(detail.id, doc)}]  ${doc?.title ?? ''}`);
       }
     }
   } else if (command === 'title') {

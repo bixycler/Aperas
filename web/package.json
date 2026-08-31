@@ -21,7 +21,9 @@
     "kg:fold": "npx tsx src/lib/kgCli.ts fold",
     "kg:search": "npx tsx src/lib/kgCli.ts search",
     "kg:title": "npx tsx src/lib/kgCli.ts title",
-    "kg:link": "npx tsx src/lib/kgCli.ts link"
+    "kg:link": "npx tsx src/lib/kgCli.ts link",
+    "kg:path": "npx tsx src/lib/kgCli.ts path",
+    "kg:resolve": "npx tsx src/lib/kgCli.ts resolve"
   },
   "dependencies": {
     "clsx": "^2.1.1",

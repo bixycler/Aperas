@@ -42,11 +42,20 @@ function collectBlockIds(node: any): string[] {
  * Tears down the demo ArtifactNode/BlockNode tree, if any exists, so re-runs (and a
  * fresh start) are idempotent. Order matters: TerminusDB enforces referential
  * integrity, so FolderNode/. has to stop referencing the demo ArtifactNode (by
- * rebuilding the folder tree from a demo-file-free disk) before the ArtifactNode can
- * be deleted, which in turn has to happen before its BlockNodes (still pointed to via
- * `root`) can be deleted. Re-derives the block ids fresh via GraphQL each call rather
- * than trusting a caller-tracked list, so it's correct whether there's fresh state
- * from this run or stale state left over from an earlier crashed one.
+ * rebuilding the folder tree from a demo-file-free disk) before either can be deleted.
+ * Re-derives the block ids fresh via GraphQL each call rather than trusting a
+ * caller-tracked list, so it's correct whether there's fresh state from this run or
+ * stale state left over from an earlier crashed one.
+ *
+ * The ArtifactNode and its BlockNode tree are now a genuine reference cycle, not a
+ * one-way dependency: `ArtifactNode.root` points down at the root block, and (since
+ * `BlockNode.parent` was added — Aperas-deep-path-resolution-design.md) the root
+ * block's own `parent` points back up at the ArtifactNode. Deleting the ArtifactNode
+ * in its own earlier call, before its blocks, fails referential integrity now — same
+ * class of cycle `findLinkIdsTargeting`'s own comment already documents for `Link`↔
+ * `BlockNode` (confirmed live as a real regression before this fix). Same resolution:
+ * delete everything in the cycle together, in one combined batch, since TerminusDB's
+ * referential-integrity check only looks for references from *outside* the batch.
  */
 async function resetDemoState(client: any, demoPath: string, demoReadmePath?: string): Promise<void> {
   if (existsSync(demoPath)) unlinkSync(demoPath);
@@ -56,24 +65,25 @@ async function resetDemoState(client: any, demoPath: string, demoReadmePath?: st
   // ArtifactNode's key is its Snowflake-generated artifactId, not path (Appendix G) — look up
   // its actual @id via a path-filtered query rather than guessing `ArtifactNode/<path>`.
   const record = await getArtifactRecord(client, DEMO_ARTIFACT_NAME);
-  if (record) {
-    await deleteDocumentIfExists(client, `terminusdb:///data/ArtifactNode/${record.artifactId}`);
-  }
+  const artifactFullId = record ? `terminusdb:///data/ArtifactNode/${record.artifactId}` : null;
+
   if (tree?.root) {
     const ids = collectBlockIds(tree.root);
     // Assertion points AT a block (source/target), independently of everything else, so
-    // deleting it first (before the blocks) is always safe. A `Link` is different: it sits in a
-    // genuine reference cycle with the blocks around it (an owning block's `links` points at the
-    // Link, which `target`s some other block) — see findLinkIdsTargeting's own comment. Deleted
-    // separately in either order, each side fails as still-referenced by the other; deleted
-    // together with the blocks in one combined batch, TerminusDB's referential-integrity check
-    // only looks for references from *outside* the batch, so the cycle resolves cleanly.
+    // deleting it first (before the blocks) is always safe.
     for (const id of ids) {
       await deleteAssertionsInvolvingNode(client, `BlockNode/${id}`);
     }
     const blockFullIds = ids.map((id) => `BlockNode/${id}`);
     const linkIds = await findLinkIdsTargeting(client, blockFullIds);
-    await deleteDocumentsIfExist(client, [...blockFullIds.map((id) => `terminusdb:///data/${id}`), ...linkIds]);
+    await deleteDocumentsIfExist(client, [
+      ...(artifactFullId ? [artifactFullId] : []),
+      ...blockFullIds.map((id) => `terminusdb:///data/${id}`),
+      ...linkIds,
+    ]);
+  } else if (artifactFullId) {
+    // No block tree to cycle with (e.g. tracked but never ingested) — safe on its own.
+    await deleteDocumentIfExists(client, artifactFullId);
   }
 }
 
@@ -253,7 +263,13 @@ An introductory sentence.
 
       console.log("5. Re-ingesting an edited version and verifying reconciliation...");
       const rootBareCode = artifactTree.root.blockId;
-      const editedMarkdown = sampleMarkdown + `\n\n## A New Section\n\nA freshly added paragraph.\n\nA [self link]([[${rootBareCode}]]) back to the root, and a [dangling one]([[ZZZZZZZZZZZZZ]]) that shouldn't resolve.`;
+      // Three link targets, one of each shape Aperas-deep-path-resolution-design.md §7
+      // distinguishes: a bare snowflake code (resolves directly, tier 1/2), a plain heading-like
+      // name that doesn't exist yet (§7 — `--create-holder` turns this into a real holder
+      // BlockNode instead of dropping the reference), and enough `..` to walk clean past the
+      // artifacts root into a segment with no `.md` boundary to anchor an imagined artifact on
+      // (§7.2 — still correctly declines, holder flag or not).
+      const editedMarkdown = sampleMarkdown + `\n\n## A New Section\n\nA freshly added paragraph.\n\nA [self link]([[${rootBareCode}]]) back to the root, a [forward reference]([[NotYetWritten]]) that should become a holder, and a [truly dangling one]([[../../../../nowhere]]) that still can't resolve.`;
       writeFileSync(demoPath, editedMarkdown, 'utf-8');
       await trackArtifact(client, DEMO_ARTIFACT_NAME);
       const reingestResult = await ingestArtifact(client, DEMO_ARTIFACT_NAME);
@@ -290,14 +306,23 @@ An introductory sentence.
       // kg:unfold make the same choice for the same reason).
       const linkBlockDoc = await client.getDocument({ id: `BlockNode/${linkBlockSummary.blockId}` });
       const linkIds: string[] = linkBlockDoc?.links ?? [];
-      if (linkIds.length !== 1) {
-        throw new Error(`Expected exactly one resolved link (the dangling one should be skipped), got ${linkIds.length}: ${JSON.stringify(linkIds)}`);
+      if (linkIds.length !== 2) {
+        throw new Error(`Expected exactly two resolved links (self-link + forward-reference-turned-holder; the truly-dangling one should still be skipped), got ${linkIds.length}: ${JSON.stringify(linkIds)}`);
       }
-      const linkDoc = await client.getDocument({ id: linkIds[0] });
-      if (linkDoc?.predicate !== WIKILINK_PREDICATE || linkDoc?.target !== rootId) {
-        throw new Error(`Expected the resolved Link to target ${rootId} with predicate '${WIKILINK_PREDICATE}', got: ${JSON.stringify(linkDoc)}`);
+      const linkDocs = await Promise.all(linkIds.map((id) => client.getDocument({ id })));
+      const selfLinkDoc = linkDocs.find((l: any) => l?.target === rootId);
+      if (!selfLinkDoc || selfLinkDoc.predicate !== WIKILINK_PREDICATE) {
+        throw new Error(`Expected a resolved Link targeting ${rootId} with predicate '${WIKILINK_PREDICATE}', got: ${JSON.stringify(linkDocs)}`);
       }
-      console.log(`   - Resolved link: (${linkIds[0]}) --[${WIKILINK_PREDICATE}]--> (${rootId}); dangling link correctly skipped.`);
+      const holderLinkDoc = linkDocs.find((l: any) => l?.target !== rootId);
+      if (!holderLinkDoc) {
+        throw new Error(`Expected a second resolved Link targeting a newly-created holder, got: ${JSON.stringify(linkDocs)}`);
+      }
+      const holderTargetDoc = await client.getDocument({ id: holderLinkDoc.target });
+      if (holderTargetDoc?.holder !== true || holderTargetDoc?.title !== 'NotYetWritten') {
+        throw new Error(`Expected the forward-reference link to target a holder BlockNode titled 'NotYetWritten', got: ${JSON.stringify(holderTargetDoc)}`);
+      }
+      console.log(`   - Resolved links: self-link -> ${rootId}; forward reference -> new holder ${holderLinkDoc.target} ("${holderTargetDoc.title}"); truly-dangling link correctly skipped.`);
       console.log("   [✓] BlockNode.links extraction verified successfully.\n");
 
       console.log("6. Ingesting FolderNode structural tree...");

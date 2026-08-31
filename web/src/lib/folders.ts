@@ -30,13 +30,19 @@ export interface ParsedFolderNode {
   text?: string;
   children: unknown[];
   props?: PropEntry[];
+  /** BaseNode field (Aperas-agentic-query-tools-design.md §4) — the whole tree is rebuilt fresh
+   *  from disk on every ingest, so unlike ArtifactNode's field-by-field record reuse, this has to
+   *  be explicitly read back from `existingByPath` or a re-ingest silently folds every unfolded
+   *  folder back up. */
+  unfolded?: boolean;
 }
 
 function buildFolderTree(
   absoluteDir: string,
   artifactsDir: string,
   folderIdByPath: Map<string, string>,
-  artifactIdByPath: Map<string, string>
+  artifactIdByPath: Map<string, string>,
+  existingByPath: Map<string, any>
 ): ParsedFolderNode {
   const relPath = relative(artifactsDir, absoluteDir);
   const isRoot = relPath === '';
@@ -57,7 +63,7 @@ function buildFolderTree(
     const stat = statSync(fullPath);
 
     if (stat.isDirectory()) {
-      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath));
+      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath));
       continue;
     }
     if (!entry.endsWith('.md')) continue;
@@ -80,6 +86,14 @@ function buildFolderTree(
       readmeProps = frontmatter !== undefined
         ? [{ "@type": "StringProp", key: "frontmatter", value: frontmatter }]
         : undefined;
+      // readmeChildren are relocated straight into FolderNode.children, never kept under a
+      // persisted root block of their own — astParser.ts's stampParents pointed them at
+      // parsedRoot/firstChild (discarded, never written), so that's stale now. Re-stamp only the
+      // top level to the FolderNode itself; every deeper descendant's `parent` is already correct
+      // relative to *its own* still-intact subtree.
+      for (const child of readmeChildren as any[]) {
+        child.parent = `FolderNode/${folderId}`;
+      }
     } else {
       const artifactPath = relative(artifactsDir, fullPath);
       // Reference an independently tracked/ingested ArtifactNode by its actual (Snowflake)
@@ -95,6 +109,7 @@ function buildFolderTree(
     }
   }
 
+  const existingUnfolded = existingByPath.get(path)?.unfolded;
   return {
     "@type": "FolderNode",
     folderId,
@@ -102,6 +117,7 @@ function buildFolderTree(
     title,
     ...(readmeText ? { text: readmeText } : {}),
     ...(readmeProps ? { props: readmeProps } : {}),
+    ...(existingUnfolded ? { unfolded: existingUnfolded } : {}),
     children: [...readmeChildren, ...structuralChildren]
   };
 }
@@ -174,7 +190,7 @@ export async function ingestFolderTree(client: any): Promise<{ folderCount: numb
     (Array.isArray(artifactDocs) ? artifactDocs : []).filter((d) => !d.tombstonedAt).map((d) => [d.path, d.artifactId])
   );
 
-  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath);
+  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath);
   const folderCount = countFolders(tree);
 
   const newByPath = new Map<string, ParsedFolderNode>();
@@ -192,6 +208,7 @@ export async function ingestFolderTree(client: any): Promise<{ folderCount: numb
   for (const { old: oldDoc, new: newNode } of matched) {
     console.log(`[Aperas Folders] Detected rename '${oldDoc.path}' -> '${newNode.path}'`);
     newNode.folderId = oldDoc.folderId;
+    if (oldDoc.unfolded) newNode.unfolded = oldDoc.unfolded;
     sweep.renamed++;
   }
 

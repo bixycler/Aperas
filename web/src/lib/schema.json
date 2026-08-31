@@ -16,7 +16,9 @@
       "@type": "Set",
       "@class": "Prop"
     },
-    "tombstonedAt": { "@type": "Optional", "@class": "xsd:dateTime" }
+    "tombstonedAt": { "@type": "Optional", "@class": "xsd:dateTime" },
+    "holder": { "@type": "Optional", "@class": "xsd:boolean" },
+    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" }
   },
   {
     "@id": "Prop",
@@ -71,7 +73,7 @@
     "title": "xsd:string",
     "text": { "@type": "Optional", "@class": "xsd:string" },
     "children": { "@type": "List", "@class": "BlockNode" },
-    "unfolded": { "@type": "Optional", "@class": "xsd:boolean" }
+    "parent": { "@type": "Optional", "@class": "BaseNode" }
   },
   {
     "@id": "ArtifactNode",
@@ -85,8 +87,8 @@
     "path": "xsd:string",
     "title": "xsd:string",
     "text": { "@type": "Optional", "@class": "xsd:string" },
-    "fileHash": "xsd:string",
-    "lastTrackedAt": "xsd:dateTime",
+    "fileHash": { "@type": "Optional", "@class": "xsd:string" },
+    "lastTrackedAt": { "@type": "Optional", "@class": "xsd:dateTime" },
     "ingestedHash": { "@type": "Optional", "@class": "xsd:string" },
     "lastIngestedAt": { "@type": "Optional", "@class": "xsd:dateTime" },
     "root": { "@type": "Optional", "@class": "BlockNode" }

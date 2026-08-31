@@ -14,16 +14,19 @@
  * `npm run kg:unfold -- <path>`                            — one breadth-first step: this node's title plus each immediate child's full text; persists BlockNode.unfolded = true (§4).
  * `npm run kg:fold -- <path>`                               — inverse of kg:unfold; persists BlockNode.unfolded = false.
  * `npm run kg:search -- <pattern>`                          — regex/keyword search over every node's title/text (§5).
+ * `npm run kg:title -- <path> [--recursive]`                 — interactively prompt for a real title on every still-unlabeled BlockNode in scope (Aperas-interactive-summarization-design.md §3). No `--recursive`: just <path> itself, if it's a BlockNode. `--recursive`: <path>'s full uniform tree.
+ * `npm run kg:link -- <path> [--recursive] [--all]`          — interactively prompt for cross-links on BlockNodes in scope (§7). `--all` re-prompts blocks that already have links, not just unlinked ones.
  */
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { createTerminusClient, initializeAperasDatabase } from './client';
 import { trackArtifact, trackAllArtifacts, ingestAllArtifacts, getArtifactRecord, getArtifactsDir, isReadmeFilename } from './artifacts';
 import { ingestFolderTree, getFolderRecord } from './folders';
 import { exportJsonLd, importJsonLd } from './export';
 import { projectArtifactToMarkdown, projectFolderToReadme } from './project';
-import { insertAssertion, deleteAssertion } from './crud';
+import { insertAssertion, deleteAssertion, updateBlockNode } from './crud';
 import { queryNodeAssertions, searchNodes } from './woql';
 import { resolveNodeRefOrNull } from './nodeRef';
 
@@ -75,6 +78,55 @@ async function printTree(client: any, id: string, depth: number, maxDepth: numbe
 }
 
 /**
+ * Collects every BlockNode `{id, doc}` reachable from `id` (Aperas-interactive-summarization-
+ * design.md §3/§7's shared scoping rule: no artifact/folder/block boundary, just an opt-in walk
+ * of the same uniform tree `kg:tree` traverses — kgCli.ts:47-51,59). Without `recursive`, only
+ * `id` itself is visited, and only collected if it's a BlockNode — an ArtifactNode/FolderNode
+ * target with `recursive` unset yields nothing, by design (nothing to prompt for at that node
+ * itself). With `recursive`, every kind is walked as a starting point but only BlockNode
+ * descendants are collected into the result.
+ */
+async function collectBlockNodes(client: any, id: string, recursive: boolean): Promise<Array<{ id: string; doc: any }>> {
+  const out: Array<{ id: string; doc: any }> = [];
+  async function visit(nodeId: string, isRoot: boolean): Promise<void> {
+    const doc = await getNode(client, nodeId);
+    if (!doc) return;
+    const kind = nodeKindFromId(nodeId);
+    if (kind === 'BlockNode') {
+      out.push({ id: nodeId, doc });
+    }
+    if (isRoot && !recursive) return;
+    for (const childId of childRefs(doc, kind)) {
+      await visit(childId, false);
+    }
+  }
+  await visit(id, true);
+  return out;
+}
+
+/**
+ * Line-by-line stdin reader for kg:title/kg:link's interactive prompts. Deliberately not
+ * `rl.question()`: that API races against readline's auto-close-on-stream-'end' whenever real
+ * async work (e.g. resolveNodeRefOrNull's DB round-trip) happens between calls — confirmed live,
+ * two different failure modes depending on timing (an immediate throw, or a silently-abandoned
+ * pending call that lets the process exit with no output at all). A live interactive TTY never
+ * sends 'end' mid-session, so neither failure mode is reachable there; both are real for a coding
+ * agent piping pre-computed answers non-interactively, which this tool is explicitly meant to
+ * support. Consuming the interface's own async iterator instead — the same mechanism `for
+ * await...of readline.createInterface(...)` uses — reports end-of-input as an ordinary `{done:
+ * true}`, not a race-prone exception, regardless of what else is `await`ed in between reads.
+ */
+function createLineReader(rl: any): { next: () => Promise<string | null> } {
+  const iter = rl[Symbol.asyncIterator]();
+  return {
+    async next(): Promise<string | null> {
+      const { value, done } = await iter.next();
+      return done ? null : value;
+    },
+  };
+}
+
+/**
  * Sets BlockNode.unfolded, fetch-then-resubmit (children is a required List — see
  * Aperas-agentic-query-tools-design.md §4). `unfolded` only exists on BlockNode — kg:unfold/
  * kg:fold still work uniformly against an ArtifactNode/FolderNode target (display an id/kind/
@@ -119,7 +171,7 @@ async function resolveNodeRef(client: any, ref: string): Promise<string> {
 async function main() {
   const [command, ...paths] = process.argv.slice(2);
 
-  const COMMANDS = ['track', 'ingest', 'export', 'import', 'project', 'assert', 'assertions', 'unassert', 'tree', 'unfold', 'fold', 'search'];
+  const COMMANDS = ['track', 'ingest', 'export', 'import', 'project', 'assert', 'assertions', 'unassert', 'tree', 'unfold', 'fold', 'search', 'title', 'link'];
   if (!COMMANDS.includes(command)) {
     console.error(`Usage: kg:${COMMANDS.join(' | kg:')}`);
     process.exit(1);
@@ -272,6 +324,87 @@ async function main() {
         }
         console.log(`${m.id}  [${label}]  ${m.field}  ${m.value}`);
       }
+    }
+  } else if (command === 'title') {
+    const recursive = paths.includes('--recursive');
+    const [pathArg] = paths.filter((p) => p !== '--recursive');
+    if (!pathArg) {
+      console.error('Usage: kg:title -- <path> [--recursive]');
+      process.exit(1);
+    }
+    const id = await resolveNodeRef(client, pathArg);
+    const blocks = await collectBlockNodes(client, id, recursive);
+    const candidates = blocks.filter(({ doc }) => !doc.title || doc.title === doc.blockId);
+    if (candidates.length === 0) {
+      console.log('[Aperas KG CLI] No blocks need a title in scope.');
+    } else {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const lines = createLineReader(rl);
+      let set = 0;
+      let asked = 0;
+      for (const { id: blockId, doc } of candidates) {
+        console.log(`\n${blockId}  [${doc.type}]`);
+        console.log(doc.text || '(no text)');
+        process.stdout.write('Title (blank to skip): ');
+        const raw = await lines.next();
+        if (raw === null) break; // stdin closed early — stop cleanly, don't crash
+        asked++;
+        const answer = raw.trim();
+        if (answer) {
+          await updateBlockNode(client, blockId, { title: answer });
+          set++;
+        }
+      }
+      rl.close();
+      console.log(`[Aperas KG CLI] Set ${set} title(s), skipped ${asked - set}${asked < candidates.length ? ` (${candidates.length - asked} unreached — input ended early)` : ''}.`);
+    }
+  } else if (command === 'link') {
+    const recursive = paths.includes('--recursive');
+    const all = paths.includes('--all');
+    const [pathArg] = paths.filter((p) => p !== '--recursive' && p !== '--all');
+    if (!pathArg) {
+      console.error('Usage: kg:link -- <path> [--recursive] [--all]');
+      process.exit(1);
+    }
+    const id = await resolveNodeRef(client, pathArg);
+    const blocks = await collectBlockNodes(client, id, recursive);
+    const candidates = all ? blocks : blocks.filter(({ doc }) => !doc.links || doc.links.length === 0);
+    if (candidates.length === 0) {
+      console.log('[Aperas KG CLI] No blocks to prompt for links in scope.');
+    } else {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const lines = createLineReader(rl);
+      let linkedBlocks = 0;
+      let addedLinks = 0;
+      let stdinClosed = false;
+      for (const { id: blockId, doc } of candidates) {
+        if (stdinClosed) break;
+        console.log(`\n${blockId}  [${doc.type}]`);
+        console.log(doc.text || '(no text)');
+        const existing: any[] = doc.links ?? [];
+        const newLinks: any[] = [];
+        for (;;) {
+          const prompt = newLinks.length === 0 ? 'Link target (blank to skip block): ' : 'Another link target (blank to move on): ';
+          process.stdout.write(prompt);
+          const raw = await lines.next();
+          if (raw === null) { stdinClosed = true; break; } // stdin closed early — stop after saving what's gathered so far
+          const answer = raw.trim();
+          if (!answer) break;
+          const target = await resolveNodeRefOrNull(client, answer);
+          if (!target) {
+            console.log(`  '${answer}' didn't resolve to any node — try again or leave blank.`);
+            continue;
+          }
+          newLinks.push({ '@type': 'Link', target, predicate: 'references' });
+        }
+        if (newLinks.length > 0) {
+          await updateBlockNode(client, blockId, { links: [...existing, ...newLinks] });
+          linkedBlocks++;
+          addedLinks += newLinks.length;
+        }
+      }
+      rl.close();
+      console.log(`[Aperas KG CLI] Added ${addedLinks} link(s) across ${linkedBlocks} block(s).`);
     }
   } else if (command === 'export') {
     const { dir, counts } = await exportJsonLd(client);

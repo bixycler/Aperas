@@ -52,18 +52,35 @@ terminusdb diff admin/MyDatabase --before-commit <ref> --after-commit <ref> --do
 
 ### Merging: `rebase` and `apply`
 
-There is no `merge` subcommand. Both `rebase` and `apply` exist as top-level CLI commands (confirmed via `terminusdb --help`) despite not being documented elsewhere:
+There is no `merge` command. Instead, use `rebase` or `apply`.
+
+#### `rebase`
+`rebase TO FROM` works exactly like `git rebase FROM` (while on branch `TO`), but you must specify both arguments.
+- **`TO`**: The destination branch being rewritten.
+- **`FROM`**: The source branch serving as the new base (left untouched).
+
+**Example: Rebase `feature` onto `main`**
 
 ```bash
-terminusdb rebase TO_DATABASE_SPEC FROM_DATABASE_SPEC   # e.g. terminusdb rebase admin/MyDatabase admin/MyDatabase/local/branch/feature
-terminusdb apply [Path] --before-commit <ref> --after-commit <ref>   # apply a diff between two commits onto Path; --type currently only supports "squash"
+# Equivalent to: git checkout feature && git rebase main
+terminusdb rebase admin/MyDatabase/local/branch/feature admin/MyDatabase/local/branch/main
 ```
+This operation will:
+1. Find the common base commit between `feature` and `main`.
+2. Replay `feature`'s divergent commits one-by-one onto the tip of `main`.
+3. The `feature` branch tip will point to the last replayed commit.
 
-`rebase` does a real three-way merge: it locates the common ancestor, then replays the `FROM` branch's divergent commits onto `TO` one at a time, validating the resulting graph against the schema after each replay. Conflict detection is schema-validation-based, not git's line/hunk diff. For two edits to the *same* scalar field on a cardinality-one property (the same base value diverging both ways), TDB and git agree — it's a hard conflict in both, requiring manual resolution (confirmed live: `RebaseSchemaValidationError` / `instance_not_cardinality_one`, `TO` left untouched, no auto-resolution or last-writer-wins). Where they diverge is granularity: git conflicts at the *line* level regardless of meaning, while TDB conflicts at the *schema-validity* level — so TDB also catches things a line diff can't, e.g. two edits to *different* fields that individually look fine but jointly violate a class constraint. Either way, resolving means editing one side and retrying `rebase` — the algorithm never picks a side for you.
+**Conflicts:**
+TerminusDB detects conflicts via **schema validation**, not line diffs. It will catch semantic conflicts (like constraint violations) that git would miss. If a conflict occurs (`RebaseSchemaValidationError`), the rebase aborts safely without modifying `TO`. You must resolve the conflict manually by editing the data, then retry the `rebase`.
 
-**Diff from git `rebase`: argument order is reversed, and it's used where git reaches for `merge`.** `git rebase <upstream>` runs *on the branch you're on* and moves *your own* commits onto `<upstream>`. TDB's `rebase TO FROM` does the opposite: it moves `FROM`'s commits onto `TO`, i.e. `TO` is the branch being updated. In practice this means the invocation people actually want — "bring my feature branch's work into main" — is `terminusdb rebase admin/MyDatabase admin/MyDatabase/local/branch/feature` (`main` = `TO`, `feature` = `FROM`), which is backwards from `git checkout feature && git rebase main`. The replay mechanics themselves are still git-rebase-like, not git-merge-like: each replayed commit gets a **new commit ID** stacked linearly onto `TO`'s tip, history stays linear, and no two-parent merge commit is ever created. Confirmed live: rebasing a `feature` branch (which had edited `age`) onto `main` (which had independently edited `name`) produced a new commit ID for the replayed change and a log with no merge commit — same shape as `git rebase`, just invoked in the direction of `git merge`'s typical use.
+#### `apply`
+Applies a diff between two commits onto a branch.
 
-`apply`'s `--match-final-state` flag (default `true`) tolerates a patch that would produce the same final state, but a genuinely conflicting patch is still rejected — not silently applied.
+```bash
+# Apply changes from one commit range onto 'main'
+terminusdb apply admin/MyDatabase/local/branch/main --before-commit <commit-a> --after-commit <commit-b>
+```
+*Note: Conflicting patches are rejected. The default `--match-final-state` flag tolerates patches yielding the same final state.*
 
 ## Querying
 

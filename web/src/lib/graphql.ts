@@ -29,6 +29,8 @@
  * `maxDepth` automatically, so it always returns the whole tree regardless of depth.
  */
 
+import { WIKILINK_PREDICATE } from './astParser';
+
 export interface GraphQLResponse<T = any> {
   data?: T;
   errors?: Array<{ message: string; [key: string]: any }>;
@@ -89,9 +91,42 @@ export async function executeGraphQLQuery<T = any>(
 // included) — `normalizeProps` below parses it back into the ordinary `{key, value}` shape
 // every other reader/writer (astParser.ts, project.ts) already uses.
 function blockFieldSelection(depth: number): string {
-  const ownFields = 'blockId type title text unfolded props { key _json }';
+  const ownFields = 'blockId type title text unfolded props { key _json } links { _id predicate }';
   if (depth <= 0) return ownFields;
   return `${ownFields} children { ${blockFieldSelection(depth - 1)} }`;
+}
+
+/** Strips GraphQL's full-IRI `_id` (`terminusdb:///data/Link/xxx`) down to the short ref-id
+ *  string (`Link/xxx`) every other reader/writer in this codebase uses for a document reference
+ *  (e.g. `BlockNode.children`/`ArtifactNode.root` on a plain Document API read) — same shape
+ *  `carryForwardFields` (reconcile.ts) expects so a carried-forward `links` array can be written
+ *  straight back via `updateDocument` unchanged. */
+const DATA_IRI_PREFIX = 'terminusdb:///data/';
+function shortRefId(fullIri: string): string {
+  return fullIri.startsWith(DATA_IRI_PREFIX) ? fullIri.slice(DATA_IRI_PREFIX.length) : fullIri;
+}
+
+/**
+ * Normalizes every node's `links { _id predicate }` (raw GraphQL shape) into a plain ref-id-
+ * string array, recursing through `children` — the `links` counterpart to `normalizeProps` below.
+ * Drops every `WIKILINK_PREDICATE` entry rather than carrying it forward: `resolveBlockLinks`
+ * (artifacts.ts) always regenerates a block's *complete* current set of wikilink-derived `Link`s
+ * from its text on every ingest, so carrying old ones forward here would just make them duplicate
+ * against that fresh batch instead of being cleanly replaced by it (confirmed live as a real
+ * regression before this fix — see artifacts.ts's `resolveBlockLinks` doc comment). Only
+ * `kg:link`-authored entries (`"references"`, or any future non-reserved predicate) survive the
+ * carry-forward, which is exactly what should persist untouched across re-ingestion.
+ */
+function normalizeLinks(node: any): void {
+  if (!node) return;
+  if (Array.isArray(node.links)) {
+    node.links = node.links
+      .filter((l: any) => l.predicate !== WIKILINK_PREDICATE)
+      .map((l: any) => shortRefId(l._id));
+  }
+  for (const child of node.children ?? []) {
+    normalizeLinks(child);
+  }
 }
 
 /** Parses each prop's `_json` dump back into a plain `{key, value}` StringProp, recursively. */
@@ -191,6 +226,7 @@ export async function getArtifactTreeViaGraphQL(client: any, path: string, maxDe
   if (artifact.root) {
     await resolveTruncatedSubtrees(client, artifact.root, maxDepth);
     normalizeProps(artifact.root);
+    normalizeLinks(artifact.root);
   }
   return artifact;
 }
@@ -240,6 +276,7 @@ export async function getFolderTreeViaGraphQL(client: any, path: string, maxDept
       if (subtree) {
         await resolveTruncatedSubtrees(client, subtree, maxDepth);
         normalizeProps(subtree);
+        normalizeLinks(subtree);
         children.push(subtree);
       }
     } else {

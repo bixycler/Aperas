@@ -15,7 +15,7 @@
 
 import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseMarkdownTree } from './astParser';
+import { parseMarkdownTree, WIKILINK_PREDICATE } from './astParser';
 import { createTerminusClient, initializeAperasDatabase } from './client';
 import { getArtifactsDir, trackArtifact, ingestArtifact, getArtifactRecord } from './artifacts';
 import { ingestFolderTree } from './folders';
@@ -285,19 +285,19 @@ An introductory sentence.
       if (!linkBlockSummary) {
         throw new Error('Expected to find the paragraph containing the self-link.');
       }
-      // BlockNode.links isn't in blockFieldSelection (Set<BaseLink> — the same GraphQL
-      // polymorphism gap `props` has; reading it needs the plain Document API instead, same
-      // choice kgCli.ts's kg:tree/kg:unfold already make).
+      // Plain Document API, not GraphQL, for this read — simpler here since only the raw
+      // links/predicate values are needed, not a full nested tree walk (kgCli.ts's kg:tree/
+      // kg:unfold make the same choice for the same reason).
       const linkBlockDoc = await client.getDocument({ id: `BlockNode/${linkBlockSummary.blockId}` });
       const linkIds: string[] = linkBlockDoc?.links ?? [];
       if (linkIds.length !== 1) {
         throw new Error(`Expected exactly one resolved link (the dangling one should be skipped), got ${linkIds.length}: ${JSON.stringify(linkIds)}`);
       }
       const linkDoc = await client.getDocument({ id: linkIds[0] });
-      if (linkDoc?.predicate !== 'references' || linkDoc?.target !== rootId) {
-        throw new Error(`Expected the resolved Link to target ${rootId} with predicate 'references', got: ${JSON.stringify(linkDoc)}`);
+      if (linkDoc?.predicate !== WIKILINK_PREDICATE || linkDoc?.target !== rootId) {
+        throw new Error(`Expected the resolved Link to target ${rootId} with predicate '${WIKILINK_PREDICATE}', got: ${JSON.stringify(linkDoc)}`);
       }
-      console.log(`   - Resolved link: (${linkIds[0]}) --[references]--> (${rootId}); dangling link correctly skipped.`);
+      console.log(`   - Resolved link: (${linkIds[0]}) --[${WIKILINK_PREDICATE}]--> (${rootId}); dangling link correctly skipped.`);
       console.log("   [✓] BlockNode.links extraction verified successfully.\n");
 
       console.log("6. Ingesting FolderNode structural tree...");

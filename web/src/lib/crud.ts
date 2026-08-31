@@ -113,6 +113,35 @@ export async function findLinkIdsTargeting(client: any, nodeIds: string[]): Prom
 }
 
 /**
+ * Fetch-merge-replace update for one already-ingested BlockNode field (Aperas-interactive-
+ * summarization-design.md §2) — TerminusDB has no partial-field PATCH, so this fetches the full
+ * document, shallow-merges `patch` onto it, and replaces it whole via `updateDocument`. For
+ * `links`, `patch.links` should be the *complete* desired array (existing ref-id strings plus
+ * any new `{ "@type": "Link", target, predicate }` literals to instantiate) — callers append,
+ * this function doesn't.
+ */
+export async function updateBlockNode(
+  client: any,
+  id: string,
+  patch: { title?: string; links?: any[] }
+): Promise<void> {
+  const doc = await client.getDocument({ id });
+  if (!doc || typeof doc === 'string') {
+    throw new Error(`BlockNode '${id}' not found.`);
+  }
+  await client.updateDocument(
+    { ...doc, ...patch },
+    {},
+    client.db(),
+    `Update ${id} (${Object.keys(patch).join(', ')})`,
+    undefined,
+    undefined,
+    undefined,
+    true
+  );
+}
+
+/**
  * Deletes only the Assertion(s) matching this exact source/predicate/target triple — the
  * narrow counterpart to deleteAssertionsInvolvingNode's blunt "wipe everything touching this
  * node" (which stays reserved for demo/reset cleanup). This is the real "undo this one claim"

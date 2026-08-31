@@ -1,7 +1,7 @@
 /**
  * Aperas Phase 1: Fractal AST Transducer
  *
- * Parses raw Markdown content into an infinitely nested tree of BlockNodes.
+ * Parses raw Markdown content into an unbounded-depth tree of BlockNodes.
  * Node identity is a Snowflake-style generated id (see snowflake.ts), assigned
  * once per parsed block — not derived from content or position, per
  * AperasKG/artifacts/Aperas-core-ontology-design.md §1.A.
@@ -76,6 +76,17 @@ function rawSlice(node: any, markdown: string): string {
 }
 
 const LINK_URL_RE = /^\[\[(.+)\]\]$/;
+
+/**
+ * Reserved `Link.predicate` for every `Link` auto-extracted from `[[wikilink]]` syntax
+ * (Aperas-interactive-summarization-design.md §7) — distinguishes them from `kg:link`-authored
+ * `Link`s, which always use `"references"`. The distinction matters structurally, not just for
+ * display: `resolveBlockLinks` (artifacts.ts) regenerates the *complete* current set of
+ * wikilink-derived `Link`s from a block's text on every ingest — it needs to tell those apart
+ * from manually-curated ones so it only ever replaces its own kind, never a `kg:link` entry, and
+ * never leaves a stale wikilink-derived `Link` (or a growing pile of duplicates) behind.
+ */
+export const WIKILINK_PREDICATE = '[[wikilink]]';
 
 /**
  * Recursively collects internal-code link targets from a raw mdast (sub)tree: a `link` node

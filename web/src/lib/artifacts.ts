@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { parseMarkdownTree, extractAbstract, type ParsedBlockNode } from './astParser';
+import { parseMarkdownTree, extractAbstract, WIKILINK_PREDICATE, type ParsedBlockNode } from './astParser';
 import { generateNodeId } from './snowflake';
 import { getArtifactTreeViaGraphQL } from './graphql';
 import { reconcileTree, matchLeftoverByAbstract, type ReconciliationStats } from './reconcile';
@@ -253,15 +253,19 @@ function countBlocks(node: any): number {
  * resolve to any live node is skipped with a warning, never fails the whole ingestion. `Link`
  * (the one concrete `BaseLink` leaf — `schema.json`) is written as a plain embedded object with
  * no `@id`, the same way a nested `BlockNode` child already is; TerminusDB creates it as its own
- * independent document as a side effect of the parent's write.
+ * independent document as a side effect of the parent's write. Every `Link` created here uses the
+ * reserved `WIKILINK_PREDICATE` (astParser.ts) — never `"references"`, which is `kg:link`'s own
+ * fixed predicate for manually-authored entries (Aperas-interactive-summarization-design.md §7).
  *
- * Known limitation, disclosed not fixed: re-ingesting an edited artifact resolves fresh `Link`
- * objects for every link-bearing block reconciliation matches (reusing that block's `blockId`),
- * but nothing here diffs against the block's *previous* `links` — so a `Link` document from an
- * earlier ingestion becomes orphaned (unreferenced, undeleted) once the block's `links` field is
- * overwritten with newly-resolved ones, even if the actual target didn't change. Same class of
- * gap `deleteAssertionsInvolvingNode` exists to guard against for `Assertion`, just not yet
- * extended to cover this case.
+ * `node.links` at the point this runs already carries forward only non-wikilink-predicate entries
+ * (`reconcile.ts`'s `carryForwardFields` via `graphql.ts`'s `normalizeLinks`, which drops any
+ * `WIKILINK_PREDICATE` entry before it ever reaches here) — so appending this call's freshly-
+ * resolved batch on top is safe and complete: it's always this block's *entire* current set of
+ * wikilink-derived links, replacing whatever wikilink-derived links existed before rather than
+ * accumulating duplicates alongside them, while `kg:link`-authored entries are left untouched.
+ * Confirmed live: re-ingesting an unchanged wikilink-bearing block previously grew its `links`
+ * array by one duplicate `Link` document every single pass (same target, new id, orphaning the
+ * old one) — fixed by this predicate split, not just disclosed.
  */
 async function resolveBlockLinks(client: any, node: ParsedBlockNode): Promise<void> {
   const codes = node.linkCodes;
@@ -270,13 +274,13 @@ async function resolveBlockLinks(client: any, node: ParsedBlockNode): Promise<vo
     for (const code of codes) {
       const target = await resolveDirectOrSnowflake(client, code);
       if (target) {
-        links.push({ "@type": "Link", target, predicate: "references" });
+        links.push({ "@type": "Link", target, predicate: WIKILINK_PREDICATE });
       } else {
         console.warn(`[Aperas Artifacts] Link target '[[${code}]]' in block ${node.blockId} didn't resolve to any live node — skipping.`);
       }
     }
     if (links.length > 0) {
-      (node as any).links = links;
+      (node as any).links = [...((node as any).links ?? []), ...links];
     }
   }
   delete node.linkCodes;

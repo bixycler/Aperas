@@ -97,6 +97,27 @@ function leafKey(node: any): string {
   return node.type === 'heading' ? node.title : (node.text ?? '');
 }
 
+/**
+ * A matched pair (reconcileNode / detectCrossParentMoves) is content-equivalent by construction
+ * — Stage A/B only match on exact key equality — so besides `blockId`, every operator/runtime-
+ * set field on the old node (`title` set via `kg:title`, `unfolded` via `kg:fold`/`kg:unfold`,
+ * `links` via `kg:link`) should survive onto its replacement rather than reset to the fresh
+ * parse's defaults (Aperas-interactive-summarization-design.md §4/§7 — confirmed live as a real
+ * regression before this fix: a matched block's title/unfolded/links silently reverted on every
+ * re-ingest). Safe unconditionally: for a heading, `oldNode.title` and the fresh parse's title
+ * are identical anyway since the heading text itself is the match key; `links` here is `oldNode`'s
+ * already-resolved ref-id strings — `resolveBlockLinks` (artifacts.ts) merges freshly-resolved
+ * wikilink `Link`s onto whatever this leaves on `newNode.links`, rather than overwriting it.
+ */
+function carryForwardFields(oldNode: any, newNode: any): void {
+  newNode.blockId = oldNode.blockId;
+  newNode.title = oldNode.title;
+  newNode.unfolded = oldNode.unfolded ?? false;
+  if (oldNode.links) {
+    newNode.links = oldNode.links;
+  }
+}
+
 export interface ChildDiff {
   matched: Array<{ oldIndex: number; newIndex: number }>;
   removedOld: number[];
@@ -232,7 +253,7 @@ interface ReconcileContext {
  * (see reconcileTree's move-detection pass below).
  */
 function reconcileNode(oldNode: any, newNode: any, ctx: ReconcileContext): void {
-  newNode.blockId = oldNode.blockId;
+  carryForwardFields(oldNode, newNode);
 
   const diff = diffChildren(oldNode.children ?? [], newNode.children ?? []);
 
@@ -292,7 +313,7 @@ function detectCrossParentMoves(ctx: ReconcileContext, now: string): any[] {
     for (let k = 0; k < block.length; k++) {
       const oldNode = removedLeaves[block.aStart + k];
       const newNode = addedLeaves[block.bStart + k];
-      newNode.blockId = oldNode.blockId;
+      carryForwardFields(oldNode, newNode);
       if ((oldNode.children?.length ?? 0) > 0 && (newNode.children?.length ?? 0) > 0) {
         const subDiff = diffChildren(oldNode.children, newNode.children);
         for (const { oldIndex, newIndex } of subDiff.matched) {

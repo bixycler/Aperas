@@ -26,8 +26,10 @@
     "kg:resolve": "npx tsx src/lib/kgCli.ts resolve"
   },
   "dependencies": {
+    "@rdfjs/data-model": "^2.1.2",
     "clsx": "^2.1.1",
     "lucide-solid": "^1.34.0",
+    "oxigraph": "^0.5.10",
     "rehype-stringify": "^10.0.1",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",

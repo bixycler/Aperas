@@ -1,0 +1,79 @@
+/**
+ * ApeironNgn IRI/literal vocabulary — one place that decides how a plain JS id/value round-trips
+ * to/from an Oxigraph term. See Aperas-apeironngn-design.md §3.
+ */
+
+import { namedNode, literal, type NamedNode, type Literal, type Term } from 'oxigraph';
+
+const NODE_BASE = 'urn:aperas:node:';
+const PRED_BASE = 'urn:aperas:pred:';
+
+const XSD_INTEGER = namedNode('http://www.w3.org/2001/XMLSchema#integer');
+const XSD_BOOLEAN = namedNode('http://www.w3.org/2001/XMLSchema#boolean');
+const XSD_DATETIME = namedNode('http://www.w3.org/2001/XMLSchema#dateTime');
+
+/** Every concrete class whose instances carry an `@id` shaped `ClassName/snowflake` — the same
+ *  set `nodeRef.ts`'s `FULL_NODE_ID_RE` recognizes for structural nodes, extended with the two
+ *  leaf/subdocument classes (`Link`, `StringProp`) that also show up as plain id-strings in the
+ *  JSON-LD mirror. Used to tell a reference-shaped string value from an ordinary literal. */
+const ID_PREFIX_RE = /^(BlockNode|ArtifactNode|FolderNode|Link|Assertion|StringProp)\//;
+
+export function isNodeRef(value: unknown): value is string {
+  return typeof value === 'string' && ID_PREFIX_RE.test(value);
+}
+
+export function nodeIri(id: string): NamedNode {
+  return namedNode(NODE_BASE + id);
+}
+
+export function idFromNodeIri(iri: string): string {
+  if (!iri.startsWith(NODE_BASE)) throw new Error(`Not an ApeironNgn node IRI: ${iri}`);
+  return iri.slice(NODE_BASE.length);
+}
+
+export function predIri(field: string): NamedNode {
+  return namedNode(PRED_BASE + field);
+}
+
+export function fieldFromPredIri(iri: string): string {
+  if (!iri.startsWith(PRED_BASE)) throw new Error(`Not an ApeironNgn predicate IRI: ${iri}`);
+  return iri.slice(PRED_BASE.length);
+}
+
+/** Encodes a scalar (string/number/boolean) as a typed Literal — the datatype is what lets
+ *  `decodeLiteral` hand back the same JS type it was given, not just a string. */
+export function encodeLiteral(value: string | number | boolean): Literal {
+  if (typeof value === 'number') return literal(String(value), XSD_INTEGER);
+  if (typeof value === 'boolean') return literal(String(value), XSD_BOOLEAN);
+  // ISO-8601 date strings (lastTrackedAt/lastIngestedAt/tombstonedAt) get their own datatype so
+  // they decode back to a value distinguishable from an ordinary string if a caller ever needs to.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return literal(value, XSD_DATETIME);
+  return literal(value);
+}
+
+export function decodeLiteral(term: Literal): string | number | boolean {
+  const dt = term.datatype?.value;
+  if (dt === XSD_INTEGER.value) return Number(term.value);
+  if (dt === XSD_BOOLEAN.value) return term.value === 'true';
+  return term.value;
+}
+
+export function isLiteralTerm(term: Term): term is Literal {
+  return term.termType === 'Literal';
+}
+
+export function isNamedNodeTerm(term: Term): term is NamedNode {
+  return term.termType === 'NamedNode';
+}
+
+/** The one field name needing reified ordered-containment (Aperas-apeironngn-design.md §3):
+ *  `BlockNode.children`/`FolderNode.children` are the only `List`-typed fields in the current
+ *  ontology (`schema.json`'s stale copy also lists `ArtifactNode.root`, `BlockNode.parent`, etc.
+ *  as `Optional` — single-valued, not containment — so they're plain reference triples, not
+ *  reified). Deliberately name-keyed rather than parsed from `schema.json`: that file has already
+ *  been observed to drift from the live schema (`ordered`/`start` fields present in real data,
+ *  absent from the checked-in copy) — ApeironNgn's own encoder shouldn't inherit that staleness
+ *  risk by depending on it. */
+export const ORDERED_CONTAINMENT_FIELD = 'children';
+export const PARENT_PRED = predIri('__parent');
+export const SIBLING_INDEX_PRED = predIri('__siblingIndex');

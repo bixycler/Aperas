@@ -1,13 +1,19 @@
 /**
- * Throwaway live benchmark — not part of the app. Compares bulk-fetch-then-consume (GraphQL's
+ * Live benchmark, kept for reuse (not throwaway) — compares bulk-fetch-then-consume (GraphQL's
  * getArtifactTreeViaGraphQL) against node-by-node paired fetch (data structure built one node at
- * a time, in lockstep with the recursive walk that builds it), repeated across all three APIs.
- * Builds only the raw block tree (blockId/type/title/text/childIds) — no Markdown projection.
+ * a time, in lockstep with the recursive walk that builds it) across all three TerminusDB APIs,
+ * plus ApeironNgn's in-process Oxigraph engine (E) as a structurally different fifth strategy —
+ * no round trip at all, bulk or otherwise, since the whole store lives in-process. Builds only the
+ * raw block tree (blockId/type/title/text/childIds) — no Markdown projection.
  */
 import { createTerminusClient } from './client';
 import { getArtifactTreeViaGraphQL, executeGraphQLQuery } from './graphql';
 // @ts-ignore
 import TerminusDB from 'terminusdb';
+import { rehydrateStore, getApeironExportDir } from './apeironNgn/store';
+import { wrapNode } from './apeironNgn/node';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Aperas-design.md currently triggers a real TerminusDB server panic on bulk GraphQL fetch
 // ("end byte index 1000 is not a char boundary; it is inside '–'") — the same bug seen before the
@@ -18,6 +24,11 @@ const ARTIFACT = 'Aperas-core-ontology-design.md';
 function WOQL() {
   return (TerminusDB as any).WOQL || (TerminusDB as any).woql || TerminusDB;
 }
+
+// Real per-strategy round-trip counts (not estimated) — answers "why is the ranking Doc API >
+// WOQL > GraphQL, given WOQL needs more calls per node than either of the others?" with actual
+// numbers rather than a plausible-sounding guess.
+const callCounts = { docApi: 0, graphql: 0, woql: 0 };
 
 function countNodes(node: any): number {
   if (!node) return 0;
@@ -43,6 +54,7 @@ async function bulkGraphQL(client: any) {
 
 async function nodeByNodeDocAPI(client: any, rootId: string): Promise<any> {
   async function fetchNode(id: string): Promise<any> {
+    callCounts.docApi++;
     const doc = await client.getDocument({ id });
     const children = [];
     for (const childId of doc.children ?? []) {
@@ -56,6 +68,7 @@ async function nodeByNodeDocAPI(client: any, rootId: string): Promise<any> {
 // --- C. Node-by-node, GraphQL (shallow query per node: own fields + immediate child ids) ------
 
 async function fetchShallowGraphQL(client: any, blockId: string): Promise<any> {
+  callCounts.graphql++;
   const query = `
     query BlockShallow($id: String!) {
       BlockNode(filter: { blockId: { eq: $id } }) {
@@ -93,6 +106,7 @@ async function nodeByNodeGraphQL(client: any, rootBlockId: string): Promise<any>
 // all — only class-level `@unfoldable`/GraphQL/Document API resolve it without manual cons-walking).
 
 async function woqlTripleValue(client: any, subject: string, predicate: string): Promise<string | null> {
+  callCounts.woql++;
   const w = WOQL();
   const v = w.Vars('Value');
   const result = await client.query(w.triple(subject, predicate, v.Value));
@@ -108,6 +122,7 @@ async function woqlTripleValue(client: any, subject: string, predicate: string):
  *  member value directly). One extra round trip per list element, on top of the head lookup. */
 async function woqlChildren(client: any, subject: string): Promise<string[]> {
   const w = WOQL();
+  callCounts.woql++;
   const headResult = await client.query(w.triple(subject, 'children', w.Vars('Cons').Cons));
   const headBindings = headResult?.bindings || [];
   if (headBindings.length === 0) return [];
@@ -116,6 +131,7 @@ async function woqlChildren(client: any, subject: string): Promise<string[]> {
   let consId: string = headBindings[0].Cons;
   while (consId && consId !== 'rdf:nil') {
     const v = w.Vars('First', 'Rest');
+    callCounts.woql++;
     const cellResult = await client.query(
       w.and(w.triple(consId, 'rdf:first', v.First), w.triple(consId, 'rdf:rest', v.Rest))
     );
@@ -145,6 +161,33 @@ async function nodeByNodeWOQL(client: any, rootId: string): Promise<any> {
   return fetchNode(rootId);
 }
 
+// --- E. ApeironNgn — in-process Oxigraph, rehydrated from AperasKG/Apeiron/'s JSON-LD mirror ---
+// Not "node-by-node" in the TerminusDB sense (no round trip per node at all, in-process or
+// otherwise) — measures the one thing that's actually comparable: rehydrating the whole store
+// fresh, then walking this one artifact's tree end to end, same shape (blockId/type/title/text/
+// children) as the other strategies, so `countNodes` applies unchanged.
+
+function apeironNgnRootId(): string {
+  const docs: any[] = JSON.parse(readFileSync(join(getApeironExportDir(), 'ArtifactNode.jsonld'), 'utf-8'));
+  const doc = docs.find((d) => d && d.path === ARTIFACT);
+  if (!doc?.root) throw new Error(`No ingested root found for '${ARTIFACT}' in the JSON-LD mirror.`);
+  return doc.root;
+}
+
+function apeironNgnTree(rootId: string, store: any): any {
+  function walk(id: string): any {
+    const n = wrapNode(store, id);
+    return {
+      blockId: n.id.split('/')[1],
+      type: n.type,
+      title: n.title,
+      text: n.text,
+      children: n.children.map((c: any) => walk(c.id)),
+    };
+  }
+  return walk(rootId);
+}
+
 // --- Main ----------------------------------------------------------------------------------
 
 async function main() {
@@ -169,12 +212,30 @@ async function main() {
   const woql = await time('D. Node-by-node, WOQL', () => nodeByNodeWOQL(client, rootId));
   console.log(`   (${countNodes(woql.result)} nodes)\n`);
 
+  const ngnRootId = apeironNgnRootId();
+  const t0 = performance.now();
+  const { store } = rehydrateStore();
+  const rehydrateMs = performance.now() - t0;
+  const t1 = performance.now();
+  const ngnTree = apeironNgnTree(ngnRootId, store);
+  const walkMs = performance.now() - t1;
+  console.log(`E. ApeironNgn — rehydrate whole store: ${rehydrateMs.toFixed(1)}ms, walk this tree: ${walkMs.toFixed(1)}ms`);
+  console.log(`   (${countNodes(ngnTree)} nodes)\n`);
+
   console.log('--- Summary ---');
   console.log(`Nodes: ${nodeCount}`);
   console.log(`A. Bulk GraphQL:              ${bulk.ms.toFixed(1)}ms`);
   console.log(`B. Node-by-node Document API: ${doc.ms.toFixed(1)}ms  (${(doc.ms / bulk.ms).toFixed(1)}x bulk)`);
   console.log(`C. Node-by-node GraphQL:      ${gql.ms.toFixed(1)}ms  (${(gql.ms / bulk.ms).toFixed(1)}x bulk)`);
   console.log(`D. Node-by-node WOQL:         ${woql.ms.toFixed(1)}ms  (${(woql.ms / bulk.ms).toFixed(1)}x bulk)`);
+  console.log(`E. ApeironNgn walk (post-rehydration): ${walkMs.toFixed(1)}ms  (${(walkMs / bulk.ms).toFixed(3)}x bulk)`);
+  console.log();
+  console.log('--- Round trips & cost per round trip (why Doc API > WOQL > GraphQL, not the reverse) ---');
+  console.log(`B. Doc API: ${callCounts.docApi} calls, ${(doc.ms / callCounts.docApi).toFixed(1)}ms/call`);
+  console.log(`C. GraphQL: ${callCounts.graphql} calls, ${(gql.ms / callCounts.graphql).toFixed(1)}ms/call`);
+  console.log(`D. WOQL:    ${callCounts.woql} calls, ${(woql.ms / callCounts.woql).toFixed(1)}ms/call`);
+  console.log(`   ApeironNgn rehydrate-whole-store-once cost: ${rehydrateMs.toFixed(1)}ms — a one-time per-process cost`);
+  console.log(`   (amortized across every artifact/script run afterward), not comparable to A-D's per-request cost.`);
 }
 
 main().catch((err) => {

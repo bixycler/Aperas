@@ -11,28 +11,30 @@ const PRED_BASE = 'urn:aperas:pred:';
 const XSD_INTEGER = namedNode('http://www.w3.org/2001/XMLSchema#integer');
 const XSD_BOOLEAN = namedNode('http://www.w3.org/2001/XMLSchema#boolean');
 
-/** Every concrete class whose instances carry an `@id` shaped `ClassName/snowflake` — the same
- *  set `nodeRef.ts`'s `FULL_NODE_ID_RE` recognizes for structural nodes, extended with the two
- *  leaf/subdocument classes (`Link`, `StringProp`) that also show up as plain id-strings in the
- *  JSON-LD mirror. Used to tell a reference-shaped string value from an ordinary literal. */
-const ID_PREFIX_RE = /^(BlockNode|ArtifactNode|FolderNode|Link|Assertion|StringProp)\//;
+/** Every top-level-addressable concrete class whose instances carry an `@id` shaped
+ *  `ClassName/snowflake` — the same set `nodeRef.ts`'s `FULL_NODE_ID_RE` recognizes. `Link`/
+ *  `StringProp` are deliberately excluded: both are subdocuments now (`shape.ts`'s
+ *  `storageKind: 'embed'`), minted as `${parentId}/(props|links)/ClassName/<snowflake>` — they
+ *  never appear as a bare top-level reference string, only nested (`SUBDOC_RE` below catches
+ *  them). Used to tell a reference-shaped string value from an ordinary literal. */
+const ID_PREFIX_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
 
 export function isNodeRef(value: unknown): value is string {
   return typeof value === 'string' && ID_PREFIX_RE.test(value);
 }
 
-/** The concrete class name from an id's own prefix — the one dispatch point `classes.ts`'s
+/** The concrete class name from an id's own prefix — the one dispatch point `node.ts`'s
  *  `CLASS_BY_KIND` and `shape.ts`'s `SHAPE_BY_KIND` are keyed by. Keyed directly off the id scheme
  *  `snowflake.ts` already mints ids by, not a separately-maintained mapping that can drift.
- *  A subdocument id (`props`' `StringProp` entries) is shaped `${parentId}/props/StringProp/
- *  <snowflake>` — the *owning* node's own class prefix leads the string, so it has to be checked
- *  before the plain leading-prefix case, not after, or a `StringProp` id would misclassify as
- *  whatever class its parent happens to be. */
-const PROPS_SUBDOC_RE = /\/props\/([A-Za-z]+)\//;
-const KIND_RE = /^(BlockNode|ArtifactNode|FolderNode|Link|Assertion|StringProp)\//;
+ *  A subdocument id (`props`' `StringProp` entries, `links`' `Link` entries) is shaped
+ *  `${parentId}/(props|links)/ClassName/<snowflake>` — the *owning* node's own class prefix leads
+ *  the string, so it has to be checked before the plain leading-prefix case, not after, or a
+ *  subdocument id would misclassify as whatever class its parent happens to be. */
+const SUBDOC_RE = /\/(?:props|links)\/([A-Za-z]+)\//;
+const KIND_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
 export function nodeKindFromId(id: string): string {
-  const propsMatch = id.match(PROPS_SUBDOC_RE);
-  if (propsMatch) return propsMatch[1];
+  const subMatch = id.match(SUBDOC_RE);
+  if (subMatch) return subMatch[1];
   const m = id.match(KIND_RE);
   return m ? m[1] : 'Unknown';
 }

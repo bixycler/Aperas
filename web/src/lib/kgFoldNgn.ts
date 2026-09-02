@@ -7,7 +7,8 @@
 import { rehydrateStore } from './apeironNgn/store';
 import { dehydrateToJsonLd } from './apeironNgn/dehydrate';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { setUnfolded } from './apeironNgn/unfold';
+import { wrap, type TreeNode } from './apeironNgn/node';
+import { nodeExists } from './apeironNgn/vocab';
 
 function main(): void {
   const [pathArg] = process.argv.slice(2);
@@ -26,10 +27,11 @@ function main(): void {
     process.exit(1);
   }
 
-  if (!setUnfolded(store, id, false)) {
+  if (!nodeExists(store, id)) {
     console.error(`[ApeironNgn kg:fold] Node '${id}' not found.`);
     process.exit(1);
   }
+  (wrap(store, id) as unknown as TreeNode).fold();
   dehydrateToJsonLd(store);
   console.log(`[ApeironNgn kg:fold] Folded ${id}.`);
 }

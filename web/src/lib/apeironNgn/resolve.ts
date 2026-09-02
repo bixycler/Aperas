@@ -5,6 +5,9 @@
  * `descend`/`resolveTokens` but reading through `wrap()` instead of `client.getDocument`, and
  * fully synchronous.
  *
+ * §4 rollout step 3: per-hop child matching is `TreeNode.findChild` (`node.ts`) now, not this
+ * file's own kind-switching helper — the direct payoff of the `TreeNode`/`treeChildren` refactor.
+ *
  * Scope cut, deliberately: no `--create-holder`/`--titles` (write path, its own future rollout
  * step per §4), so no `trace`/`ResolveDetail` bookkeeping either — the plain (non-createHolder)
  * mode this covers only ever prints the resolved id itself (`kgCli.ts`'s `resolve` command), never
@@ -13,10 +16,11 @@
  */
 
 import type { Store } from 'oxigraph';
-import { wrap, type ApeironNode } from './node';
-import { nodeExists, nodeKindFromId } from './vocab';
+import { wrap } from './node';
+import type { TreeNode } from './node';
+import { nodeExists } from './vocab';
 import { findByExactPath } from './tree';
-import { slugify, tokenize, pathToNameTokens, type Token } from '../nodeRef';
+import { tokenize, pathToNameTokens, type Token } from '../nodeRef';
 
 const BARE_SNOWFLAKE_RE = /^[0-9A-HJKMNP-TV-Z]{13}$/;
 const FULL_NODE_ID_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
@@ -29,23 +33,9 @@ function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
 
   for (const kind of ['BlockNode', 'ArtifactNode', 'FolderNode']) {
     const candidate = `${kind}/${ref}`;
-    if (nodeExists(store, candidate) && wrap(store, candidate).tombstonedAt !== true) return candidate;
+    if (nodeExists(store, candidate) && !(wrap(store, candidate) as unknown as TreeNode).tombstonedAt) return candidate;
   }
   return null;
-}
-
-function kindOf(id: string): 'BlockNode' | 'ArtifactNode' | 'FolderNode' | null {
-  return (FULL_NODE_ID_RE.exec(id)?.[1] as any) ?? null;
-}
-
-/** ArtifactNode's one child is its `root`; FolderNode/BlockNode's children are their `children`
- *  reified list — both come back as already-wrapped `ApeironNode`s. */
-function childNodes(node: ApeironNode, kind: string): ApeironNode[] {
-  if (kind === 'ArtifactNode') {
-    const root = node.root as ApeironNode | undefined;
-    return root ? [root] : [];
-  }
-  return node.children as ApeironNode[];
 }
 
 /** §3: longest-prefix search for an ArtifactNode/FolderNode among the leading NAME tokens. A
@@ -104,22 +94,22 @@ function descend(store: Store, startId: string, tokens: Token[]): string | null 
     if (token.kind === 'self') continue;
 
     if (token.kind === 'up') {
-      const kind = kindOf(currentId);
+      const kind = FULL_NODE_ID_RE.exec(currentId)?.[1];
       if (kind === 'BlockNode') {
-        const node = wrap(store, currentId);
-        const parent = node.parent as ApeironNode | undefined;
+        const node = wrap(store, currentId) as unknown as TreeNode & { parent?: TreeNode };
+        const parent = node.parent;
         if (!parent) {
           throw new Error(`'..' from ${currentId} has nowhere to go — no parent recorded (may need re-ingestion).`);
         }
         currentId = parent.id;
-        if (kindOf(currentId) !== 'BlockNode') {
-          const landed = wrap(store, currentId);
+        if (!currentId.startsWith('BlockNode/')) {
+          const landed = wrap(store, currentId) as unknown as { path?: string };
           return resolveFromFolderPath(store, landed.path as string, tokens.slice(i + 1));
         }
         continue;
       }
       // Already at the artifact/folder tier.
-      const node = wrap(store, currentId);
+      const node = wrap(store, currentId) as unknown as { path?: string };
       const path = node.path as string;
       const segments = path === '.' ? [] : path.split('/');
       if (segments.length === 0) {
@@ -130,37 +120,11 @@ function descend(store: Store, startId: string, tokens: Token[]): string | null 
     }
 
     // token.kind === 'name'
-    const kind = kindOf(currentId);
-    if (!kind || !nodeExists(store, currentId)) return null;
-    const node = wrap(store, currentId);
-
-    const candidates: Array<{ id: string; title: string }> = [];
-    for (const child of childNodes(node, kind)) {
-      if (kindOf(child.id) !== 'BlockNode') continue; // §4: descent only ever matches BlockNode children
-      if (child.title === undefined) continue;
-      candidates.push({ id: child.id, title: child.title as string });
-    }
-
-    const wantSlug = slugify(token.text);
-    let matches = candidates.filter((c) => slugify(c.title) === wantSlug);
-    if (matches.length === 0) {
-      // Leading `#`/`##` marker stripped before prefix matching — see nodeRef.ts's own comment
-      // on why (content-first, syntax-second).
-      matches = candidates.filter((c) => slugify(c.title).replace(/^-+/, '').startsWith(wantSlug));
-    }
-
-    if (matches.length > 1) {
-      throw new Error(
-        `'${token.text}' is ambiguous among: ${matches.map((m) => `${m.id} ("${m.title}")`).join(', ')}`
-      );
-    }
-
-    if (matches.length === 1) {
-      currentId = matches[0].id;
-      continue;
-    }
-
-    return null; // miss — no --create-holder in this tier
+    if (!nodeExists(store, currentId)) return null;
+    const node = wrap(store, currentId) as unknown as TreeNode;
+    const match = node.findChild(token.text); // throws on ambiguity, same as before
+    if (!match) return null; // miss — no --create-holder in this tier
+    currentId = match.id;
   }
 
   return currentId;

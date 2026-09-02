@@ -2,9 +2,16 @@
  * ApeironNgn implementation of `kg:resolve --create-holder` (Aperas-apeironngn-design.md §4
  * rollout, the write-extended half of `kg:resolve`'s deep-path grammar `resolve.ts` deliberately
  * left out). Mirrors `nodeRef.ts`'s `createImaginedPrefix`/`descend`'s miss branch/
- * `resolveNodeRefDetail`'s trace bookkeeping, writing through `node.ts`'s `set` trap instead of
- * `client.updateDocument`, and persisted via `dehydrate.ts` by the caller (a CLI concern, not
- * this module's — mirrors `unfold.ts` not owning persistence either).
+ * `resolveNodeRefDetail`'s trace bookkeeping, writing through `node.ts`'s generated accessors
+ * instead of `client.updateDocument`, and persisted via `dehydrate.ts` by the caller (a CLI
+ * concern, not this module's — mirrors `unfold.ts`'s old split, now `BaseNode.fold`/`.unfold`, not
+ * owning persistence either).
+ *
+ * §4 rollout step 3: per-hop child matching is `TreeNode.findChild` and attachment is
+ * `TreeNode.appendChild` (`node.ts`) now, not this file's own kind-switching helpers — the direct
+ * payoff of the `TreeNode`/`treeChildren` refactor. `ArtifactNode`'s "already has a root" check
+ * stays here, ahead of minting, so a rejected create doesn't leave an orphan `BlockNode` behind —
+ * `appendChild`'s own version of that same check is a backstop, not the primary guard.
  *
  * Kept as its own module rather than folded into `resolve.ts`: the read-only tier is used as a
  * plain read by four other migrated commands (`kg:unfold`/`kg:fold`/`kg:tree`'s ref resolution/
@@ -13,10 +20,11 @@
  */
 
 import type { Store } from 'oxigraph';
-import { wrap, type ApeironNode } from './node';
-import { nodeExists, nodeKindFromId } from './vocab';
+import { wrap } from './node';
+import type { TreeNode, BlockNode, ArtifactNode, FolderNode } from './node';
+import { nodeExists } from './vocab';
 import { findByExactPath } from './tree';
-import { slugify, tokenize, pathToNameTokens, type Token } from '../nodeRef';
+import { tokenize, pathToNameTokens, type Token } from '../nodeRef';
 import { generateNodeId } from '../snowflake';
 
 const FULL_NODE_ID_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
@@ -27,21 +35,13 @@ function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
   if (!BARE_SNOWFLAKE_RE.test(ref)) return null;
   for (const kind of ['BlockNode', 'ArtifactNode', 'FolderNode']) {
     const candidate = `${kind}/${ref}`;
-    if (nodeExists(store, candidate) && wrap(store, candidate).tombstonedAt !== true) return candidate;
+    if (nodeExists(store, candidate) && !(wrap(store, candidate) as unknown as TreeNode).tombstonedAt) return candidate;
   }
   return null;
 }
 
 function kindOf(id: string): 'BlockNode' | 'ArtifactNode' | 'FolderNode' | null {
   return (FULL_NODE_ID_RE.exec(id)?.[1] as any) ?? null;
-}
-
-function childNodes(node: ApeironNode, kind: string): ApeironNode[] {
-  if (kind === 'ArtifactNode') {
-    const root = node.root as ApeironNode | undefined;
-    return root ? [root] : [];
-  }
-  return node.children as ApeironNode[];
 }
 
 function resolveArtifactOrFolderPrefix(store: Store, tokens: Token[]): { id: string; consumed: number } | null {
@@ -72,7 +72,7 @@ export interface CreateOpts {
  *  folders then one artifact, anchored at whichever ancestor folder already exists (root, at
  *  worst). Builds bottom-up (artifact first, then wrapping folders outward) since a folder's
  *  `children` needs its nested id to already exist; attaches only the single outermost new id
- *  into the anchor's existing `children`. */
+ *  into the anchor's existing `children` via `TreeNode.appendChild`. */
 function createImaginedPrefix(store: Store, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
   let nameCount = 0;
   while (nameCount < tokens.length && tokens[nameCount].kind === 'name') nameCount++;
@@ -101,8 +101,7 @@ function createImaginedPrefix(store: Store, tokens: Token[], opts: CreateOpts, t
 
   const artifactId = generateNodeId();
   const newArtifactFullId = `ArtifactNode/${artifactId}`;
-  const artifact = wrap(store, newArtifactFullId);
-  artifact.artifactId = artifactId;
+  const artifact = wrap(store, newArtifactFullId) as unknown as ArtifactNode;
   artifact.path = fullPaths[artifactIdx];
   artifact.title = names[artifactIdx];
   artifact.holder = true;
@@ -115,18 +114,17 @@ function createImaginedPrefix(store: Store, tokens: Token[], opts: CreateOpts, t
   for (let i = artifactIdx - 1; i >= firstNewIdx; i--) {
     const folderId = generateNodeId();
     const folderFullId = `FolderNode/${folderId}`;
-    const folder = wrap(store, folderFullId);
-    folder.folderId = folderId;
+    const folder = wrap(store, folderFullId) as unknown as FolderNode;
     folder.path = fullPaths[i];
     folder.title = names[i];
     folder.holder = true;
-    folder.children = [outermostNewId];
+    folder.children = [outermostNewId as unknown as TreeNode];
     newTrace.unshift({ id: folderFullId, kind: 'FolderNode', title: names[i], created: true });
     outermostNewId = folderFullId;
   }
 
-  const anchor = wrap(store, anchorId);
-  anchor.children = [...(anchor.children as ApeironNode[]), outermostNewId];
+  const anchor = wrap(store, anchorId) as unknown as TreeNode;
+  anchor.appendChild(outermostNewId);
   trace.push(...newTrace);
 
   const rest = tokens.slice(artifactIdx + 1);
@@ -137,8 +135,8 @@ function createImaginedPrefix(store: Store, tokens: Token[], opts: CreateOpts, t
 function resolveTokens(store: Store, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
   const prefixMatch = resolveArtifactOrFolderPrefix(store, tokens);
   if (prefixMatch) {
-    const node = wrap(store, prefixMatch.id);
-    trace.push({ id: prefixMatch.id, kind: kindOf(prefixMatch.id)!, title: (node.title as string) ?? '', created: false });
+    const node = wrap(store, prefixMatch.id) as unknown as TreeNode;
+    trace.push({ id: prefixMatch.id, kind: kindOf(prefixMatch.id)!, title: node.title ?? '', created: false });
     const rest = tokens.slice(prefixMatch.consumed);
     if (rest.length === 0) return prefixMatch.id;
     return descend(store, prefixMatch.id, rest, opts, trace);
@@ -182,19 +180,19 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
     if (token.kind === 'up') {
       const kind = kindOf(currentId);
       if (kind === 'BlockNode') {
-        const node = wrap(store, currentId);
-        const parent = node.parent as ApeironNode | undefined;
+        const node = wrap(store, currentId) as unknown as BlockNode;
+        const parent = node.parent;
         if (!parent) {
           throw new Error(`'..' from ${currentId} has nowhere to go — no parent recorded (may need re-ingestion).`);
         }
         currentId = parent.id;
         if (kindOf(currentId) !== 'BlockNode') {
-          const landed = wrap(store, currentId);
+          const landed = wrap(store, currentId) as unknown as { path?: string };
           return resolveFromFolderPath(store, landed.path as string, tokens.slice(i + 1), opts, trace);
         }
         continue;
       }
-      const node = wrap(store, currentId);
+      const node = wrap(store, currentId) as unknown as { path?: string };
       const path = node.path as string;
       const segments = path === '.' ? [] : path.split('/');
       if (segments.length === 0) {
@@ -210,30 +208,12 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
 
     const kind = kindOf(currentId);
     if (!kind || !nodeExists(store, currentId)) return null;
-    const node = wrap(store, currentId);
+    const node = wrap(store, currentId) as unknown as TreeNode;
 
-    const candidates: Array<{ id: string; title: string; type: string }> = [];
-    for (const child of childNodes(node, kind)) {
-      if (kindOf(child.id) !== 'BlockNode') continue;
-      if (child.title === undefined) continue;
-      candidates.push({ id: child.id, title: child.title as string, type: child.type as string });
-    }
-
-    const wantSlug = slugify(token.text);
-    let matches = candidates.filter((c) => slugify(c.title) === wantSlug);
-    if (matches.length === 0) {
-      matches = candidates.filter((c) => slugify(c.title).replace(/^-+/, '').startsWith(wantSlug));
-    }
-
-    if (matches.length > 1) {
-      throw new Error(
-        `'${token.text}' is ambiguous among: ${matches.map((m) => `${m.id} ("${m.title}")`).join(', ')}`
-      );
-    }
-
-    if (matches.length === 1) {
-      currentId = matches[0].id;
-      trace.push({ id: currentId, kind: matches[0].type, title: matches[0].title, created: false });
+    const match = node.findChild(token.text) as unknown as BlockNode | null; // throws on ambiguity, same as before
+    if (match) {
+      currentId = match.id;
+      trace.push({ id: currentId, kind: match.type!, title: match.title!, created: false });
       continue;
     }
 
@@ -245,31 +225,28 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
       );
     }
 
+    // ArtifactNode's one "child" is its singular `root`, not a `children` list — a node that
+    // already has a root can't gain a second one this way (same schema-shape constraint
+    // `nodeRef.ts` documents against real TerminusDB behavior). Checked *before* minting, so a
+    // rejected create doesn't leave an orphan BlockNode behind.
+    if (kind === 'ArtifactNode' && (node as unknown as ArtifactNode).root !== undefined) {
+      throw new Error(
+        `${currentId} already has a root block — can't create '${wantTitle}' as a second one; ` +
+        `a holder can only be added *inside* existing content, not beside its single root.`
+      );
+    }
+
     const blockId = generateNodeId();
     const newId = `BlockNode/${blockId}`;
-    const holder = wrap(store, newId);
-    holder.blockId = blockId;
+    const holder = wrap(store, newId) as unknown as BlockNode;
     holder.type = 'heading';
     holder.title = wantTitle;
     holder.children = [];
     holder.unfolded = false;
     holder.holder = true;
-    holder.parent = currentId;
+    holder.parent = currentId as unknown as TreeNode;
 
-    // ArtifactNode's one "child" is its singular `root`, not a `children` list — a node that
-    // already has a root can't gain a second one this way (same schema-shape constraint
-    // `nodeRef.ts` documents against real TerminusDB behavior).
-    if (kind === 'ArtifactNode') {
-      if (node.root !== undefined) {
-        throw new Error(
-          `${currentId} already has a root block — can't create '${wantTitle}' as a second one; ` +
-          `a holder can only be added *inside* existing content, not beside its single root.`
-        );
-      }
-      node.root = newId;
-    } else {
-      node.children = [...(node.children as ApeironNode[]), newId];
-    }
+    node.appendChild(newId);
     currentId = newId;
     trace.push({ id: currentId, kind: 'heading', title: wantTitle, created: true });
   }

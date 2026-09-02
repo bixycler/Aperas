@@ -4,23 +4,17 @@
  * instead of TerminusDB. Dehydrates after each block's gathered links are committed, mirroring
  * `kgCli.ts`'s own per-block `updateBlockNode` immediacy.
  *
- * A fresh `Link` is created directly here (mint an id, `wrap()` it, set `target`/`predicate`) and
- * attached to the owning block's `links` by id — not by handing a `{"@type": "Link", ...}`
- * literal to `node.ts`'s `set` trap, since `writeField`'s auto-minting path (`mintEmbedded`) always
- * shapes a fresh id as `${parentId}/props/${type}/...`, correct for `props`' `StringProp`
- * subdocuments but wrong for a `Link` (a top-level entity, `Link/<snowflake>`, not nested under
- * anything). Creating it by hand and attaching by id is the same "create then attach" pattern
- * `resolveCreate.ts`'s holder creation already uses, and sidesteps the mismatch entirely rather
- * than needing a wider fix to `writeField` itself for a single call site.
+ * §4 rollout step 3: a fresh `Link` is created via `BaseNode.addLink` (`node.ts`) now — no more
+ * "mint a `Link/<snowflake>` id, `wrap()` it, set `target`/`predicate`, attach by id" workaround,
+ * now that `links` is `storageKind: 'embed'` and the generic embed-mint path handles a fresh
+ * `{ predicate, target }` literal correctly on its own (the same path `props` already used).
  */
 
 import { createInterface } from 'node:readline/promises';
 import { rehydrateStore } from './apeironNgn/store';
 import { dehydrateToJsonLd } from './apeironNgn/dehydrate';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { collectBlockNodes } from './apeironNgn/collect';
-import { wrap, type ApeironNode } from './apeironNgn/node';
-import { generateNodeId } from './snowflake';
+import { wrap, type TreeNode, type BlockNode } from './apeironNgn/node';
 import { createLineReader } from './lineReader';
 
 async function main(): Promise<void> {
@@ -40,8 +34,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const blocks = collectBlockNodes(store, id, recursive);
-  const candidates = all ? blocks : blocks.filter(({ node }) => !(node.links as ApeironNode[])?.length);
+  const blocks = (wrap(store, id) as unknown as TreeNode).collectDescendants(recursive);
+  const candidates = all ? blocks : blocks.filter(({ node }) => !(node as unknown as BlockNode).links?.length);
   if (candidates.length === 0) {
     console.log('[ApeironNgn kg:link] No blocks to prompt for links in scope.');
     return;
@@ -54,12 +48,12 @@ async function main(): Promise<void> {
   let stdinClosed = false;
   for (const { id: blockId, node } of candidates) {
     if (stdinClosed) break;
-    console.log(`\n${blockId}  [${node.type}]`);
-    console.log((node.text as string) || '(no text)');
-    const existing = (node.links as ApeironNode[]) ?? [];
-    const newLinkIds: string[] = [];
+    const block = node as unknown as BlockNode;
+    console.log(`\n${blockId}  [${block.type}]`);
+    console.log(block.text || '(no text)');
+    let addedForBlock = 0;
     for (;;) {
-      const prompt = newLinkIds.length === 0 ? 'Link target (blank to skip block): ' : 'Another link target (blank to move on): ';
+      const prompt = addedForBlock === 0 ? 'Link target (blank to skip block): ' : 'Another link target (blank to move on): ';
       process.stdout.write(prompt);
       const raw = await lines.next();
       if (raw === null) { stdinClosed = true; break; }
@@ -70,17 +64,13 @@ async function main(): Promise<void> {
         console.log(`  '${answer}' didn't resolve to any node — try again or leave blank.`);
         continue;
       }
-      const linkId = `Link/${generateNodeId()}`;
-      const link = wrap(store, linkId);
-      link.target = target;
-      link.predicate = 'references';
-      newLinkIds.push(linkId);
+      block.addLink('references', target);
+      addedForBlock++;
     }
-    if (newLinkIds.length > 0) {
-      node.links = [...existing, ...newLinkIds];
+    if (addedForBlock > 0) {
       dehydrateToJsonLd(store);
       linkedBlocks++;
-      addedLinks += newLinkIds.length;
+      addedLinks += addedForBlock;
     }
   }
   rl.close();

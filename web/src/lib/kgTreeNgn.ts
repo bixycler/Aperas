@@ -13,7 +13,8 @@
  */
 
 import { rehydrateStore } from './apeironNgn/store';
-import { resolveTreeRef, renderTree } from './apeironNgn/tree';
+import { resolveTreeRef } from './apeironNgn/tree';
+import { wrap, type TreeNode } from './apeironNgn/node';
 
 function main(): void {
   const paths = process.argv.slice(2);
@@ -39,7 +40,7 @@ function main(): void {
     process.exit(1);
   }
 
-  const lines = renderTree(store, id, { maxDepth, noHolders, unfoldedMode });
+  const lines = (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth, noHolders, unfoldedMode });
   console.log(lines.join('\n'));
 }
 

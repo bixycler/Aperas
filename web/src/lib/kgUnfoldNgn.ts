@@ -7,10 +7,9 @@
 import { rehydrateStore } from './apeironNgn/store';
 import { dehydrateToJsonLd } from './apeironNgn/dehydrate';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { setUnfolded } from './apeironNgn/unfold';
-import { wrap, type ApeironNode } from './apeironNgn/node';
+import { wrap, type TreeNode, type BlockNode } from './apeironNgn/node';
 import { nodeKindFromId, nodeExists } from './apeironNgn/vocab';
-import { childIds, displayLabel } from './apeironNgn/tree';
+import { displayLabel } from './apeironNgn/tree';
 
 function main(): void {
   const [pathArg] = process.argv.slice(2);
@@ -35,23 +34,23 @@ function main(): void {
     process.exit(1);
   }
 
-  const node = wrap(store, id);
+  const node = wrap(store, id) as unknown as TreeNode;
   console.log(`${id}  [${displayLabel(id, node)}]  ${node.title}`);
-  for (const childId of childIds(node, nodeKindFromId(id))) {
+  for (const child of node.treeChildren) {
+    const childId = child.id;
     if (!nodeExists(store, childId)) {
       console.log(`  ${childId}  [?]  <not found>`);
       continue;
     }
-    const child = wrap(store, childId) as ApeironNode;
     const childKind = nodeKindFromId(childId);
     const label = displayLabel(childId, child);
-    const text = childKind === 'BlockNode' && child.type === 'list'
+    const text = childKind === 'BlockNode' && (child as unknown as BlockNode).type === 'list'
       ? `(no text of its own — see kg:unfold ${childId})`
-      : ((child.text as string) ?? '');
+      : (child.text ?? '');
     console.log(`  ${childId}  [${label}]  ${text}`);
   }
 
-  setUnfolded(store, id, true);
+  node.unfold();
   dehydrateToJsonLd(store);
 }
 

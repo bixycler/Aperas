@@ -12,7 +12,7 @@ import { createInterface } from 'node:readline/promises';
 import { rehydrateStore } from './apeironNgn/store';
 import { dehydrateToJsonLd } from './apeironNgn/dehydrate';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { collectBlockNodes } from './apeironNgn/collect';
+import { wrap, type TreeNode } from './apeironNgn/node';
 import { createLineReader } from './lineReader';
 
 async function main(): Promise<void> {
@@ -31,8 +31,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const blocks = collectBlockNodes(store, id, recursive);
-  const candidates = blocks.filter(({ node }) => !node.title || node.title === node.blockId);
+  const blocks = (wrap(store, id) as unknown as TreeNode).collectDescendants(recursive);
+  const candidates = blocks.filter(({ node }) => !node.title || node.title === node.key);
   if (candidates.length === 0) {
     console.log('[ApeironNgn kg:title] No blocks need a title in scope.');
     return;
@@ -43,8 +43,8 @@ async function main(): Promise<void> {
   let set = 0;
   let asked = 0;
   for (const { id: blockId, node } of candidates) {
-    console.log(`\n${blockId}  [${node.type}]`);
-    console.log((node.text as string) || '(no text)');
+    console.log(`\n${blockId}  [${(node as unknown as { type?: string }).type}]`);
+    console.log(node.text || '(no text)');
     process.stdout.write('Title (blank to skip): ');
     const raw = await lines.next();
     if (raw === null) break; // stdin closed early — stop cleanly, don't crash

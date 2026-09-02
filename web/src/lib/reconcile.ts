@@ -108,6 +108,16 @@ function leafKey(node: any): string {
  * are identical anyway since the heading text itself is the match key; `links` here is `oldNode`'s
  * already-resolved ref-id strings — `resolveBlockLinks` (artifacts.ts) merges freshly-resolved
  * wikilink `Link`s onto whatever this leaves on `newNode.links`, rather than overwriting it.
+ *
+ * `props` is different from `links`: it's *rebuilt from the fresh parse every time* (list
+ * numbering, checkbox state — genuinely re-derived from the current document, not a separately
+ * asserted fact), so the new value always wins, never the old one. What should survive is just
+ * the *id*, and only when nothing actually changed — matched by `key` (a block has at most one
+ * prop per key today) with an exact value match against `oldNode.props`. A changed value gets a
+ * fresh id like any newly-added prop; `oldNode.props[i].id` being absent (the TerminusDB-backed
+ * path's own old-tree fetch, `graphql.ts`'s `props { key _json }`, never requests one — TDB's
+ * `@key: {"@type": "Random"}` mints its own on every write regardless) leaves this a no-op there,
+ * unchanged from before — only ApeironNgn's `toReconcileShape()` populates a real id to carry.
  */
 function carryForwardFields(oldNode: any, newNode: any): void {
   newNode.blockId = oldNode.blockId;
@@ -115,6 +125,13 @@ function carryForwardFields(oldNode: any, newNode: any): void {
   newNode.unfolded = oldNode.unfolded ?? false;
   if (oldNode.links) {
     newNode.links = oldNode.links;
+  }
+  if (oldNode.props && newNode.props) {
+    const oldByKey = new Map<string, any>(oldNode.props.map((p: any) => [p.key, p]));
+    newNode.props = newNode.props.map((p: any) => {
+      const old = oldByKey.get(p.key);
+      return old && old.id !== undefined && old.value === p.value ? { ...p, id: old.id } : p;
+    });
   }
 }
 

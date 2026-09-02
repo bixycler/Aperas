@@ -182,7 +182,7 @@ function apeironNgnTree(rootId: string, store: any): any {
       type: n.type,
       title: n.title,
       text: n.text,
-      children: n.children.map((c: any) => walk(c.id)),
+      children: (n.children ?? []).map((c: any) => walk(c.id)),
     };
   }
   return walk(rootId);

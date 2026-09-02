@@ -20,10 +20,16 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Same 5 files export.ts writes/reads (`Link` included since export.ts's INSTANCE_CLASSES fix —
-// Aperas-apeironngn-design.md §4's dangling-reference finding is now closed on the TerminusDB
-// side; `danglingRefs` below stays as a general-purpose check, not a Link-specific one).
-const INSTANCE_FILES = ['BlockNode', 'Link', 'ArtifactNode', 'FolderNode', 'Assertion'] as const;
+// The 3 top-level-addressable kinds (Aperas-apeironngn-design.md §4 rollout step 3's hierarchy
+// refactor): `Link`/`StringProp` are subdocuments now, nested inline inside whichever `BlockNode`/
+// `ArtifactNode`/`FolderNode` document owns them (`encodeDoc`'s embedded-object branch below
+// handles both uniformly, not `props`-specifically) — no standalone `Link.jsonld` to read anymore.
+// `Assertion` is gone entirely, not merely unread: previously listed here (its fields landed as
+// raw quads, since `encodeDoc` doesn't consult any class registry) while `dehydrate.ts` never
+// wrote it back out — a real latent bug (any live `Assertion` doc would silently vanish on the
+// next dehydrate), closed by removing the read path rather than adding the write path back. The
+// real `Assertion.jsonld` had zero documents when this was checked, so nothing was lost.
+const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
 
 export function getApeironExportDir(): string {
   // web/src/lib/apeironNgn -> web/src/lib -> web/src -> web -> repo root -> AperasKG/Apeiron
@@ -34,9 +40,9 @@ export interface RehydrateResult {
   store: Store;
   quadCount: number;
   nodeCount: number;
-  /** Ids referenced (as a `links`/`target`/etc. value) that never appear as a document's own
-   *  `@id` anywhere in the mirror — currently always `Link/...` ids, since Link isn't among
-   *  INSTANCE_FILES. Surfaced rather than silently dropped. */
+  /** Ids referenced (as a `parent`/`root`/`children` entry) that never appear as a document's own
+   *  `@id` anywhere in the mirror — a genuine data problem now that every reference-shaped field
+   *  points at one of the 3 `INSTANCE_FILES` kinds. Surfaced rather than silently dropped. */
   danglingRefs: string[];
 }
 

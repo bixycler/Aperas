@@ -29,10 +29,12 @@ const JSONLD_CONTEXT = {
   '@schema': 'terminusdb:///schema#',
 };
 
-// Which SHAPE_BY_KIND entries get their own top-level file — mirrors export.ts's INSTANCE_CLASSES,
-// minus Assertion (BaseEdge, out of scope entirely) and StringProp (a subdocument, embedded inline
-// wherever `props` references it, never its own top-level file).
-const DEHYDRATE_CLASSES = ['BlockNode', 'Link', 'ArtifactNode', 'FolderNode'] as const;
+// Which SHAPE_BY_KIND entries get their own top-level file — the 3 top-level-addressable kinds
+// (Aperas-apeironngn-design.md §4 rollout step 3). `Link`/`StringProp` are both subdocuments
+// (`storageKind: 'embed'`) — `decodeField`/`serializeDoc` below already recurse into either one
+// generically wherever a `links`/`props` field references it, so neither gets its own file.
+// `Assertion` never appears here at all (removed from the model entirely, not merely unwritten).
+const DEHYDRATE_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
 
 export function allIdsOfKind(store: Store, kind: string): string[] {
   const ids = new Set<string>();

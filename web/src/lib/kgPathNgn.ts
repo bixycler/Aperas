@@ -10,7 +10,7 @@
 
 import { rehydrateStore } from './apeironNgn/store';
 import { resolveTreeRef } from './apeironNgn/tree';
-import { resolveIdToPath } from './apeironNgn/path';
+import { wrap, type TreeNode } from './apeironNgn/node';
 
 function main(): void {
   const [idArg] = process.argv.slice(2);
@@ -26,9 +26,9 @@ function main(): void {
     process.exit(1);
   }
 
-  const path = resolveIdToPath(store, id);
+  const path = (wrap(store, id) as unknown as TreeNode).toPath();
   if (path === null) {
-    console.error(`[ApeironNgn kg:path] '${id}' has no walkable parent chain — a Link/Assertion (no structural parent), or a BlockNode ingested before the 'parent' field existed (needs re-ingestion).`);
+    console.error(`[ApeironNgn kg:path] '${id}' has no walkable parent chain — a Link (no structural parent), or a BlockNode ingested before the 'parent' field existed (needs re-ingestion).`);
     process.exit(1);
   }
   console.log(path);

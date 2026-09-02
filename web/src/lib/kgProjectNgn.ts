@@ -9,7 +9,7 @@
 import { rehydrateStore } from './apeironNgn/store';
 import { findByExactPath } from './apeironNgn/tree';
 import { nodeKindFromId } from './apeironNgn/vocab';
-import { projectArtifactToMarkdown, projectFolderToReadme } from './apeironNgn/project';
+import { wrap, type ArtifactNode, type FolderNode } from './apeironNgn/node';
 
 function main(): void {
   const paths = process.argv.slice(2);
@@ -31,7 +31,7 @@ function main(): void {
     process.exit(1);
   }
 
-  const markdown = kind === 'ArtifactNode' ? projectArtifactToMarkdown(store, path) : projectFolderToReadme(store, path);
+  const markdown = kind === 'ArtifactNode' ? (wrap(store, id!) as unknown as ArtifactNode).toMarkdown() : (wrap(store, id!) as unknown as FolderNode).toReadme();
   if (markdown === null) {
     console.error(`[ApeironNgn kg:project] Projection produced no content for '${path}'.`);
     process.exit(1);

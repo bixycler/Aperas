@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { rehydrateStore, getApeironExportDir } from './apeironNgn/store';
-import { wrapNode, backlinks } from './apeironNgn/node';
+import { wrap, backlinks } from './apeironNgn/node';
 
 let failures = 0;
 function check(label: string, condition: boolean): void {
@@ -68,7 +68,7 @@ async function main() {
   console.log(`   ${artifact.path} (root: ${artifact.root})\n`);
 
   console.log('3. Scalar field access (a.b.c) vs ground truth...');
-  const artifactNode = wrapNode(store, artifact['@id']);
+  const artifactNode = wrap(store, artifact['@id']);
   check('artifact.title matches ground truth', artifactNode.title === artifact.title);
   check('artifact.path matches ground truth', artifactNode.path === artifact.path);
   const rootNode = artifactNode.root as any;

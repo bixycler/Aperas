@@ -10,7 +10,6 @@ const PRED_BASE = 'urn:aperas:pred:';
 
 const XSD_INTEGER = namedNode('http://www.w3.org/2001/XMLSchema#integer');
 const XSD_BOOLEAN = namedNode('http://www.w3.org/2001/XMLSchema#boolean');
-const XSD_DATETIME = namedNode('http://www.w3.org/2001/XMLSchema#dateTime');
 
 /** Every concrete class whose instances carry an `@id` shaped `ClassName/snowflake` — the same
  *  set `nodeRef.ts`'s `FULL_NODE_ID_RE` recognizes for structural nodes, extended with the two
@@ -22,8 +21,31 @@ export function isNodeRef(value: unknown): value is string {
   return typeof value === 'string' && ID_PREFIX_RE.test(value);
 }
 
+/** The concrete class name from an id's own prefix — the one dispatch point `classes.ts`'s
+ *  `CLASS_BY_KIND` and `shape.ts`'s `SHAPE_BY_KIND` are keyed by. Keyed directly off the id scheme
+ *  `snowflake.ts` already mints ids by, not a separately-maintained mapping that can drift.
+ *  A subdocument id (`props`' `StringProp` entries) is shaped `${parentId}/props/StringProp/
+ *  <snowflake>` — the *owning* node's own class prefix leads the string, so it has to be checked
+ *  before the plain leading-prefix case, not after, or a `StringProp` id would misclassify as
+ *  whatever class its parent happens to be. */
+const PROPS_SUBDOC_RE = /\/props\/([A-Za-z]+)\//;
+const KIND_RE = /^(BlockNode|ArtifactNode|FolderNode|Link|Assertion|StringProp)\//;
+export function nodeKindFromId(id: string): string {
+  const propsMatch = id.match(PROPS_SUBDOC_RE);
+  if (propsMatch) return propsMatch[1];
+  const m = id.match(KIND_RE);
+  return m ? m[1] : 'Unknown';
+}
+
 export function nodeIri(id: string): NamedNode {
   return namedNode(NODE_BASE + id);
+}
+
+/** Whether any quad at all names `id` as its subject — the generic "does this node exist in the
+ *  store" check every write path needs before mutating (`getDocument` returning `null` under
+ *  TerminusDB's equivalent). */
+export function nodeExists(store: import('oxigraph').Store, id: string): boolean {
+  return store.match(nodeIri(id), null, null, null).length > 0;
 }
 
 export function idFromNodeIri(iri: string): string {
@@ -41,13 +63,18 @@ export function fieldFromPredIri(iri: string): string {
 }
 
 /** Encodes a scalar (string/number/boolean) as a typed Literal — the datatype is what lets
- *  `decodeLiteral` hand back the same JS type it was given, not just a string. */
+ *  `decodeLiteral` hand back the same JS type it was given, not just a string.
+ *
+ *  ISO-8601 date strings (lastTrackedAt/lastIngestedAt/tombstonedAt) are deliberately *not* given
+ *  an `xsd:dateTime` datatype, despite looking like an obvious fit — Oxigraph canonicalizes typed
+ *  literals against their datatype's value space, live-verified to silently rewrite
+ *  `"...23:02:27.480Z"` to `"...23:02:27.48Z"` (a real string, byte-for-byte, not just a display
+ *  quirk) on read-back. That's a real data-fidelity bug for anything dehydrated back to JSON-LD,
+ *  for a distinction (typed vs. plain string) nothing here actually relies on — dates stay plain
+ *  string literals, exactly like `title`/`path`/any other string field. */
 export function encodeLiteral(value: string | number | boolean): Literal {
   if (typeof value === 'number') return literal(String(value), XSD_INTEGER);
   if (typeof value === 'boolean') return literal(String(value), XSD_BOOLEAN);
-  // ISO-8601 date strings (lastTrackedAt/lastIngestedAt/tombstonedAt) get their own datatype so
-  // they decode back to a value distinguishable from an ordinary string if a caller ever needs to.
-  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return literal(value, XSD_DATETIME);
   return literal(value);
 }
 

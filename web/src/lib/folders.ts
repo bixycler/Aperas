@@ -37,7 +37,7 @@ export interface ParsedFolderNode {
   unfolded?: boolean;
 }
 
-function buildFolderTree(
+export function buildFolderTree(
   absoluteDir: string,
   artifactsDir: string,
   folderIdByPath: Map<string, string>,
@@ -123,7 +123,7 @@ function buildFolderTree(
 }
 
 /** Every FolderNode path in a freshly-built tree, root included, for rename-detection bookkeeping. */
-function collectFolderPaths(node: ParsedFolderNode, out: Map<string, ParsedFolderNode>): void {
+export function collectFolderPaths(node: ParsedFolderNode, out: Map<string, ParsedFolderNode>): void {
   out.set(node.path, node);
   for (const child of node.children) {
     if (typeof child === 'object' && child !== null && (child as any)['@type'] === 'FolderNode') {
@@ -132,7 +132,7 @@ function collectFolderPaths(node: ParsedFolderNode, out: Map<string, ParsedFolde
   }
 }
 
-function countFolders(node: ParsedFolderNode): number {
+export function countFolders(node: ParsedFolderNode): number {
   const nested = node.children.filter(
     (c): c is ParsedFolderNode => typeof c === 'object' && c !== null && (c as any)['@type'] === 'FolderNode'
   );

@@ -32,6 +32,7 @@ import { projectArtifactToMarkdown, projectFolderToReadme } from './project';
 import { insertAssertion, deleteAssertion, updateBlockNode } from './crud';
 import { queryNodeAssertions, searchNodes } from './woql';
 import { resolveNodeRefOrNull, resolveNodeRefDetail, resolveIdToPath } from './nodeRef';
+import { createLineReader } from './lineReader';
 
 const FULL_NODE_ID_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
 
@@ -141,27 +142,9 @@ async function collectBlockNodes(client: any, id: string, recursive: boolean): P
   return out;
 }
 
-/**
- * Line-by-line stdin reader for kg:title/kg:link's interactive prompts. Deliberately not
- * `rl.question()`: that API races against readline's auto-close-on-stream-'end' whenever real
- * async work (e.g. resolveNodeRefOrNull's DB round-trip) happens between calls — confirmed live,
- * two different failure modes depending on timing (an immediate throw, or a silently-abandoned
- * pending call that lets the process exit with no output at all). A live interactive TTY never
- * sends 'end' mid-session, so neither failure mode is reachable there; both are real for a coding
- * agent piping pre-computed answers non-interactively, which this tool is explicitly meant to
- * support. Consuming the interface's own async iterator instead — the same mechanism `for
- * await...of readline.createInterface(...)` uses — reports end-of-input as an ordinary `{done:
- * true}`, not a race-prone exception, regardless of what else is `await`ed in between reads.
- */
-function createLineReader(rl: any): { next: () => Promise<string | null> } {
-  const iter = rl[Symbol.asyncIterator]();
-  return {
-    async next(): Promise<string | null> {
-      const { value, done } = await iter.next();
-      return done ? null : value;
-    },
-  };
-}
+// kg:title/kg:link's interactive-prompt line reader lives in lineReader.ts now, so ApeironNgn's
+// own migrated versions can reuse it directly without importing this file (which runs `main()` as
+// a module-load side effect, unsuitable for anything but being the CLI entrypoint itself).
 
 /**
  * Sets `unfolded`, fetch-then-resubmit (`children`, or for ArtifactNode the singular `root`, is a

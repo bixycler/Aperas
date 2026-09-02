@@ -74,17 +74,17 @@ export async function resolveIdToPath(client: any, id: string): Promise<string |
 // direction. See that doc for the settled design this implements.
 // ---------------------------------------------------------------------------------------------
 
-type Token = { kind: 'self' } | { kind: 'up' } | { kind: 'name'; text: string };
+export type Token = { kind: 'self' } | { kind: 'up' } | { kind: 'name'; text: string };
 
 /** §2's grammar: `.`/`..` are reserved at every segment position, everything else is a name. */
-function tokenize(path: string): Token[] {
+export function tokenize(path: string): Token[] {
   return path
     .split('/')
     .filter((s) => s.length > 0)
     .map((s) => (s === '.' ? { kind: 'self' } : s === '..' ? { kind: 'up' } : { kind: 'name', text: s }));
 }
 
-function pathToNameTokens(path: string): Token[] {
+export function pathToNameTokens(path: string): Token[] {
   return path === '.' ? [] : path.split('/').map((text) => ({ kind: 'name', text }));
 }
 

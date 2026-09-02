@@ -17,7 +17,7 @@ import { getProp } from './props';
 /** Prepends a re-emitted `---\n...\n---` frontmatter block, if this node's `props` (§5) carries
  *  one, ahead of its otherwise-serialized body. Applies uniformly to ArtifactNode and
  *  FolderNode — both were the exact same `frontmatter` prop scope decided in §5. */
-function withFrontmatter(body: string, node: any): string {
+export function withFrontmatter(body: string, node: any): string {
   const frontmatter = getProp(node, 'frontmatter');
   return frontmatter !== undefined ? `---\n${frontmatter}\n---\n\n${body}` : body;
 }
@@ -69,7 +69,7 @@ function indentContinuationLines(text: string, prefixWidth: number): string {
  * `list` block, or whatever adopted the list per §8) is the sole owner of that list's numbering.
  * Everything else renders one block at a time via the ordinary per-type dispatch.
  */
-function renderChildren(node: any): string {
+export function renderChildren(node: any): string {
   const children = node.children ?? [];
   const parts: string[] = [];
   let i = 0;

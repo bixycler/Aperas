@@ -11,7 +11,7 @@ import { getArtifactTreeViaGraphQL, executeGraphQLQuery } from './graphql';
 // @ts-ignore
 import TerminusDB from 'terminusdb';
 import { rehydrateStore, getApeironExportDir } from './apeironNgn/store';
-import { wrapNode } from './apeironNgn/node';
+import { wrap } from './apeironNgn/node';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -176,7 +176,7 @@ function apeironNgnRootId(): string {
 
 function apeironNgnTree(rootId: string, store: any): any {
   function walk(id: string): any {
-    const n = wrapNode(store, id);
+    const n = wrap(store, id);
     return {
       blockId: n.id.split('/')[1],
       type: n.type,

@@ -252,11 +252,11 @@ export async function getArtifactRecord(client: any, artifactPath: string): Prom
 }
 
 // A quick count function just for logging/reporting.
-function countBlocks(node: any): number {
+export function countBlocks(node: any): number {
   return 1 + (node.children || []).reduce((sum: number, child: any) => sum + countBlocks(child), 0);
 }
 
-interface PendingLinkCodes {
+export interface PendingLinkCodes {
   blockId: string;
   codes: string[];
 }
@@ -268,7 +268,7 @@ interface PendingLinkCodes {
  * way for `resolveBlockLinks` to resolve in its own separate pass afterward. Called *before* the
  * write; `resolveBlockLinks` itself runs *after* it (see that function's own doc comment).
  */
-function extractLinkCodes(node: ParsedBlockNode, out: PendingLinkCodes[] = []): PendingLinkCodes[] {
+export function extractLinkCodes(node: ParsedBlockNode, out: PendingLinkCodes[] = []): PendingLinkCodes[] {
   if (node.linkCodes && node.linkCodes.length > 0) {
     out.push({ blockId: node.blockId, codes: node.linkCodes });
   }

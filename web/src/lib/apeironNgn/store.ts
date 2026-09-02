@@ -20,11 +20,10 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Same 4 files export.ts writes/reads — Link (a concrete BaseLink instance class) has no export
-// file of its own (a pre-existing gap in the export pipeline, not introduced here — see the
-// dangling-reference warning below), so `links` values referencing it can only be encoded as
-// bare id references, never resolved to their own target/predicate fields from this mirror alone.
-const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Assertion'] as const;
+// Same 5 files export.ts writes/reads (`Link` included since export.ts's INSTANCE_CLASSES fix —
+// Aperas-apeironngn-design.md §4's dangling-reference finding is now closed on the TerminusDB
+// side; `danglingRefs` below stays as a general-purpose check, not a Link-specific one).
+const INSTANCE_FILES = ['BlockNode', 'Link', 'ArtifactNode', 'FolderNode', 'Assertion'] as const;
 
 export function getApeironExportDir(): string {
   // web/src/lib/apeironNgn -> web/src/lib -> web/src -> web -> repo root -> AperasKG/Apeiron

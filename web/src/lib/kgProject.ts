@@ -46,14 +46,15 @@ export function runProject(store: Store, path: string) {
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   const dryRun = rawArgs.includes('--dry-run');
-  const [path] = rawArgs.filter((p) => p !== '--dry-run');
+  const reload = rawArgs.includes('--reload');
+  const [path] = rawArgs.filter((p) => p !== '--dry-run' && p !== '--reload');
   if (!path) {
-    console.error('Usage: kg:project -- <path> [--dry-run]');
+    console.error('Usage: kg:project -- <path> [--dry-run] [--reload]');
     process.exit(1);
   }
 
   await ensureServiceRunning();
-  const { markdown, targetFile } = await request<ReturnType<typeof runProject>>({ op: 'project', path });
+  const { markdown, targetFile } = await request<ReturnType<typeof runProject>>({ op: 'project', path, reload });
 
   if (dryRun) {
     console.log(markdown);

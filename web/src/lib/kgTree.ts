@@ -11,7 +11,7 @@ import { wrap, type TreeNode, type TreeView } from './apeironNgn/node';
 import { nodeExists } from './apeironNgn/vocab';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 
-export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string }) {
+export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string; reload?: boolean }) {
   const id = resolveTreeRef(store, req.pathArg);
   if (!id) throw new Error(`'${req.pathArg}' isn't a full node id or an exact tracked artifact/folder path.`);
   let view: TreeView | undefined;
@@ -26,7 +26,8 @@ async function main(): Promise<void> {
   const paths = process.argv.slice(2);
 
   const noHolders = paths.includes('--no-holders');
-  const withoutFlag0 = paths.filter((p) => p !== '--no-holders');
+  const reload = paths.includes('--reload');
+  const withoutFlag0 = paths.filter((p) => p !== '--no-holders' && p !== '--reload');
   const viewFlagIdx = withoutFlag0.indexOf('--view');
   const viewRef = viewFlagIdx !== -1 ? withoutFlag0[viewFlagIdx + 1] : undefined;
   const withoutFlag = viewFlagIdx !== -1
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
   }
 
   await ensureServiceRunning();
-  const lines = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, viewRef });
+  const lines = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, viewRef, reload });
   console.log(lines.join('\n'));
 }
 

@@ -19,14 +19,16 @@ export function runPath(store: Store, idArg: string): string {
 }
 
 async function main(): Promise<void> {
-  const [idArg] = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const reload = rawArgs.includes('--reload');
+  const [idArg] = rawArgs.filter((p) => p !== '--reload');
   if (!idArg) {
-    console.error('Usage: kg:path -- <id or exact path>');
+    console.error('Usage: kg:path -- <id or exact path> [--reload]');
     process.exit(1);
   }
 
   await ensureServiceRunning();
-  const path = await request<ReturnType<typeof runPath>>({ op: 'path', idArg });
+  const path = await request<ReturnType<typeof runPath>>({ op: 'path', idArg, reload });
   console.log(path);
 }
 

@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "verify": "npx tsx src/lib/verify.ts",
+    "kg:reload": "npx tsx src/lib/kgReload.ts",
     "kg:track": "npx tsx src/lib/kgTrack.ts",
     "kg:ingest": "npx tsx src/lib/kgIngest.ts",
     "kg:project": "npx tsx src/lib/kgProject.ts",

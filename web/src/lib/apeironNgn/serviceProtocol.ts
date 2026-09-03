@@ -6,6 +6,12 @@
 
 export type ServiceRequest =
   | { op: 'ping' }
+  // The revived TDB-era `kg:import`'s equivalent: discards the in-memory `Store` and rehydrates a
+  // fresh one from `AperasKG/Apeiron/` (content mirror + `.state/`) — the only way to pick up a
+  // change landing on disk after the service started (e.g. a `git pull` merging someone else's
+  // commit), since nothing else ever re-reads the mirror once the service is running. Flushes
+  // both dirty flags first if set, so no unflushed in-memory work is silently discarded.
+  | { op: 'reload' }
   | { op: 'track'; paths: string[]; flush: boolean }
   | { op: 'ingest'; flush: boolean }
   // `viewRef` (Aperas-treeview-design.md §5/§8) — a `TreeView` id, or a `TreeNode`/`Link` ref for
@@ -21,12 +27,17 @@ export type ServiceRequest =
   | { op: 'setBlockTitle'; blockId: string; title: string; flush: boolean }
   | { op: 'linkCandidates'; pathArg: string; recursive: boolean; all: boolean }
   | { op: 'addBlockLink'; blockId: string; targetRef: string; flush: boolean }
-  | { op: 'project'; path: string }
+  // `reload` on a read-only op — the reciprocal of a mutating op's `flush`: `flush` forces an
+  // immediate sync *out* to disk after a write; `reload` forces an immediate sync *in* from disk
+  // before this read, so it reflects the current mirror even if the service has been sitting idle
+  // since before an external change landed. Equivalent to a `{ op: 'reload' }` call immediately
+  // followed by this one, just one round trip instead of two.
+  | { op: 'project'; path: string; reload: boolean }
   // `viewRef` presence drives unfolded-mode rendering — replaces the old bare `unfoldedMode`
   // boolean (§5): a `--view` flag with no target view still resolves to `"default"`, so this is
   // never actually optional in practice, but stays typed that way to match `unfold`/`fold` above.
-  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string }
-  | { op: 'path'; idArg: string };
+  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string; reload: boolean }
+  | { op: 'path'; idArg: string; reload: boolean };
 
 export type ServiceResponse = { ok: true; result: unknown } | { ok: false; error: string };
 

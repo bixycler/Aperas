@@ -14,6 +14,15 @@
  * Started on demand by `serviceClient.ts#ensureServiceRunning` — not meant to be run directly,
  * though doing so still works (it just skips the lock-claim race that only matters when multiple
  * clients might be starting a service at once).
+ *
+ * Staleness: the `Store` held here is a snapshot from whenever it was last (re)hydrated — nothing
+ * notices `AperasKG/Apeiron/` changing on disk underneath it (e.g. a `git pull` merging someone
+ * else's commit) on its own. `reloadStore()` is the fix, the revived TDB-era `kg:import`'s
+ * equivalent: flushes both dirty flags first (so no unflushed in-memory work is silently
+ * discarded), then rehydrates fresh and swaps the in-memory `Store` reference. Reachable directly
+ * via `{ op: 'reload' }` (`kg:reload`), or implicitly via a read-only op's own `reload: true` —
+ * the reciprocal of a mutating op's `flush: true`: `flush` forces a sync *out* immediately after a
+ * write, `reload` forces a sync *in* immediately before a read.
  */
 
 import { createServer, type Socket } from 'node:net';
@@ -39,7 +48,7 @@ const STATE_FLUSH_INTERVAL_MS = 3_000;
 const IDLE_TIMEOUT_MS = 30 * 60_000;
 
 function main(): void {
-  const { store, quadCount } = rehydrateStore();
+  let { store, quadCount } = rehydrateStore();
   console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s).`);
 
   let dirty = false;
@@ -61,6 +70,19 @@ function main(): void {
     if (!stateDirty) return;
     dehydrateStateToJsonLd(store);
     stateDirty = false;
+  }
+
+  /** Flushes both mirrors if dirty, then rehydrates a fresh `Store` from disk and swaps it in —
+   *  see this file's own doc comment for why. `dirty`/`stateDirty` need no explicit reset here:
+   *  the flushes above already cleared them if they were set, and a fresh rehydrate starts clean
+   *  regardless. */
+  function reloadStore(): { quadCount: number; nodeCount: number } {
+    flushIfDirty();
+    flushStateIfDirty();
+    const result = rehydrateStore();
+    store = result.store;
+    console.error(`[ApeironNgn service] Reloaded ${result.quadCount} quad(s).`);
+    return { quadCount: result.quadCount, nodeCount: result.nodeCount };
   }
 
   let idleTimer: NodeJS.Timeout;
@@ -94,6 +116,8 @@ function main(): void {
     switch (req.op) {
       case 'ping':
         return { pong: true };
+      case 'reload':
+        return reloadStore();
       case 'track': {
         const result = runTrack(store, req.paths);
         dirty = true;
@@ -143,10 +167,13 @@ function main(): void {
         return result;
       }
       case 'project':
+        if (req.reload) reloadStore();
         return runProject(store, req.path);
       case 'tree':
+        if (req.reload) reloadStore();
         return runTree(store, req);
       case 'path':
+        if (req.reload) reloadStore();
         return runPath(store, req.idArg);
       default:
         throw new Error(`ApeironNgn service: unknown op '${(req as { op?: string }).op}'`);

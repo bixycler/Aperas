@@ -32,7 +32,7 @@
  * dehydrate/rehydrate check uses its own separate scratch directory.
  */
 
-import { writeFileSync, unlinkSync, existsSync, mkdirSync, rmSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMarkdownTree, WIKILINK_PREDICATE } from './astParser';
@@ -354,7 +354,7 @@ Intro sentence for the demo folder.
 }
 
 // Execute locally if run directly
-if (typeof process !== 'undefined' && process.argv && process.argv[1]?.includes('verifyApeironNgn')) {
+if (typeof process !== 'undefined' && process.argv && process.argv[1]?.endsWith('verify.ts')) {
   runApeironNgnVerification().catch((err) => {
     console.error('\n[!] ApeironNgn verification failed:', err.message || err);
     process.exit(1);

@@ -30,8 +30,8 @@ function main(): void {
   const rest = paths.filter((_, i) => !consumed.has(i));
 
   if (rest.length === 0) {
-    console.error('Usage: kg:resolve:ngn -- [--base <path>] <path> [<path>...]');
-    console.error('       kg:resolve:ngn -- [--base <path>] --create-holder <path> --titles <title> [<title>...]');
+    console.error('Usage: kg:resolve -- [--base <path>] <path> [<path>...]');
+    console.error('       kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]');
     process.exit(1);
   }
 

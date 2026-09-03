@@ -24,14 +24,15 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { createTerminusClient, initializeAperasDatabase } from './client';
-import { trackArtifact, trackAllArtifacts, ingestAllArtifacts, getArtifactRecord, getArtifactsDir, isReadmeFilename } from './artifacts';
-import { ingestFolderTree, getFolderRecord } from './folders';
-import { exportJsonLd, importJsonLd } from './export';
-import { projectArtifactToMarkdown, projectFolderToReadme } from './project';
-import { insertAssertion, deleteAssertion, updateBlockNode } from './crud';
-import { queryNodeAssertions, searchNodes } from './woql';
-import { resolveNodeRefOrNull, resolveNodeRefDetail, resolveIdToPath } from './nodeRef';
+import { createTerminusClient, initializeAperasDatabase } from './clientTdb';
+import { getArtifactsDir, isReadmeFilename } from './artifacts';
+import { trackArtifact, trackAllArtifacts, ingestAllArtifacts, getArtifactRecord } from './artifactsTdb';
+import { ingestFolderTree, getFolderRecord } from './foldersTdb';
+import { exportJsonLd, importJsonLd } from './exportTdb';
+import { projectArtifactToMarkdown, projectFolderToReadme } from './projectTdb';
+import { insertAssertion, deleteAssertion, updateBlockNode } from './crudTdb';
+import { queryNodeAssertions, searchNodes } from './woqlTdb';
+import { resolveNodeRefOrNull, resolveNodeRefDetail, resolveIdToPath } from './nodeRefTdb';
 import { createLineReader } from './lineReader';
 
 const FULL_NODE_ID_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;

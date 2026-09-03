@@ -14,7 +14,7 @@ import { displayLabel } from './apeironNgn/tree';
 function main(): void {
   const [pathArg] = process.argv.slice(2);
   if (!pathArg) {
-    console.error('Usage: kg:unfold:ngn -- <path>');
+    console.error('Usage: kg:unfold -- <path>');
     process.exit(1);
   }
 

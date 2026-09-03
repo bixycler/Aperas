@@ -15,7 +15,7 @@ import { wrap, type TreeNode } from './apeironNgn/node';
 function main(): void {
   const [idArg] = process.argv.slice(2);
   if (!idArg) {
-    console.error('Usage: kg:path:ngn -- <id or exact path>');
+    console.error('Usage: kg:path -- <id or exact path>');
     process.exit(1);
   }
 

@@ -18,7 +18,7 @@ function main(): void {
   const dryRun = paths.includes('--dry-run');
   const [path] = paths.filter((p) => p !== '--dry-run');
   if (!path) {
-    console.error('Usage: kg:project:ngn -- <path> [--dry-run]');
+    console.error('Usage: kg:project -- <path> [--dry-run]');
     process.exit(1);
   }
 

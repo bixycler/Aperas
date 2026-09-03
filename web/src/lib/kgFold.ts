@@ -13,7 +13,7 @@ import { nodeExists } from './apeironNgn/vocab';
 function main(): void {
   const [pathArg] = process.argv.slice(2);
   if (!pathArg) {
-    console.error('Usage: kg:fold:ngn -- <path>');
+    console.error('Usage: kg:fold -- <path>');
     process.exit(1);
   }
 

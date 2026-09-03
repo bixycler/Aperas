@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const all = paths.includes('--all');
   const [pathArg] = paths.filter((p) => p !== '--recursive' && p !== '--all');
   if (!pathArg) {
-    console.error('Usage: kg:link:ngn -- <path> [--recursive] [--all]');
+    console.error('Usage: kg:link -- <path> [--recursive] [--all]');
     process.exit(1);
   }
 

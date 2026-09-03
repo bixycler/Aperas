@@ -11,7 +11,7 @@
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hashDocSet } from './client';
+import { hashDocSet } from './clientTdb';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

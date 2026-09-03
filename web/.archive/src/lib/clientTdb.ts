@@ -7,7 +7,7 @@
 // @ts-ignore - terminusdb npm package exports WOQLClient
 import TerminusDB from 'terminusdb';
 import { createHash } from 'node:crypto';
-import schemaObjects from './schema.json';
+import schemaObjects from './schemaTdb.json';
 
 // Recursively sorts object keys so two structurally-identical document sets hash the same
 // regardless of property insertion order (JSON.stringify key order is insertion order).

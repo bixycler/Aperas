@@ -16,14 +16,16 @@
 import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseMarkdownTree, WIKILINK_PREDICATE } from './astParser';
-import { createTerminusClient, initializeAperasDatabase } from './client';
-import { getArtifactsDir, trackArtifact, ingestArtifact, getArtifactRecord } from './artifacts';
-import { ingestFolderTree } from './folders';
-import { insertAssertion, deleteAssertionsInvolvingNode, findLinkIdsTargeting, deleteDocumentIfExists, deleteDocumentsIfExist } from './crud';
-import { queryNodeAssertions, traceImpactPropagation } from './woql';
-import { getArtifactTreeViaGraphQL } from './graphql';
-import { getCommitHistory, createBranch, deleteBranchIfExists } from './versionControl';
-import { serializeBlock, projectFolderToReadme } from './project';
+import { createTerminusClient, initializeAperasDatabase } from './clientTdb';
+import { getArtifactsDir } from './artifacts';
+import { trackArtifact, ingestArtifact, getArtifactRecord } from './artifactsTdb';
+import { ingestFolderTree } from './foldersTdb';
+import { insertAssertion, deleteAssertionsInvolvingNode, findLinkIdsTargeting, deleteDocumentIfExists, deleteDocumentsIfExist } from './crudTdb';
+import { queryNodeAssertions, traceImpactPropagation } from './woqlTdb';
+import { getArtifactTreeViaGraphQL } from './graphqlTdb';
+import { getCommitHistory, createBranch, deleteBranchIfExists } from './versionControlTdb';
+import { serializeBlock } from './project';
+import { projectFolderToReadme } from './projectTdb';
 import { reconcileTree } from './reconcile';
 import { getProp } from './props';
 
@@ -398,7 +400,7 @@ Intro sentence for the demo folder.
 }
 
 // Execute locally if run directly
-if (typeof process !== 'undefined' && process.argv && process.argv[1]?.includes('verifyPhase0')) {
+if (typeof process !== 'undefined' && process.argv && process.argv[1]?.endsWith('verifyTdb.ts')) {
   const shouldConnect = process.argv.includes('--db');
   runPhase0Verification({ connectToDb: shouldConnect });
 }

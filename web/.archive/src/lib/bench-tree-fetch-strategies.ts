@@ -1,17 +1,23 @@
 /**
- * Live benchmark, kept for reuse (not throwaway) — compares bulk-fetch-then-consume (GraphQL's
- * getArtifactTreeViaGraphQL) against node-by-node paired fetch (data structure built one node at
- * a time, in lockstep with the recursive walk that builds it) across all three TerminusDB APIs,
- * plus ApeironNgn's in-process Oxigraph engine (E) as a structurally different fifth strategy —
- * no round trip at all, bulk or otherwise, since the whole store lives in-process. Builds only the
- * raw block tree (blockId/type/title/text/childIds) — no Markdown projection.
+ * Archived benchmark (Aperas-apeironngn-design.md §4 rollout, archiving step) — compares
+ * bulk-fetch-then-consume (GraphQL's getArtifactTreeViaGraphQL) against node-by-node paired
+ * fetch (data structure built one node at a time, in lockstep with the recursive walk that
+ * builds it) across all three TerminusDB APIs, plus ApeironNgn's in-process Oxigraph engine (E)
+ * as a structurally different fifth strategy — no round trip at all, bulk or otherwise, since
+ * the whole store lives in-process. Builds only the raw block tree (blockId/type/title/text/
+ * childIds) — no Markdown projection.
+ *
+ * Archived alongside its own TDB-only deps (clientTdb/graphqlTdb, co-located here). Its
+ * ApeironNgn-side deps (apeironNgn/store.ts, apeironNgn/node.ts) are NOT copied in — unlike the
+ * TDB modules, apeironNgn/ isn't abandoned, it's the live, ongoing implementation, so this
+ * reaches back into the real tree rather than freezing a copy that would just go stale.
  */
-import { createTerminusClient } from './client';
-import { getArtifactTreeViaGraphQL, executeGraphQLQuery } from './graphql';
+import { createTerminusClient } from './clientTdb';
+import { getArtifactTreeViaGraphQL, executeGraphQLQuery } from './graphqlTdb';
 // @ts-ignore
 import TerminusDB from 'terminusdb';
-import { rehydrateStore, getApeironExportDir } from './apeironNgn/store';
-import { wrap } from './apeironNgn/node';
+import { rehydrateStore, getApeironExportDir } from '../../../src/lib/apeironNgn/store';
+import { wrap } from '../../../src/lib/apeironNgn/node';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 

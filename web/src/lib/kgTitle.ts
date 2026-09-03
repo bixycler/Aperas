@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   const recursive = paths.includes('--recursive');
   const [pathArg] = paths.filter((p) => p !== '--recursive');
   if (!pathArg) {
-    console.error('Usage: kg:title:ngn -- <path> [--recursive]');
+    console.error('Usage: kg:title -- <path> [--recursive]');
     process.exit(1);
   }
 

@@ -54,7 +54,7 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
   const liveFolderIds = allLiveIdsOfKind(store, 'FolderNode');
   const existingByPath = new Map(liveFolderIds.map((id) => {
     const node = wrap(store, id) as unknown as FolderNode;
-    return [node.path as string, { unfolded: node.unfolded }];
+    return [node.path as string, { unfolded: node.unfolded, props: node.props }];
   }));
   const folderIdByPath = new Map(liveFolderIds.map((id) => {
     const node = wrap(store, id) as unknown as FolderNode;

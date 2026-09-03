@@ -16,10 +16,15 @@ import { getProp } from './props';
 
 /** Prepends a re-emitted `---\n...\n---` frontmatter block, if this node's `props` (§5) carries
  *  one, ahead of its otherwise-serialized body. Applies uniformly to ArtifactNode and
- *  FolderNode — both were the exact same `frontmatter` prop scope decided in §5. */
+ *  FolderNode — both were the exact same `frontmatter` prop scope decided in §5. Also this
+ *  serializer's one exit point, so it's where a final trailing newline is guaranteed — every
+ *  write-mode caller (`kgCli.ts`'s `project` command, `kgProjectNgn.ts`) writes this return value
+ *  straight to disk with no `+ '\n'` of its own, and neither `serializeBlock`/`renderChildren` nor
+ *  their ApeironNgn equivalents add one after the last block. */
 export function withFrontmatter(body: string, node: any): string {
   const frontmatter = getProp(node, 'frontmatter');
-  return frontmatter !== undefined ? `---\n${frontmatter}\n---\n\n${body}` : body;
+  const result = frontmatter !== undefined ? `---\n${frontmatter}\n---\n\n${body}` : body;
+  return result.endsWith('\n') ? result : `${result}\n`;
 }
 
 /** Strips one optional leading `> ` (with or without the trailing space) from a single line. */

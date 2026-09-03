@@ -73,7 +73,13 @@ function decodeField(store: Store, id: string, field: string, spec: FieldSpec): 
     }
     return undefined;
   };
-  if (spec.cardinality === 'set') return matches.map(decodeOne);
+  if (spec.cardinality === 'set') {
+    // `store.match()`'s order for a Set-typed field isn't stable across a rehydrate/dehydrate
+    // cycle -- sorted here so re-serializing unchanged content doesn't reshuffle `links`/`props`
+    // into git-diff noise, same principle `dehydrateToJsonLd` already applies to top-level
+    // documents (sorted by @id, via `stableId` below).
+    return matches.map(decodeOne).sort((a, b) => stableId(a).localeCompare(stableId(b)));
+  }
   if (matches.length === 0) return undefined;
   return decodeOne(matches[0]);
 }
@@ -96,8 +102,14 @@ function serializeDoc(store: Store, id: string): Record<string, unknown> {
   return doc;
 }
 
-function stableId(doc: Record<string, unknown>): string {
-  return (doc['@id'] as string) ?? '';
+/** Sort key for anything `dehydrateToJsonLd` needs a stable order for: a top-level document or a
+ *  `set`-cardinality field's decoded entry (an embed object with its own `@id`, a bare reference-id
+ *  string, or a plain literal). */
+function stableId(value: unknown): string {
+  if (value && typeof value === 'object' && '@id' in (value as Record<string, unknown>)) {
+    return String((value as Record<string, unknown>)['@id'] ?? '');
+  }
+  return String(value ?? '');
 }
 
 /** Rewrites a whole class's JSON-LD file from the `Store`'s current content, for each of

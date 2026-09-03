@@ -45,6 +45,7 @@ import { parseMarkdownTree, extractAbstract, stampParents, type ParsedBlockNode 
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
+import { carryForwardProp, type PropEntry } from '../props';
 import type { ParsedFolderNode } from '../folders';
 
 export interface ApeironNode {
@@ -118,10 +119,17 @@ function mintEmbedded(store: Store, parentId: string, field: string, entry: Reco
   if (!shape) throw new Error(`ApeironNgn: no shape declared for embedded type '${type}'`);
   for (const [k, v] of Object.entries(entry)) {
     if (k === '@type' || k === '@id' || k === 'id') continue;
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      store.add(quad(nodeIri(newId), predIri(k), encodeLiteral(v)));
-    } else if (v && typeof v === 'object' && shape[k]?.storageKind === 'reference') {
+    if (v === null || v === undefined) continue;
+    // Reference-kind fields checked *before* the literal branch below, regardless of whether `v`
+    // is a bare id string or an object carrying one (`idOf` handles both) -- `BaseNode.addLink`'s
+    // normal calling convention (`{ predicate, target: <string id> }`) passes a plain string for
+    // `target`, which a string-first check would wrongly encode as a literal instead of a node
+    // reference (silently breaking every freshly-minted `Link.target`: it decodes back as a bare
+    // string on read, not a wrapped node, so `.target.id`/backlinks on it come back `undefined`).
+    if (shape[k]?.storageKind === 'reference') {
       store.add(quad(nodeIri(newId), predIri(k), nodeIri(idOf(v))));
+    } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      store.add(quad(nodeIri(newId), predIri(k), encodeLiteral(v)));
     }
   }
   return newId;
@@ -442,7 +450,13 @@ export class ArtifactNode extends TreeNode {
     const content = readFileSync(join(getArtifactsDir(), artifactPath), 'utf-8');
     const { root: newRoot, frontmatter } = parseMarkdownTree(content);
     const now = new Date().toISOString();
-    const props = frontmatter !== undefined ? [{ '@type': 'StringProp' as const, key: 'frontmatter', value: frontmatter }] : undefined;
+    // Carry the existing `frontmatter` StringProp's id forward when its value hasn't changed —
+    // without this, `mintEmbedded` mints a fresh one on every single ingestion regardless (the
+    // same "prop-id churn" bug class §4's rollout narrative already fixed for per-block props,
+    // just not yet for this artifact-level singular one).
+    const props = frontmatter !== undefined
+      ? [carryForwardProp(this.props as unknown as PropEntry[] | undefined, 'frontmatter', frontmatter)]
+      : undefined;
 
     let finalRoot: ParsedBlockNode = newRoot;
     let reconciliation: ReconciliationStats | null = null;

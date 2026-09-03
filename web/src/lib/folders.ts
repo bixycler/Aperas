@@ -20,7 +20,7 @@ import { parseMarkdownTree } from './astParser';
 import { getArtifactsDir, isReadmeFilename } from './artifacts';
 import { generateNodeId } from './snowflake';
 import { matchLeftoverByAbstract } from './reconcile';
-import type { PropEntry } from './props';
+import { carryForwardProp, type PropEntry } from './props';
 
 export interface ParsedFolderNode {
   "@type": "FolderNode";
@@ -83,8 +83,12 @@ export function buildFolderTree(
       } else {
         readmeChildren = parsedRoot.children;
       }
+      // Carries the existing `frontmatter` StringProp's id forward when its value hasn't changed
+      // (`carryForwardProp`) — same fix as `ArtifactNode.ingestFromDisk`'s, and a no-op for the
+      // TerminusDB-backed caller, which doesn't populate `existingByPath`'s `props` (and whose own
+      // `@key: {"@type": "Random"}` schema would ignore a supplied id regardless).
       readmeProps = frontmatter !== undefined
-        ? [{ "@type": "StringProp", key: "frontmatter", value: frontmatter }]
+        ? [carryForwardProp(existingByPath.get(path)?.props, "frontmatter", frontmatter)]
         : undefined;
       // readmeChildren are relocated straight into FolderNode.children, never kept under a
       // persisted root block of their own — astParser.ts's stampParents pointed them at

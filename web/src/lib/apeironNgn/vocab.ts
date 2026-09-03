@@ -16,8 +16,11 @@ const XSD_BOOLEAN = namedNode('http://www.w3.org/2001/XMLSchema#boolean');
  *  `StringProp` are deliberately excluded: both are subdocuments now (`shape.ts`'s
  *  `storageKind: 'embed'`), minted as `${parentId}/(props|links)/ClassName/<snowflake>` — they
  *  never appear as a bare top-level reference string, only nested (`SUBDOC_RE` below catches
- *  them). Used to tell a reference-shaped string value from an ordinary literal. */
-const ID_PREFIX_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
+ *  them). Used to tell a reference-shaped string value from an ordinary literal. `Profile`/
+ *  `TreeView` (Aperas-treeview-design.md) are top-level like `BlockNode`/`ArtifactNode`/
+ *  `FolderNode` — un-suffixed naming matching `Link`/`StringProp` since neither is a `TreeNode`
+ *  subclass, but still its own addressable id, not a subdocument. */
+const ID_PREFIX_RE = /^(BlockNode|ArtifactNode|FolderNode|Profile|TreeView)\//;
 
 export function isNodeRef(value: unknown): value is string {
   return typeof value === 'string' && ID_PREFIX_RE.test(value);
@@ -31,7 +34,7 @@ export function isNodeRef(value: unknown): value is string {
  *  the string, so it has to be checked before the plain leading-prefix case, not after, or a
  *  subdocument id would misclassify as whatever class its parent happens to be. */
 const SUBDOC_RE = /\/(?:props|links)\/([A-Za-z]+)\//;
-const KIND_RE = /^(BlockNode|ArtifactNode|FolderNode)\//;
+const KIND_RE = /^(BlockNode|ArtifactNode|FolderNode|Profile|TreeView)\//;
 export function nodeKindFromId(id: string): string {
   const subMatch = id.match(SUBDOC_RE);
   if (subMatch) return subMatch[1];

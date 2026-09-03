@@ -242,7 +242,6 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
     holder.type = 'heading';
     holder.title = wantTitle;
     holder.children = [];
-    holder.unfolded = false;
     holder.holder = true;
     holder.parent = currentId as unknown as TreeNode;
 

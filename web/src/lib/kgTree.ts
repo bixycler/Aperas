@@ -1,25 +1,37 @@
 /**
  * `kg:tree` — renders the fractal tree from a resolved node, via the shared ApeironNgn service
- * (Aperas-apeironngn-design.md §4 rollout step 5).
+ * (Aperas-apeironngn-design.md §4 rollout step 5). `--view <ref>` (Aperas-treeview-design.md §5)
+ * replaces the old bare `--unfolded` flag: supplying a view drives unfolded-mode rendering keyed
+ * off that view's `unfolds` set; omitting it keeps the plain title-only default.
  */
 
 import type { Store } from 'oxigraph';
 import { resolveTreeRef } from './apeironNgn/tree';
-import { wrap, type TreeNode } from './apeironNgn/node';
+import { wrap, type TreeNode, type TreeView } from './apeironNgn/node';
+import { nodeExists } from './apeironNgn/vocab';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 
-export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; unfoldedMode: boolean }) {
+export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string }) {
   const id = resolveTreeRef(store, req.pathArg);
   if (!id) throw new Error(`'${req.pathArg}' isn't a full node id or an exact tracked artifact/folder path.`);
-  return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, unfoldedMode: req.unfoldedMode });
+  let view: TreeView | undefined;
+  if (req.viewRef !== undefined) {
+    if (!nodeExists(store, req.viewRef)) throw new Error(`TreeView '${req.viewRef}' not found.`);
+    view = wrap(store, req.viewRef) as unknown as TreeView;
+  }
+  return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, view });
 }
 
 async function main(): Promise<void> {
   const paths = process.argv.slice(2);
 
   const noHolders = paths.includes('--no-holders');
-  const unfoldedMode = paths.includes('--unfolded');
-  const withoutFlag = paths.filter((p) => p !== '--no-holders' && p !== '--unfolded');
+  const withoutFlag0 = paths.filter((p) => p !== '--no-holders');
+  const viewFlagIdx = withoutFlag0.indexOf('--view');
+  const viewRef = viewFlagIdx !== -1 ? withoutFlag0[viewFlagIdx + 1] : undefined;
+  const withoutFlag = viewFlagIdx !== -1
+    ? withoutFlag0.filter((_, i) => i !== viewFlagIdx && i !== viewFlagIdx + 1)
+    : withoutFlag0;
   const depthFlagIdx = withoutFlag.indexOf('--depth');
   let maxDepth: number | undefined;
   let pathArg = '.';
@@ -32,7 +44,7 @@ async function main(): Promise<void> {
   }
 
   await ensureServiceRunning();
-  const lines = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, unfoldedMode });
+  const lines = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, viewRef });
   console.log(lines.join('\n'));
 }
 

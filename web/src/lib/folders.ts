@@ -26,11 +26,6 @@ export interface ParsedFolderNode {
   text?: string;
   children: unknown[];
   props?: PropEntry[];
-  /** BaseNode field (Aperas-agentic-query-tools-design.md §4) — the whole tree is rebuilt fresh
-   *  from disk on every ingest, so unlike ArtifactNode's field-by-field record reuse, this has to
-   *  be explicitly read back from `existingByPath` or a re-ingest silently folds every unfolded
-   *  folder back up. */
-  unfolded?: boolean;
 }
 
 export function buildFolderTree(
@@ -109,7 +104,6 @@ export function buildFolderTree(
     }
   }
 
-  const existingUnfolded = existingByPath.get(path)?.unfolded;
   return {
     "@type": "FolderNode",
     folderId,
@@ -117,7 +111,6 @@ export function buildFolderTree(
     title,
     ...(readmeText ? { text: readmeText } : {}),
     ...(readmeProps ? { props: readmeProps } : {}),
-    ...(existingUnfolded ? { unfolded: existingUnfolded } : {}),
     children: [...readmeChildren, ...structuralChildren]
   };
 }

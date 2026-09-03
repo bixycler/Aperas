@@ -4,8 +4,12 @@
  * dehydrating the whole mirror on its own. Listens on a Unix domain socket; every request is
  * serialized through `enqueue()` so concurrent connections never interleave store mutations.
  * Flushes to `AperasKG/Apeiron/`'s JSON-LD mirror every 10s if dirty, or immediately when a
- * request carries `flush: true`. Exits after 30 idle minutes or on SIGTERM/SIGINT, flushing first
- * if dirty either way.
+ * request carries `flush: true`. A second, independent interval/dirty-flag pair
+ * (`STATE_FLUSH_INTERVAL_MS`/`stateDirty`) does the same for `Profile`/`TreeView`'s own
+ * `.state/` mirror (Aperas-treeview-design.md §8) — expand/collapse churns far more often than
+ * content edits, and `.state/` is cheap and gitignored, so it's tuned separately rather than
+ * riding the content mirror's cadence. Exits after 30 idle minutes or on SIGTERM/SIGINT, flushing
+ * both if dirty either way.
  *
  * Started on demand by `serviceClient.ts#ensureServiceRunning` — not meant to be run directly,
  * though doing so still works (it just skips the lock-claim race that only matters when multiple
@@ -15,7 +19,8 @@
 import { createServer, type Socket } from 'node:net';
 import { unlinkSync } from 'node:fs';
 import { rehydrateStore } from './store';
-import { dehydrateToJsonLd } from './dehydrate';
+import { dehydrateToJsonLd, dehydrateStateToJsonLd } from './dehydrate';
+import { wrap, ensureDefaultView, type TreeView } from './node';
 import { getSocketPath, markReady, clearLock } from './serviceLock';
 import { encodeMessage, decodeMessage, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { runTrack } from '../kgTrack';
@@ -30,6 +35,7 @@ import { runTree } from '../kgTree';
 import { runPath } from '../kgPath';
 
 const FLUSH_INTERVAL_MS = 10_000;
+const STATE_FLUSH_INTERVAL_MS = 3_000;
 const IDLE_TIMEOUT_MS = 30 * 60_000;
 
 function main(): void {
@@ -37,6 +43,7 @@ function main(): void {
   console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s).`);
 
   let dirty = false;
+  let stateDirty = false;
   let queue: Promise<unknown> = Promise.resolve();
   function enqueue<T>(fn: () => T | Promise<T>): Promise<T> {
     const result = queue.then(fn, fn);
@@ -50,6 +57,12 @@ function main(): void {
     dirty = false;
   }
 
+  function flushStateIfDirty(): void {
+    if (!stateDirty) return;
+    dehydrateStateToJsonLd(store);
+    stateDirty = false;
+  }
+
   let idleTimer: NodeJS.Timeout;
   function resetIdleTimer(): void {
     clearTimeout(idleTimer);
@@ -59,15 +72,19 @@ function main(): void {
   const flushTimer = setInterval(() => {
     enqueue(() => flushIfDirty()).catch(() => {});
   }, FLUSH_INTERVAL_MS);
+  const stateFlushTimer = setInterval(() => {
+    enqueue(() => flushStateIfDirty()).catch(() => {});
+  }, STATE_FLUSH_INTERVAL_MS);
 
   let shuttingDown = false;
   function shutdown(code: number): void {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(flushTimer);
+    clearInterval(stateFlushTimer);
     clearTimeout(idleTimer);
     server.close();
-    enqueue(() => flushIfDirty()).finally(() => {
+    enqueue(() => { flushIfDirty(); flushStateIfDirty(); }).finally(() => {
       clearLock();
       process.exit(code);
     });
@@ -90,15 +107,17 @@ function main(): void {
         return result;
       }
       case 'unfold': {
-        const result = runUnfold(store, req.ref);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        const view = req.viewRef !== undefined ? (wrap(store, req.viewRef) as unknown as TreeView) : ensureDefaultView(store);
+        const result = runUnfold(store, req.ref, view);
+        stateDirty = true;
+        if (req.flush) flushStateIfDirty();
         return result;
       }
       case 'fold': {
-        const result = runFold(store, req.ref);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        const view = req.viewRef !== undefined ? (wrap(store, req.viewRef) as unknown as TreeView) : ensureDefaultView(store);
+        const result = runFold(store, req.ref, view);
+        stateDirty = true;
+        if (req.flush) flushStateIfDirty();
         return result;
       }
       case 'resolve': {

@@ -8,6 +8,7 @@
 
 import type { Store } from 'oxigraph';
 import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId } from './vocab';
+import type { TreeView } from './node';
 
 /** `kg:path -- <path>`'s common case, not the full deep-path grammar (`resolveNodeRefDetail`) —
  *  an exact match on a `path` literal, same as `resolveArtifactOrFolderPrefix`'s single-segment
@@ -30,8 +31,11 @@ export function displayLabel(id: string, node: any): string {
   return kind === 'BlockNode' ? (node.type as string) : kind;
 }
 
+/** `view` replaces the old `unfoldedMode` boolean (Aperas-treeview-design.md §5): supplying a
+ *  `TreeView` drives unfolded-mode rendering keyed off that view's `unfolds` set; omitting it
+ *  keeps the plain title-only, no-expand/collapse-simulation default. */
 export interface TreeOptions {
   maxDepth?: number;
   noHolders?: boolean;
-  unfoldedMode?: boolean;
+  view?: TreeView;
 }

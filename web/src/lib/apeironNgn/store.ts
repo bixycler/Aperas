@@ -4,7 +4,7 @@
  * Node/WASM build, rehydrated at process start — no separate on-disk step of its own here).
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store, quad } from 'oxigraph';
@@ -30,6 +30,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // next dehydrate), closed by removing the read path rather than adding the write path back. The
 // real `Assertion.jsonld` had zero documents when this was checked, so nothing was lost.
 const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
+
+// `Profile`/`TreeView` (Aperas-treeview-design.md §8) — read from the gitignored `.state/`
+// subfolder `dehydrateStateToJsonLd` writes into, not alongside `INSTANCE_FILES` above.
+const STATE_FILES = ['Profile', 'TreeView'] as const;
 
 export function getApeironExportDir(): string {
   // web/src/lib/apeironNgn -> web/src/lib -> web/src -> web -> repo root -> AperasKG/Apeiron
@@ -92,14 +96,28 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>)
 }
 
 /** Rehydrates a fresh in-memory Store from the JSON-LD mirror. Pass `dir` only in tests — real
- *  callers always want the actual `AperasKG/Apeiron/` mirror. */
-export function rehydrateStore(dir: string = getApeironExportDir()): RehydrateResult {
+ *  callers always want the actual `AperasKG/Apeiron/` mirror. Also reads `Profile`/`TreeView` from
+ *  `stateDir` (default: `dir`'s own `.state/` subfolder, `dehydrateStateToJsonLd`'s output) into
+ *  the same `Store` — one in-memory graph either way, just dehydrated to two locations
+ *  (Aperas-treeview-design.md §8). Each `STATE_FILES` entry is read only if it exists: on a fresh
+ *  checkout, or before any view has ever been unfolded, `.state/` may not exist yet at all — that's
+ *  not a data problem the way a missing `INSTANCE_FILES` entry would be. */
+export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: string = join(dir, '.state')): RehydrateResult {
   const store = new Store();
   const seenIds = new Set<string>();
   const referencedIds = new Set<string>();
 
   for (const file of INSTANCE_FILES) {
     const docs: any[] = JSON.parse(readFileSync(join(dir, `${file}.jsonld`), 'utf-8'));
+    for (const doc of docs) {
+      if (doc['@type'] === '@context') continue;
+      encodeDoc(store, doc, seenIds);
+    }
+  }
+  for (const file of STATE_FILES) {
+    const path = join(stateDir, `${file}.jsonld`);
+    if (!existsSync(path)) continue;
+    const docs: any[] = JSON.parse(readFileSync(path, 'utf-8'));
     for (const doc of docs) {
       if (doc['@type'] === '@context') continue;
       encodeDoc(store, doc, seenIds);

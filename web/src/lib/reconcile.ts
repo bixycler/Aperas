@@ -100,11 +100,13 @@ function leafKey(node: any): string {
 /**
  * A matched pair (reconcileNode / detectCrossParentMoves) is content-equivalent by construction
  * — Stage A/B only match on exact key equality — so besides `blockId`, every operator/runtime-
- * set field on the old node (`title` set via `kg:title`, `unfolded` via `kg:fold`/`kg:unfold`,
- * `links` via `kg:link`) should survive onto its replacement rather than reset to the fresh
- * parse's defaults (Aperas-interactive-summarization-design.md §4/§7 — confirmed live as a real
- * regression before this fix: a matched block's title/unfolded/links silently reverted on every
- * re-ingest). Safe unconditionally: for a heading, `oldNode.title` and the fresh parse's title
+ * set field on the old node (`title` set via `kg:title`, `links` via `kg:link`) should survive
+ * onto its replacement rather than reset to the fresh parse's defaults
+ * (Aperas-interactive-summarization-design.md §4/§7 — confirmed live as a real regression before
+ * this fix: a matched block's title/links silently reverted on every re-ingest). `unfolded` no
+ * longer exists as a per-node field to carry forward (Aperas-treeview-design.md — fold state moved
+ * to `TreeView.unfolds`, per-view rather than per-node). Safe unconditionally: for a heading,
+ * `oldNode.title` and the fresh parse's title
  * are identical anyway since the heading text itself is the match key; `links` here is `oldNode`'s
  * already-resolved ref-id strings — `resolveBlockLinks` (artifacts.ts) merges freshly-resolved
  * wikilink `Link`s onto whatever this leaves on `newNode.links`, rather than overwriting it.
@@ -122,7 +124,6 @@ function leafKey(node: any): string {
 function carryForwardFields(oldNode: any, newNode: any): void {
   newNode.blockId = oldNode.blockId;
   newNode.title = oldNode.title;
-  newNode.unfolded = oldNode.unfolded ?? false;
   if (oldNode.links) {
     newNode.links = oldNode.links;
   }
@@ -240,7 +241,6 @@ function tombstoneSubtree(oldNode: any, now: string, out: any[]): void {
     title: oldNode.title,
     ...(oldNode.text ? { text: oldNode.text } : {}),
     children: [], // detached from the tree, but `children` is a required List, not Optional
-    unfolded: oldNode.unfolded ?? false,
     tombstonedAt: now,
   });
   for (const child of oldNode.children ?? []) {

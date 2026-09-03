@@ -6,7 +6,7 @@
  * §3's "Versioning" bullet).
  */
 
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
 import {
@@ -35,6 +35,11 @@ const JSONLD_CONTEXT = {
 // generically wherever a `links`/`props` field references it, so neither gets its own file.
 // `Assertion` never appears here at all (removed from the model entirely, not merely unwritten).
 const DEHYDRATE_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
+
+// `Profile`/`TreeView` (Aperas-treeview-design.md §8) — per-viewer UI state, not authored content,
+// dehydrated separately via `dehydrateStateToJsonLd` into a gitignored `.state/` subfolder rather
+// than alongside `DEHYDRATE_CLASSES` above.
+const STATE_CLASSES = ['Profile', 'TreeView'] as const;
 
 export function allIdsOfKind(store: Store, kind: string): string[] {
   const ids = new Set<string>();
@@ -117,6 +122,24 @@ function stableId(value: unknown): string {
 export function dehydrateToJsonLd(store: Store, dir: string = getApeironExportDir()): { dir: string; counts: Record<string, number> } {
   const counts: Record<string, number> = {};
   for (const kind of DEHYDRATE_CLASSES) {
+    const docs = allIdsOfKind(store, kind)
+      .map((id) => serializeDoc(store, id))
+      .sort((a, b) => stableId(a).localeCompare(stableId(b)));
+    writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify([JSONLD_CONTEXT, ...docs], null, 2) + '\n');
+    counts[kind] = docs.length;
+  }
+  return { dir, counts };
+}
+
+/** `Profile`/`TreeView`'s own dehydrate pass (Aperas-treeview-design.md §8) — same
+ *  `serializeDoc`/`allIdsOfKind`/`stableId` machinery as `dehydrateToJsonLd`, writing
+ *  `STATE_CLASSES` into a separate, gitignored directory instead (default: `.state/` under the
+ *  main mirror dir) so per-viewer UI state never lands in the git-tracked content mirror.
+ *  `mkdirSync(..., { recursive: true })` since `.state/` won't exist on a fresh checkout. */
+export function dehydrateStateToJsonLd(store: Store, dir: string = join(getApeironExportDir(), '.state')): { dir: string; counts: Record<string, number> } {
+  mkdirSync(dir, { recursive: true });
+  const counts: Record<string, number> = {};
+  for (const kind of STATE_CLASSES) {
     const docs = allIdsOfKind(store, kind)
       .map((id) => serializeDoc(store, id))
       .sort((a, b) => stableId(a).localeCompare(stableId(b)));

@@ -5,10 +5,12 @@
  *
  * Real `extends`, one level per genuinely shared shape:
  *   ApeironInstance (store/id only)
- *     -> BaseNode (links/props/tombstonedAt/holder/unfolded)
+ *     -> BaseNode (links/props/tombstonedAt/holder)
  *          -> TreeNode (title/text/key — every tree-positioned kind)
  *               -> BlockNode / ArtifactNode / FolderNode
  *   ApeironInstance -> Link, ApeironInstance -> StringProp   (leaf subdocs, data only)
+ *   ApeironInstance -> Profile, ApeironInstance -> TreeView  (Aperas-treeview-design.md — an i-view
+ *     over the TreeNode/Link graph; `unfolded`'s old per-node flag moved into `TreeView.unfolds`)
  *
  * `wrap(store, id)` dispatches to the right concrete class (`CLASS_BY_KIND`, keyed off the id's own
  * prefix via `vocab.ts`'s `nodeKindFromId`) and returns a real, `Object.seal`ed instance of it —
@@ -38,7 +40,7 @@ import {
   PARENT_PRED,
   SIBLING_INDEX_PRED,
 } from './vocab';
-import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIFACT_NODE_SHAPE, FOLDER_NODE_SHAPE, LINK_SHAPE, PROP_SHAPE } from './shape';
+import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIFACT_NODE_SHAPE, FOLDER_NODE_SHAPE, LINK_SHAPE, PROP_SHAPE, PROFILE_SHAPE, TREE_VIEW_SHAPE } from './shape';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
 import { parseMarkdownTree, extractAbstract, stampParents, type ParsedBlockNode } from '../astParser';
@@ -207,23 +209,17 @@ export class ApeironInstance {
   }
 }
 
-/** `links`/`props`/`tombstonedAt`/`holder`/`unfolded` — used only by `TreeNode` and below now
- *  that `Link`/`StringProp` don't extend it (kept as its own level anyway: a real conceptual
- *  boundary, "participates in the links/props/lifecycle system", separate from `TreeNode`'s "has
- *  a title and a position in the tree"). */
+/** `links`/`props`/`tombstonedAt`/`holder` — used only by `TreeNode` and below now that `Link`/
+ *  `StringProp` don't extend it (kept as its own level anyway: a real conceptual boundary,
+ *  "participates in the links/props/lifecycle system", separate from `TreeNode`'s "has a title
+ *  and a position in the tree"). No `unfolded` field here anymore — fold state moved to
+ *  `TreeView.unfolds` (Aperas-treeview-design.md), per-view instead of a single flag every viewer
+ *  shares. */
 export class BaseNode extends ApeironInstance {
   declare links?: ApeironNode[];
   declare props?: ApeironNode[];
   declare tombstonedAt?: string;
   declare holder?: boolean;
-  declare unfolded?: boolean;
-
-  fold(): void {
-    this.unfolded = false;
-  }
-  unfold(): void {
-    this.unfolded = true;
-  }
 
   /** The direct payoff of `links` becoming `storageKind: 'embed'`: a fresh `{ predicate, target }`
    *  literal mints correctly on its own now, so this replaces the old "mint a `Link/<snowflake>`
@@ -260,10 +256,12 @@ export class TreeNode extends BaseNode {
   }
 
   /** `tree.ts`'s old `renderTree`, folded — kind-generic via `treeChildren` instead of
-   *  `childIds(node, kind)`'s manual branch. */
+   *  `childIds(node, kind)`'s manual branch. `opts.view` (Aperas-treeview-design.md §5) switches to
+   *  the view-based renderer; omitted, this keeps the plain title-only/always-recurse default. */
   renderTree(opts: TreeOptions = {}): string[] {
+    if (opts.view) return renderTreeWithView(this.store, this.id, opts.view, opts);
     const lines: string[] = [];
-    renderTreeLines(this, 0, opts, false, lines);
+    renderTreeLines(this, 0, opts, lines);
     return lines;
   }
 
@@ -345,11 +343,13 @@ export class BlockNode extends TreeNode {
 
   /** `artifacts.ts`'s old `materializeBlockTree`, folded — the old (already-ingested) tree,
    *  rebuilt as a plain nested object in exactly the shape `reconcile.ts` expects (`type`/`title`/
-   *  `text`/`children`/`unfolded`/`blockId`, `links` as bare ref-id strings). Still produces a
-   *  `blockId` key in its output — that's `reconcile.ts`'s external contract, unaffected by `key`
-   *  replacing the old stored field internally. `props` is included as `{id, key, value}` triples
-   *  (not the JSON-LD `@id`/`@type` shape) — `carryForwardFields`'s own consumer shape, matching
-   *  by `key` against the fresh parse's props so an unchanged value keeps its stable id. */
+   *  `text`/`children`/`blockId`, `links` as bare ref-id strings). Still produces a `blockId` key
+   *  in its output — that's `reconcile.ts`'s external contract, unaffected by `key` replacing the
+   *  old stored field internally. `props` is included as `{id, key, value}` triples (not the
+   *  JSON-LD `@id`/`@type` shape) — `carryForwardFields`'s own consumer shape, matching by `key`
+   *  against the fresh parse's props so an unchanged value keeps its stable id. No `unfolded` here
+   *  — that per-node flag is gone (Aperas-treeview-design.md), so there's nothing left to carry
+   *  forward for it. */
   toReconcileShape(): any {
     const links = (this.links as ApeironNode[] | undefined)?.map((l) => l.id) ?? [];
     const props = (this.props as any[] | undefined)?.map((p) => ({ id: p.id, key: p.key, value: p.value }));
@@ -358,7 +358,6 @@ export class BlockNode extends TreeNode {
       type: this.type,
       title: this.title,
       ...(this.text !== undefined ? { text: this.text } : {}),
-      unfolded: this.unfolded ?? false,
       ...(links.length ? { links } : {}),
       ...(props?.length ? { props } : {}),
       children: (this.children ?? []).map((c) => (c as unknown as BlockNode).toReconcileShape()),
@@ -374,7 +373,6 @@ export class BlockNode extends TreeNode {
     this.type = parsed.type;
     this.title = parsed.title;
     this.text = parsed.text ?? undefined;
-    this.unfolded = parsed.unfolded ?? false;
     this.parent = (parsed as any).parent;
     this.props = parsed.props?.length ? (parsed.props as unknown as ApeironNode[]) : undefined;
     this.links = (parsed as any).links?.length ? (parsed as any).links : undefined;
@@ -508,7 +506,6 @@ function applyTombstone(store: Store, tombstone: any): void {
   node.type = tombstone.type;
   node.title = tombstone.title;
   node.text = tombstone.text ?? undefined;
-  node.unfolded = tombstone.unfolded ?? false;
   node.children = [];
   node.tombstonedAt = tombstone.tombstonedAt;
 }
@@ -546,7 +543,6 @@ export class FolderNode extends TreeNode {
     this.path = parsed.path;
     this.text = parsed.text ?? undefined;
     this.props = parsed.props?.length ? (parsed.props as unknown as ApeironNode[]) : undefined;
-    this.unfolded = parsed.unfolded ?? undefined;
 
     const ids: string[] = [];
     for (const child of parsed.children) {
@@ -578,12 +574,63 @@ export class StringProp extends ApeironInstance {
   declare value?: string;
 }
 
+/** Aperas-treeview-design.md §3/§6/§7 — a bucket for keeping separate `TreeView`s apart ("human"
+ *  vs. "agent"), nothing more. No auth, no identity beyond the label. */
+export class Profile extends ApeironInstance {
+  declare name?: string;
+}
+
+/** Aperas-treeview-design.md §3-§6 — an i-view: a lens over the one real `TreeNode`/`Link` graph.
+ *  `unfolds` replaces the old per-node `BaseNode.unfolded` flag — fold state lives here, per view,
+ *  not as a single flag every viewer shares. */
+export class TreeView extends ApeironInstance {
+  declare profile?: Profile;
+  declare name?: string;
+  declare unfolds?: ApeironNode[]; // mixed TreeNode | Link
+
+  /** Adds exactly `ref` (a `TreeNode` or `Link` id) to this view's `unfolds` set — idempotent, and
+   *  *only* `ref` (Aperas-treeview-design.md §5 — an earlier draft of that design wrongly proposed
+   *  also adding every child/link; the real behavior matches the old single-flag `setUnfolded`). */
+  unfold(ref: string): void {
+    const current = (this.unfolds as unknown as ApeironNode[] | undefined) ?? [];
+    if (current.some((n) => n.id === ref)) return;
+    this.unfolds = [...current, ref as unknown as ApeironNode];
+  }
+
+  /** Removes `ref`'s own `unfolds` entry, cascading to remove anything reached *from* `ref`
+   *  (structural children, then `ref`'s own links) that also has its own explicit entry — folding
+   *  one path to a node doesn't fold every path to it: a `Link` elsewhere, unrelated to `ref`'s own
+   *  subtree, that happens to also reach into it is left untouched (Aperas-treeview-design.md §5).
+   *  Walks the full structural+link subtree under `ref` regardless of whether each node along the
+   *  way is itself unfolded (an intermediate breadcrumb-only node still needs walking through to
+   *  reach a deeper unfolded descendant) — a `visited` guard keeps this safe against a link cycle. */
+  fold(ref: string): void {
+    const current = ((this.unfolds as unknown as ApeironNode[] | undefined) ?? []).map((n) => n.id);
+    const currentSet = new Set(current);
+    const toRemove = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (id: string): void => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      if (currentSet.has(id)) toRemove.add(id);
+      if (nodeKindFromId(id) === 'Link') return; // no further structure of its own to cascade into
+      const node = wrap(this.store, id) as unknown as TreeNode;
+      for (const child of node.treeChildren) visit(child.id);
+      for (const link of (node.links as ApeironNode[] | undefined) ?? []) visit(link.id);
+    };
+    visit(ref);
+    this.unfolds = current.filter((id) => !toRemove.has(id)).map((id) => id as unknown as ApeironNode);
+  }
+}
+
 export const CLASS_BY_KIND: Record<string, typeof ApeironInstance> = {
   BlockNode,
   ArtifactNode,
   FolderNode,
   Link,
   StringProp,
+  Profile,
+  TreeView,
 };
 
 export function classForId(id: string): typeof ApeironInstance {
@@ -617,11 +664,14 @@ defineAccessors(ArtifactNode, ARTIFACT_NODE_SHAPE);
 defineAccessors(FolderNode, FOLDER_NODE_SHAPE);
 defineAccessors(Link, LINK_SHAPE);
 defineAccessors(StringProp, PROP_SHAPE);
+defineAccessors(Profile, PROFILE_SHAPE);
+defineAccessors(TreeView, TREE_VIEW_SHAPE);
 
-/** Renders one line per node plus its subtree — `TreeNode.renderTree`'s recursive engine, kept as
- *  a module-scope function rather than a method so the recursion doesn't need to thread `lines`/
- *  `depth`/`revealed` through the public single-argument method signature. */
-function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, revealed: boolean, lines: string[]): void {
+/** Renders one line per node plus its subtree, title-only, always recursing (`maxDepth`/
+ *  `noHolders` aside) — `TreeNode.renderTree`'s plain default when no `TreeOptions.view` is
+ *  supplied. Kept as a module-scope function rather than a method so the recursion doesn't need to
+ *  thread `lines`/`depth` through the public single-argument method signature. */
+function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, lines: string[]): void {
   const id = node.id;
   if (node.title === undefined) {
     lines.push(`${'  '.repeat(depth)}${id}  [?]  <not found>`);
@@ -632,15 +682,7 @@ function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, revea
   if (!hidden) {
     const indent = '  '.repeat(depth);
     const holderTag = isLiteralHolder ? '  (holder)' : '';
-    let content: string;
-    if (opts.unfoldedMode && revealed) {
-      content = nodeKindFromId(id) === 'BlockNode' && (node as unknown as BlockNode).type === 'list'
-        ? `(no text of its own — see kg:unfold ${id})`
-        : (node.text ?? '');
-    } else {
-      content = node.title;
-    }
-    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${content}${holderTag}`);
+    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${node.title}${holderTag}`);
   }
 
   const refs = node.treeChildren;
@@ -649,14 +691,227 @@ function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, revea
     if (refs.length > 0) lines.push(`${'  '.repeat(depth + 1)}…`);
     return;
   }
-  if (opts.unfoldedMode && node.unfolded !== true) {
-    if (!hidden && refs.length > 0) lines.push(`${'  '.repeat(childDepth)}…  (folded — kg:unfold ${id} to expand)`);
+  for (const child of refs) {
+    renderTreeLines(child, childDepth, opts, lines);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// View-based rendering (Aperas-treeview-design.md §4-§6) — walks the real TreeNode/Link graph,
+// consulting a TreeView's `unfolds` membership at each hop. No separate view-time node type: a
+// TreeView is a lens, not a parallel structure.
+// ---------------------------------------------------------------------------------------------
+
+/** Generic structural up-pointer, one hop. A `BlockNode` carries its own explicit `parent` field
+ *  (set at ingest time, `hydrateFromParsed`/`ingestFromDisk`'s `stampParents`), pointing at
+ *  whichever `TreeNode` structurally contains it — another `BlockNode`, or the owning
+ *  `ArtifactNode` for a root block. An `ArtifactNode`/`FolderNode` has no such explicit field of
+ *  its own; when nested under a `FolderNode`, it's found the same way `childrenOf` finds children
+ *  in the down direction — reverse-querying the reified `__parent` triple every orderedContainment
+ *  member carries — just read from the child's own side instead of the parent's. `null` means
+ *  top-level (whatever `kg:tree` was pointed at — this doc's "Root"). */
+function structuralParentOf(store: Store, id: string): string | null {
+  if (nodeKindFromId(id) === 'BlockNode') {
+    const p = (wrap(store, id) as unknown as BlockNode).parent;
+    return p ? p.id : null;
+  }
+  const m = store.match(nodeIri(id), PARENT_PRED, null, null);
+  return m.length > 0 && isNamedNodeTerm(m[0].object) ? idFromNodeIri(m[0].object.value) : null;
+}
+
+/** The one `TreeNode` a `Link` belongs to — reverse-queries the `links` predicate pointing at the
+ *  link's own id, rather than parsing it out of the id string (`${ownerId}/links/Link/<snowflake>`)
+ *  directly, matching how every other relational lookup in this file works. */
+function ownerOfLink(store: Store, linkId: string): string | null {
+  const m = store.match(null, predIri('links'), nodeIri(linkId), null);
+  return m.length > 0 && isNamedNodeTerm(m[0].subject) ? idFromNodeIri(m[0].subject.value) : null;
+}
+
+type CanonicalPosition = { kind: 'home' } | { kind: 'link'; linkId: string };
+
+interface ViewRenderContext {
+  /** `TreeNode` ids with their own `unfolds` entry — plus the render's own starting id, which
+   *  behaves as always-unfolded ("Root is always unfolded for full coverage", §4). */
+  unfoldedTreeIds: Set<string>;
+  /** Every `Link` id in `unfolds`, resolved to its owner/target. */
+  linkOwnerAndTarget: Map<string, { ownerId: string; targetId: string }>;
+  /** Per target node id, which single position (a home, or one specific `Link`) is canonical
+   *  (§6) — home always wins when present; among competing `Link`s with no qualifying home,
+   *  whichever is encountered first while building this map wins (an unresolvable tie, "luck," not
+   *  a structural rule — §6/§10). */
+  canonical: Map<string, CanonicalPosition>;
+  /** Ids (a home node id, or a canonical `Link`'s own id) that get the `[*]` "reachable more than
+   *  one way" tag — the canonical position's target had more than one qualifying attempt. */
+  starred: Set<string>;
+  /** ancestorId -> immediate child ids that must render as breadcrumb passthrough, for an ancestor
+   *  that isn't itself genuinely unfolded (§4/§5). */
+  neededChildren: Map<string, Set<string>>;
+}
+
+function buildViewRenderContext(store: Store, view: TreeView, rootId: string): ViewRenderContext {
+  const unfoldsWrapped = (view.unfolds as unknown as ApeironNode[] | undefined) ?? [];
+  const unfoldedTreeIds = new Set<string>();
+  const linkOwnerAndTarget = new Map<string, { ownerId: string; targetId: string }>();
+
+  for (const n of unfoldsWrapped) {
+    if (nodeKindFromId(n.id) === 'Link') {
+      const targetId = ((n as unknown as Link).target as unknown as TreeNode | undefined)?.id;
+      const ownerId = ownerOfLink(store, n.id);
+      if (targetId && ownerId) linkOwnerAndTarget.set(n.id, { ownerId, targetId });
+    } else {
+      unfoldedTreeIds.add(n.id);
+    }
+  }
+  unfoldedTreeIds.add(rootId); // "Root is always unfolded for full coverage"
+
+  const canonical = new Map<string, CanonicalPosition>();
+  const attemptCount = new Map<string, number>();
+  for (const id of unfoldedTreeIds) {
+    canonical.set(id, { kind: 'home' });
+    attemptCount.set(id, (attemptCount.get(id) ?? 0) + 1);
+  }
+  for (const [linkId, { targetId }] of linkOwnerAndTarget) {
+    attemptCount.set(targetId, (attemptCount.get(targetId) ?? 0) + 1);
+    if (!canonical.has(targetId)) canonical.set(targetId, { kind: 'link', linkId });
+  }
+  const starred = new Set<string>();
+  for (const [targetId, count] of attemptCount) {
+    if (count <= 1) continue;
+    const c = canonical.get(targetId)!;
+    starred.add(c.kind === 'home' ? targetId : c.linkId);
+  }
+
+  const neededChildren = new Map<string, Set<string>>();
+  const markPath = (leafId: string): void => {
+    let child = leafId;
+    let parent = structuralParentOf(store, child);
+    while (parent) {
+      let set = neededChildren.get(parent);
+      if (!set) { set = new Set(); neededChildren.set(parent, set); }
+      if (set.has(child)) break; // already marked from here up — rest of the chain is too
+      set.add(child);
+      child = parent;
+      parent = structuralParentOf(store, child);
+    }
+  };
+  for (const id of unfoldedTreeIds) markPath(id);
+  for (const { ownerId } of linkOwnerAndTarget.values()) markPath(ownerId);
+
+  return { unfoldedTreeIds, linkOwnerAndTarget, canonical, starred, neededChildren };
+}
+
+/** One `TreeNode`'s line plus whatever it reveals beneath it — the three own-line tiers plus
+ *  breadcrumb-passthrough child pruning (§5). `parentQualifiesForPreview` is true for the starting
+ *  node and for any node reached as the plain listed child of a genuinely-unfolded parent; false
+ *  for a node reached only as a breadcrumb link in someone else's chain (§5's tier-3, bare title). */
+function renderViewLines(
+  store: Store, id: string, depth: number, opts: TreeOptions, ctx: ViewRenderContext,
+  parentQualifiesForPreview: boolean, lines: string[],
+): void {
+  const node = wrap(store, id) as unknown as TreeNode;
+  if (node.title === undefined) {
+    lines.push(`${'  '.repeat(depth)}${id}  [?]  <not found>`);
     return;
   }
-  const childRevealed = opts.unfoldedMode === true && node.unfolded === true;
-  for (const child of refs) {
-    renderTreeLines(child, childDepth, opts, childRevealed, lines);
+  const isLiteralHolder = node.holder === true;
+  const hidden = opts.noHolders === true && isLiteralHolder;
+  const isGenuinelyUnfolded = ctx.unfoldedTreeIds.has(id);
+  const showAbstract = parentQualifiesForPreview; // tier 1/2 -> abstract; tier 3 -> bare title only
+
+  if (!hidden) {
+    const indent = '  '.repeat(depth);
+    const holderTag = isLiteralHolder ? '  (holder)' : '';
+    const star = ctx.starred.has(id) ? '  [*]' : '';
+    const isTextlessList = nodeKindFromId(id) === 'BlockNode' && (node as unknown as BlockNode).type === 'list';
+    const content = !showAbstract ? node.title : isTextlessList ? `(no text of its own — see kg:unfold ${id})` : (node.text ?? node.title);
+    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${content}${holderTag}${star}`);
   }
+
+  const childDepth = hidden ? depth : depth + 1;
+  const childrenToShow = isGenuinelyUnfolded
+    ? node.treeChildren
+    : node.treeChildren.filter((c) => ctx.neededChildren.get(id)?.has(c.id));
+  const linksToShow = isGenuinelyUnfolded ? ((node.links as ApeironNode[] | undefined) ?? []) : [];
+
+  if (!hidden && opts.maxDepth !== undefined && depth >= opts.maxDepth) {
+    if (childrenToShow.length > 0 || linksToShow.length > 0) lines.push(`${'  '.repeat(depth + 1)}…`);
+    return;
+  }
+
+  for (const child of childrenToShow) {
+    renderViewLines(store, child.id, childDepth, opts, ctx, isGenuinelyUnfolded, lines);
+  }
+  for (const link of linksToShow) {
+    renderLinkLine(store, link.id, childDepth, opts, ctx, lines);
+  }
+}
+
+/** One `Link`'s line: a plain preview (target's title/abstract, no recursion) when the link itself
+ *  isn't in `unfolds`; the target shown fully — like an unfolded `TreeNode`, §5 rule b — when it
+ *  is *and* it's the canonical position for that target; a short pointer back to wherever the
+ *  canonical position actually is, otherwise (§6). */
+function renderLinkLine(store: Store, linkId: string, depth: number, opts: TreeOptions, ctx: ViewRenderContext, lines: string[]): void {
+  const link = wrap(store, linkId) as unknown as Link;
+  const targetId = (link.target as unknown as TreeNode | undefined)?.id;
+  const indent = '  '.repeat(depth);
+  const predicate = (link.predicate as unknown as string) ?? '';
+  if (!targetId) {
+    lines.push(`${indent}${linkId}  [Link]  ${predicate}  <no target>`);
+    return;
+  }
+  const targetNode = wrap(store, targetId) as unknown as TreeNode;
+  const targetTitle = targetNode.title ?? '<not found>';
+  const head = `${indent}${linkId}  [Link]  ${predicate} → ${targetId}  `;
+  const attempt = ctx.linkOwnerAndTarget.has(linkId);
+
+  if (!attempt) {
+    lines.push(`${head}${targetTitle}`); // plain preview, never subject to dedup (§4)
+    return;
+  }
+  const canon = ctx.canonical.get(targetId);
+  const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
+  if (isCanonicalHere) {
+    const star = ctx.starred.has(linkId) ? '  [*]' : '';
+    lines.push(`${head}${targetTitle}${star}`);
+    for (const child of targetNode.treeChildren) renderViewLines(store, child.id, depth + 1, opts, ctx, true, lines);
+    for (const l of (targetNode.links as ApeironNode[] | undefined) ?? []) renderLinkLine(store, l.id, depth + 1, opts, ctx, lines);
+    return;
+  }
+  const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
+  lines.push(`${head}${targetTitle}  (see ${pointerTo})`);
+}
+
+/** `TreeNode.renderTree`'s `opts.view` branch — entry point for the whole view-based render. */
+function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: TreeOptions): string[] {
+  const ctx = buildViewRenderContext(store, view, rootId);
+  const lines: string[] = [];
+  renderViewLines(store, rootId, 0, opts, ctx, true, lines);
+  return lines;
+}
+
+/** Finds the `TreeView` named `"default"` (Aperas-treeview-design.md §10), creating it — and a
+ *  `Profile` named `"default"` to own it — on first use. Exact-literal lookup on `name`, the same
+ *  pattern `tree.ts`'s `findByExactPath` already uses for `ArtifactNode`/`FolderNode.path`. */
+export function ensureDefaultView(store: Store): TreeView {
+  const existing = store.match(null, predIri('name'), encodeLiteral('default'), null)
+    .map((m) => idFromNodeIri(String(m.subject.value)))
+    .find((id) => nodeKindFromId(id) === 'TreeView');
+  if (existing) return wrap(store, existing) as unknown as TreeView;
+
+  const existingProfile = store.match(null, predIri('name'), encodeLiteral('default'), null)
+    .map((m) => idFromNodeIri(String(m.subject.value)))
+    .find((id) => nodeKindFromId(id) === 'Profile');
+  const profileId = existingProfile ?? `Profile/${generateNodeId()}`;
+  if (!existingProfile) {
+    const profile = wrap(store, profileId) as unknown as Profile;
+    profile.name = 'default';
+  }
+
+  const viewId = `TreeView/${generateNodeId()}`;
+  const view = wrap(store, viewId) as unknown as TreeView;
+  view.name = 'default';
+  view.profile = profileId as unknown as Profile;
+  return view;
 }
 
 /** Wraps one node id as a shape-enforced instance of its concrete class — no `Proxy`. `Object.seal`

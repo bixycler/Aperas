@@ -45,16 +45,16 @@ export interface FolderSweepStats {
 
 /** Builds and writes the entire FolderNode tree rooted at `AperasKG/artifacts/` — see
  *  `ingestFolderTree`'s own doc comment in `folders.ts` for the rename-detection rationale,
- *  unchanged here. A matched rename reuses the existing `folderId`/`unfolded` (via
- *  `buildFolderTree`'s own `existingByPath`/`folderIdByPath` maps, same as the original); a
- *  tombstone sets one field directly rather than replacing the whole document. */
+ *  unchanged here. A matched rename reuses the existing `folderId` (via `buildFolderTree`'s own
+ *  `existingByPath`/`folderIdByPath` maps, same as the original); a tombstone sets one field
+ *  directly rather than replacing the whole document. */
 export function ingestFolderTree(store: Store): { folderCount: number; sweep: FolderSweepStats } {
   const artifactsDir = getArtifactsDir();
 
   const liveFolderIds = allLiveIdsOfKind(store, 'FolderNode');
   const existingByPath = new Map(liveFolderIds.map((id) => {
     const node = wrap(store, id) as unknown as FolderNode;
-    return [node.path as string, { unfolded: node.unfolded, props: node.props }];
+    return [node.path as string, { props: node.props }];
   }));
   const folderIdByPath = new Map(liveFolderIds.map((id) => {
     const node = wrap(store, id) as unknown as FolderNode;
@@ -94,7 +94,6 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
     const oldNode = wrap(store, oldId) as unknown as FolderNode;
     console.log(`[ApeironNgn Folders] Detected rename '${oldNode.path}' -> '${newNode.path}'`);
     newNode.folderId = oldNode.key;
-    if (oldNode.unfolded) newNode.unfolded = oldNode.unfolded;
     sweep.renamed++;
   }
 

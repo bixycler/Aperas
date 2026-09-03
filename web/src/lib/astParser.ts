@@ -26,7 +26,6 @@ export interface ParsedBlockNode {
   title: string;
   text?: string;
   children: ParsedBlockNode[];
-  unfolded?: boolean;
   /** Direct container's full id (`BlockNode/…`, or `ArtifactNode/…`/`FolderNode/…` for a tree's
    *  own root) — id→path resolution's reverse-walk primitive (Aperas-deep-path-resolution-
    *  design.md), a plain field read rather than a WOQL backlink query, since `children` is
@@ -263,8 +262,7 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
     blockId,
     type: node.type,
     title,
-    children: [],
-    unfolded: false
+    children: []
   };
 
   if (node.type === 'blockquote') {

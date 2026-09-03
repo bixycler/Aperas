@@ -5,8 +5,10 @@
  * read time (can't tell a `Set` holding one value apart from an `Optional` that happens to be set).
  *
  * Composed to mirror the real class hierarchy (`node.ts`): `BASE_NODE_SHAPE` (`links`/`props`/
- * `tombstonedAt`/`holder`/`unfolded`) -> `TREE_NODE_SHAPE` (adds `title`/`text`) -> each concrete
- * leaf's own table. `blockId`/`artifactId`/`folderId` are gone — each was always identical to its
+ * `tombstonedAt`/`holder`) -> `TREE_NODE_SHAPE` (adds `title`/`text`) -> each concrete leaf's own
+ * table. `unfolded` (a single boolean shared by every viewer) is gone, replaced by `TreeView`'s
+ * own `unfolds` set (Aperas-treeview-design.md) — fold state is per-view now, not per-node.
+ * `blockId`/`artifactId`/`folderId` are gone — each was always identical to its
  * own id's local part by construction, so `TreeNode.key` (`node.ts`) derives it from `id` instead
  * of storing it as its own triple. Each leaf table stays fully flattened (spread, not just its own
  * new fields) since `node.ts`'s accessor generation and `dehydrate.ts`/`mintEmbedded` both consume
@@ -36,7 +38,6 @@ export const BASE_NODE_SHAPE: ClassShape = {
   props: { cardinality: 'set', storageKind: 'embed' },
   tombstonedAt: { cardinality: 'optional' },
   holder: { cardinality: 'optional' },
-  unfolded: { cardinality: 'optional' },
 };
 
 export const TREE_NODE_SHAPE: ClassShape = {
@@ -80,10 +81,31 @@ export const PROP_SHAPE: ClassShape = {
   value: { cardinality: 'one' },
 };
 
+/** Aperas-treeview-design.md §3 — a bucket for keeping separate `TreeView`s apart ("human" vs.
+ *  "agent"), nothing more. No `BASE_NODE_FIELDS`: not a `TreeNode`, no auth, no links/props of its
+ *  own, same minimal footprint as `Link`/`StringProp`. */
+export const PROFILE_SHAPE: ClassShape = {
+  name: { cardinality: 'optional' },
+};
+
+/** Aperas-treeview-design.md §3-§6 — an i-view: a lens over the one real `TreeNode`/`Link` graph,
+ *  not a parallel structure. `unfolds` replaces `BASE_NODE_SHAPE.unfolded` — fold state lives here,
+ *  per view, instead of as a single flag shared by every viewer. Points at either a `TreeNode`
+ *  (`BlockNode`/`ArtifactNode`/`FolderNode`) or a `Link` — both are plain bare-id references here,
+ *  never minted fresh by this field (an `unfolds` write always names something that already
+ *  exists), so `storageKind: 'reference'` is correct even for the `Link` case, not `'embed'`. */
+export const TREE_VIEW_SHAPE: ClassShape = {
+  profile: { cardinality: 'one', storageKind: 'reference' },
+  name: { cardinality: 'optional' },
+  unfolds: { cardinality: 'set', storageKind: 'reference' },
+};
+
 export const SHAPE_BY_KIND: Record<string, ClassShape> = {
   BlockNode: BLOCK_NODE_SHAPE,
   ArtifactNode: ARTIFACT_NODE_SHAPE,
   FolderNode: FOLDER_NODE_SHAPE,
   Link: LINK_SHAPE,
   StringProp: PROP_SHAPE,
+  Profile: PROFILE_SHAPE,
+  TreeView: TREE_VIEW_SHAPE,
 };

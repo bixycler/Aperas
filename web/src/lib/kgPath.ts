@@ -1,37 +1,38 @@
 /**
- * `kg:path` migrated to ApeironNgn (Aperas-apeironngn-design.md §4 rollout) — id→path, same output
- * format as `kgCli.ts`'s `path` command, reading from a rehydrated in-process Store instead of
- * TerminusDB. Kept as its own script, not yet wired to replace `kg:path`, same as `kg:tree:ngn`.
- *
- * Ref resolution is `kg:tree:ngn`'s `resolveTreeRef` (full node id, or an exact `path` literal
- * match) — not `kgCli.ts`'s full `resolveNodeRef` (which also accepts a bare snowflake code via
- * `directResolve.ts`). That tier isn't migrated yet, same scope cut as `kg:tree:ngn`.
+ * `kg:path` — id→path, via the shared ApeironNgn service (Aperas-apeironngn-design.md §4 rollout
+ * step 5).
  */
 
-import { rehydrateStore } from './apeironNgn/store';
+import type { Store } from 'oxigraph';
 import { resolveTreeRef } from './apeironNgn/tree';
 import { wrap, type TreeNode } from './apeironNgn/node';
+import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 
-function main(): void {
+export function runPath(store: Store, idArg: string): string {
+  const id = resolveTreeRef(store, idArg);
+  if (!id) throw new Error(`'${idArg}' isn't a full node id or an exact tracked artifact/folder path.`);
+  const path = (wrap(store, id) as unknown as TreeNode).toPath();
+  if (path === null) {
+    throw new Error(`'${id}' has no walkable parent chain — a Link (no structural parent), or a BlockNode ingested before the 'parent' field existed (needs re-ingestion).`);
+  }
+  return path;
+}
+
+async function main(): Promise<void> {
   const [idArg] = process.argv.slice(2);
   if (!idArg) {
     console.error('Usage: kg:path -- <id or exact path>');
     process.exit(1);
   }
 
-  const { store } = rehydrateStore();
-  const id = resolveTreeRef(store, idArg);
-  if (!id) {
-    console.error(`[ApeironNgn kg:path] '${idArg}' isn't a full node id or an exact tracked artifact/folder path.`);
-    process.exit(1);
-  }
-
-  const path = (wrap(store, id) as unknown as TreeNode).toPath();
-  if (path === null) {
-    console.error(`[ApeironNgn kg:path] '${id}' has no walkable parent chain — a Link (no structural parent), or a BlockNode ingested before the 'parent' field existed (needs re-ingestion).`);
-    process.exit(1);
-  }
+  await ensureServiceRunning();
+  const path = await request<ReturnType<typeof runPath>>({ op: 'path', idArg });
   console.log(path);
 }
 
-main();
+if (process.argv[1]?.endsWith('kgPath.ts')) {
+  main().catch((err) => {
+    console.error('[ApeironNgn kg:path] Failed:', err.message || err);
+    process.exit(1);
+  });
+}

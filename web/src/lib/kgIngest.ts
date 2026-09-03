@@ -1,38 +1,40 @@
 /**
- * `kg:ingest`, migrated to ApeironNgn (Aperas-apeironngn-design.md §4 rollout) — AST-parses and
- * commits every changed tracked artifact's fractal BlockNode tree, then rebuilds the FolderNode
- * structural tree, reading/writing a rehydrated in-process Store instead of TerminusDB.
- * Dehydrates once at the very end, same one-shot-batch reasoning as `kgTrackNgn.ts`.
+ * `kg:ingest` — AST-parses and commits every changed tracked artifact's fractal BlockNode tree,
+ * then rebuilds the FolderNode structural tree, via the shared ApeironNgn service
+ * (Aperas-apeironngn-design.md §4 rollout step 5).
  */
 
-import { rehydrateStore } from './apeironNgn/store';
-import { dehydrateToJsonLd } from './apeironNgn/dehydrate';
+import type { Store } from 'oxigraph';
 import { ingestAllArtifacts } from './apeironNgn/artifacts';
 import { ingestFolderTree } from './apeironNgn/folders';
+import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 
-function main(): void {
-  const { store } = rehydrateStore();
-
+export function runIngest(store: Store) {
   const ingested = ingestAllArtifacts(store);
-  if (ingested.length === 0) {
+  const { folderCount, sweep } = ingestFolderTree(store);
+  return { ingested, folderCount, renamed: sweep.renamed, removed: sweep.removed };
+}
+
+async function main(): Promise<void> {
+  const flush = process.argv.slice(2).includes('--flush');
+  await ensureServiceRunning();
+  const result = await request<ReturnType<typeof runIngest>>({ op: 'ingest', flush });
+
+  if (result.ingested.length === 0) {
     console.log('[ApeironNgn kg:ingest] No artifacts required ingestion.');
   } else {
-    for (const r of ingested) {
+    for (const r of result.ingested) {
       const recon = r.reconciliation;
       const reconSummary = recon ? ` (reconciled: ${recon.unchanged} unchanged, ${recon.moved} moved, ${recon.added} added, ${recon.removed} removed)` : '';
       console.log(`[ApeironNgn kg:ingest] Ingested '${r.path}' fractal tree (${r.blockCount} blocks)${reconSummary}.`);
     }
   }
-
-  const { folderCount, sweep } = ingestFolderTree(store);
-  console.log(`[ApeironNgn kg:ingest] Rebuilt FolderNode structural tree (${folderCount} folder(s), ${sweep.renamed} renamed, ${sweep.removed} removed).`);
-
-  dehydrateToJsonLd(store);
+  console.log(`[ApeironNgn kg:ingest] Rebuilt FolderNode structural tree (${result.folderCount} folder(s), ${result.renamed} renamed, ${result.removed} removed).`);
 }
 
-try {
-  main();
-} catch (err: any) {
-  console.error('[ApeironNgn kg:ingest] Failed:', err.message || err);
-  process.exit(1);
+if (process.argv[1]?.endsWith('kgIngest.ts')) {
+  main().catch((err) => {
+    console.error('[ApeironNgn kg:ingest] Failed:', err.message || err);
+    process.exit(1);
+  });
 }

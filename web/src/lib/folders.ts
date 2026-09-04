@@ -13,7 +13,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { parseMarkdownTree } from './astParser';
+import { parseMarkdownTree, extractAbstract } from './astParser';
 import { isReadmeFilename } from './artifacts';
 import { generateNodeId } from './snowflake';
 import { carryForwardProp, type PropEntry } from './props';
@@ -62,18 +62,15 @@ export function buildFolderTree(
     if (isReadmeFilename(entry)) {
       const content = readFileSync(fullPath, 'utf-8');
       const { root: parsedRoot, frontmatter } = parseMarkdownTree(content);
-      // Same consuming rule as heading/listItem (§2/§6): the README's own leading paragraph
-      // becomes the FolderNode's own `text`, not a separately duplicated child. If that
-      // paragraph had itself adopted a list (§8 — e.g. an intro sentence immediately followed
-      // by a list), those adopted items become the FolderNode's own leading children, exactly
-      // as they would have if the FolderNode were a heading/listItem consuming the same content.
-      const [firstChild, ...restChildren] = parsedRoot.children;
-      if (firstChild?.type === 'paragraph') {
-        readmeText = firstChild.text ?? '';
-        readmeChildren = [...(firstChild.children ?? []), ...restChildren];
-      } else {
-        readmeChildren = parsedRoot.children;
-      }
+      // Copy, not consume (Aperas-apeironngn-design.md, ArtifactNode/FolderNode.text): a real
+      // README is usually headed (`# Title` first, not a bare leading paragraph), so requiring a
+      // literal top-level paragraph to consume produced an empty abstract for the common case.
+      // `extractAbstract` finds the first non-blank descendant text anywhere in the tree instead
+      // — the same primitive `ArtifactNode.text` already used — and nothing is removed from
+      // `readmeChildren`, so this deliberately duplicates whatever that text already is among the
+      // README's own rendered children.
+      readmeText = extractAbstract(parsedRoot);
+      readmeChildren = parsedRoot.children;
       // Carries the existing `frontmatter` StringProp's id forward when its value hasn't changed
       // (`carryForwardProp`) — same fix as `ArtifactNode.ingestFromDisk`'s, and a no-op for the
       // TerminusDB-backed caller, which doesn't populate `existingByPath`'s `props` (and whose own
@@ -82,13 +79,10 @@ export function buildFolderTree(
         ? [carryForwardProp(existingByPath.get(path)?.props, "frontmatter", frontmatter)]
         : undefined;
       // readmeChildren are relocated straight into FolderNode.children, never kept under a
-      // persisted root block of their own — astParser.ts's stampParents pointed them at
-      // parsedRoot/firstChild (discarded, never written), so that's stale now. Re-stamp only the
-      // top level to the FolderNode itself; every deeper descendant's `parent` is already correct
-      // relative to *its own* still-intact subtree.
-      for (const child of readmeChildren as any[]) {
-        child.parent = `FolderNode/${folderId}`;
-      }
+      // persisted root block of their own — no `.parent` stamping needed here any more
+      // (Aperas-apeironngn-design.md §5's `parent`/`PARENT_PRED` merge): `FolderNode.children = ...`
+      // stamps each top-level child's real `parent` to this folder automatically, as a side effect
+      // of the containment write, once this parsed tree reaches `node.ts`'s `hydrateFromParsed`.
     } else {
       const artifactPath = relative(artifactsDir, fullPath);
       // Reference an independently tracked/ingested ArtifactNode by its actual (Snowflake)

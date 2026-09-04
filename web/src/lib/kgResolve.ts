@@ -10,6 +10,7 @@ import { resolveDeepPathDetail } from './apeironNgn/resolveCreate';
 import { wrap } from './apeironNgn/node';
 import { displayLabel } from './apeironNgn/tree';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 function resolvePlain(store: Store, paths: string[], base?: string) {
   const lines: string[] = [];
@@ -46,8 +47,29 @@ export function runResolve(store: Store, req: { paths: string[]; base?: string; 
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: 'Resolve one or more deep paths to node ids.',
+      usage: [
+        'kg:resolve -- [--base <path>] <path> [<path>...]',
+        'kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]',
+      ],
+      args: [
+        { name: '<path>', description: 'Deep path(s) to resolve. With --create-holder, exactly one.' },
+      ],
+      flags: [
+        { name: '--base <path>', description: 'Base path deep-path resolution is relative to. Defaults to the artifacts root.' },
+        { name: '--create-holder', description: "Create a holder node chain along <path> instead of failing when a segment doesn't exist yet." },
+        { name: '--titles <title>...', description: 'Titles for each newly created holder segment, in order (only with --create-holder).' },
+        { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
   const flush = rawArgs.includes('--flush');
-  const paths = rawArgs.filter((p) => p !== '--flush');
+  const reload = rawArgs.includes('--reload');
+  const paths = rawArgs.filter((p) => p !== '--flush' && p !== '--reload');
 
   const baseIdx = paths.indexOf('--base');
   const base = baseIdx !== -1 ? paths[baseIdx + 1] : undefined;
@@ -74,7 +96,7 @@ async function main(): Promise<void> {
   }
 
   await ensureServiceRunning();
-  const result = await request<ReturnType<typeof runResolve>>({ op: 'resolve', paths: rest, base, createHolder, titles, flush });
+  const result = await request<ReturnType<typeof runResolve>>({ op: 'resolve', paths: rest, base, createHolder, titles, flush, reload });
   for (const line of result.lines) console.log(line);
 }
 

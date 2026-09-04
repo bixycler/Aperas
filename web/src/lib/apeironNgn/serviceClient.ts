@@ -11,7 +11,7 @@ import { connect } from 'node:net';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSocketPath, readLock, claimLock, isLockStale, clearLock } from './serviceLock';
-import { encodeMessage, decodeMessage, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
+import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PING_TIMEOUT_MS = 300;
@@ -79,7 +79,8 @@ async function waitForReady(): Promise<void> {
 function spawnService(): void {
   const serviceEntry = resolve(__dirname, 'service.ts');
   const webDir = resolve(__dirname, '..', '..', '..');
-  const child = spawn('npx', ['tsx', serviceEntry], { cwd: webDir, detached: true, stdio: 'ignore' });
+  const tsxBin = resolve(webDir, 'node_modules', '.bin', 'tsx');
+  const child = spawn(tsxBin, [serviceEntry], { cwd: webDir, detached: true, stdio: 'ignore' });
   child.unref();
 }
 
@@ -96,8 +97,22 @@ export async function ensureServiceRunning(): Promise<void> {
   await waitForReady();
 }
 
+/** An unresolved flush conflict (`ServiceResponse`'s own doc comment) rides on *every* response
+ *  until resolved, regardless of the op that response is for — printed here, on this short-lived
+ *  client process's own stdio, since the long-running service is normally spawned with
+ *  `stdio: 'ignore'` and can't make itself heard any other way. This is what makes the conflict
+ *  "emerge" on the very next `kg:xxx` call of any kind rather than sitting silently `dirty`
+ *  forever, only ever visible to whichever explicit `flush`/`reload` happens to hit it. */
+function reportConflict(res: Extract<ServiceResponse, { ok: true }>): void {
+  if (!res.conflict) return;
+  if (res.conflict.content) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (content mirror): ${res.conflict.content}`);
+  if (res.conflict.state) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (.state mirror): ${res.conflict.state}`);
+  console.error(`[ApeironNgn service] ${CONFLICT_RESOLUTION_HINT}`);
+}
+
 export async function request<T>(req: ServiceRequest): Promise<T> {
   const res = await sendRaw(req, 0);
   if (!res.ok) throw new Error(res.error);
+  reportConflict(res);
   return res.result as T;
 }

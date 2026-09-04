@@ -62,33 +62,36 @@ async function main() {
   const blocks = loadGroundTruth('BlockNode');
   const artifacts = loadGroundTruth('ArtifactNode');
 
-  console.log('2. Picking a real artifact with an ingested tree...');
-  const artifact = [...artifacts.values()].find((a) => a.root && blocks.has(a.root));
-  if (!artifact) throw new Error('No ArtifactNode with an ingested root found in the mirror.');
-  console.log(`   ${artifact.path} (root: ${artifact.root})\n`);
+  console.log('2. Picking a real artifact with ingested content...');
+  // ArtifactNode is merged with its document content (Aperas-apeironngn-design.md) — no separate
+  // root BlockNode to find; the artifact's own ground-truth doc carries `type`/`children` directly
+  // once something's been ingested (both fields are omitted from the JSON-LD entirely beforehand,
+  // `dehydrate.ts`'s `serializeDoc` — `type` because it's an unset optional literal, `children`
+  // because `orderedContainment` writes `[]`, so an *empty* array here still means "never ingested"
+  // is impossible to tell apart from "ingested with zero top-level blocks" by `children` alone).
+  const artifact = [...artifacts.values()].find((a) => a.type !== undefined && (a.children ?? []).length > 0);
+  if (!artifact) throw new Error('No ArtifactNode with ingested content found in the mirror.');
+  console.log(`   ${artifact.path} (${artifact.children.length} top-level blocks)\n`);
 
   console.log('3. Scalar field access (a.b.c) vs ground truth...');
-  const artifactNode = wrap(store, artifact['@id']);
+  const artifactNode = wrap(store, artifact['@id']) as any;
   check('artifact.title matches ground truth', artifactNode.title === artifact.title);
   check('artifact.path matches ground truth', artifactNode.path === artifact.path);
-  const rootNode = artifactNode.root as any;
-  check('artifact.root.id resolves to the right BlockNode', rootNode?.id === artifact.root);
-  check('artifact.root.title matches ground truth', rootNode?.title === blocks.get(artifact.root)?.title);
+  check('artifact.type matches ground truth', artifactNode.type === artifact.type);
   console.log();
 
   console.log('4. Reified containment (.children) vs ground truth, several levels...');
-  const rootTruth = blocks.get(artifact.root);
-  const firstChildTruthId = rootTruth.children?.[0];
-  check('root.children has the same length as ground truth', rootNode.children.length === (rootTruth.children?.length ?? 0));
+  const firstChildTruthId = artifact.children?.[0];
+  check('artifact.children has the same length as ground truth', artifactNode.children.length === (artifact.children?.length ?? 0));
   check(
-    'root.children is in the same order as ground truth',
-    rootNode.children.every((c: any, i: number) => c.id === rootTruth.children[i])
+    'artifact.children is in the same order as ground truth',
+    artifactNode.children.every((c: any, i: number) => c.id === artifact.children[i])
   );
   if (firstChildTruthId) {
-    const firstChild = rootNode.children[0];
-    check('root.children[0].title matches ground truth (a.b.c[0].d)', firstChild.title === blocks.get(firstChildTruthId)?.title);
+    const firstChild = artifactNode.children[0];
+    check('artifact.children[0].title matches ground truth (a.b.c[0].d)', firstChild.title === blocks.get(firstChildTruthId)?.title);
     const grandchildrenTruth = blocks.get(firstChildTruthId)?.children ?? [];
-    check('root.children[0].children length matches ground truth', firstChild.children.length === grandchildrenTruth.length);
+    check('artifact.children[0].children length matches ground truth', firstChild.children.length === grandchildrenTruth.length);
   }
   console.log();
 
@@ -97,16 +100,18 @@ async function main() {
   // "id's own children," the same set childrenOf/.children computes, just unsorted. Exercises the
   // general pattern (Aperas-kg-foundational-design.md §3.2) against the one concrete field that
   // already has a specialized accessor, as a cross-check that both paths agree.
-  const genericChildren = backlinks(store, artifact.root, '__parent').map((n) => n.id).sort();
-  const specializedChildren = rootNode.children.map((n: any) => n.id).sort();
+  const genericChildren = backlinks(store, artifact['@id'], '__parent').map((n) => n.id).sort();
+  const specializedChildren = artifactNode.children.map((n: any) => n.id).sort();
   check(
-    'backlinks(root, "__parent") finds the same set as root.children',
+    'backlinks(artifact, "__parent") finds the same set as artifact.children',
     genericChildren.length === specializedChildren.length && genericChildren.every((id, i) => id === specializedChildren[i])
   );
   console.log();
 
   console.log('6. Full-subtree materialization (every node, one field each) vs ground truth count...');
-  const expectedCount = countGroundTruth(blocks, artifact.root);
+  // +1 for the artifact itself (it's the merged root now, not itself one of `blocks`'s entries) —
+  // every top-level child's own subtree is still ordinary ground-truth BlockNode counting.
+  const expectedCount = 1 + (artifact.children as string[]).reduce((sum, id) => sum + countGroundTruth(blocks, id), 0);
   const t1 = performance.now();
   let visited = 0;
   const walk = (n: any) => {
@@ -114,7 +119,7 @@ async function main() {
     void n.title; // touch one scalar field per node, same as a real read would
     for (const child of n.children) walk(child);
   };
-  walk(rootNode);
+  walk(artifactNode);
   const walkMs = performance.now() - t1;
   check(`visited count (${visited}) matches ground truth (${expectedCount})`, visited === expectedCount);
   console.log(`   ${walkMs.toFixed(1)}ms for ${visited} nodes, in-process (no I/O) — not comparable to the TerminusDB bench's network-bound numbers, only to itself over time.\n`);

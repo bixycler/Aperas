@@ -7,11 +7,11 @@
  * `extractLinkCodes`) and can't move with them.
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import type { ParsedBlockNode } from './astParser';
+import type { ParsedBlockNode, LinkOccurrence } from './astParser';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +56,24 @@ export function listArtifactFiles(artifactsDir: string = getArtifactsDir()): str
   return files;
 }
 
+/** Expands each given path against `AperasKG/artifacts/`: a directory (e.g. `archive`, or `.` for
+ *  everything) becomes every artifact file under it, recursively, via `listArtifactFiles` scoped
+ *  to that subtree; a plain file path passes through unchanged (including one that doesn't exist —
+ *  the caller's existing per-file error handling still applies). Lets `kg:track`/`kg:ingest` take
+ *  a folder argument alongside individual file paths. */
+export function expandArtifactPaths(paths: string[], artifactsDir: string = getArtifactsDir()): string[] {
+  const expanded: string[] = [];
+  for (const p of paths) {
+    const full = join(artifactsDir, p);
+    if (existsSync(full) && statSync(full).isDirectory()) {
+      expanded.push(...listArtifactFiles(full).map((f) => join(p, f)));
+    } else {
+      expanded.push(p);
+    }
+  }
+  return expanded;
+}
+
 export function computeFileHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -67,7 +85,7 @@ export function countBlocks(node: any): number {
 
 export interface PendingLinkCodes {
   blockId: string;
-  codes: string[];
+  codes: LinkOccurrence[];
 }
 
 /**

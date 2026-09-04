@@ -10,6 +10,7 @@ import { resolveTreeRef } from './apeironNgn/tree';
 import { wrap, type TreeNode, type TreeView } from './apeironNgn/node';
 import { nodeExists } from './apeironNgn/vocab';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string; reload?: boolean }) {
   const id = resolveTreeRef(store, req.pathArg);
@@ -24,6 +25,22 @@ export function runTree(store: Store, req: { pathArg: string; maxDepth?: number;
 
 async function main(): Promise<void> {
   const paths = process.argv.slice(2);
+  if (wantsHelp(paths)) {
+    printHelp({
+      description: 'Render the fractal tree from a resolved node.',
+      usage: 'kg:tree -- [<path>] [--depth <n>] [--view <viewRef>] [--no-holders] [--reload]',
+      args: [
+        { name: '<path>', description: "Full node id or exact tracked artifact/folder path to render from. Defaults to '.', the artifacts root." },
+      ],
+      flags: [
+        { name: '--depth <n>', description: 'Limit rendering to this many levels deep.' },
+        { name: '--view <viewRef>', description: 'Render in unfolded mode, driven by this TreeView\'s unfolds set. Omitting it keeps the plain title-only default rendering.' },
+        { name: '--no-holders', description: 'Omit placeholder holder nodes from the output.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
 
   const noHolders = paths.includes('--no-holders');
   const reload = paths.includes('--reload');

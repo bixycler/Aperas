@@ -11,9 +11,9 @@ import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId } from './vocab';
 import type { TreeView } from './node';
 
 /** `kg:path -- <path>`'s common case, not the full deep-path grammar (`resolveNodeRefDetail`) —
- *  an exact match on a `path` literal, same as `resolveArtifactOrFolderPrefix`'s single-segment
- *  case. Deep multi-segment/`.`/`..`/snowflake-code addressing is `kg:resolve`'s own migration,
- *  not duplicated here. */
+ *  an exact match on a `path` literal. Deep multi-segment/`.`/`..`/snowflake-code/prefix addressing
+ *  is `kg:resolve`'s own migration (`resolve.ts`/`resolveCreate.ts`, via `TreeNode.findChild`), not
+ *  duplicated here. */
 export function findByExactPath(store: Store, path: string): string | null {
   const matches = store.match(null, predIri('path'), encodeLiteral(path), null);
   if (matches.length === 0) return null;

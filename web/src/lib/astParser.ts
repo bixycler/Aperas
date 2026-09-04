@@ -26,23 +26,25 @@ export interface ParsedBlockNode {
   title: string;
   text?: string;
   children: ParsedBlockNode[];
-  /** Direct container's full id (`BlockNode/…`, or `ArtifactNode/…`/`FolderNode/…` for a tree's
-   *  own root) — id→path resolution's reverse-walk primitive (Aperas-deep-path-resolution-
-   *  design.md), a plain field read rather than a WOQL backlink query, since `children` is
-   *  `List`-typed and TerminusDB doesn't index `List` membership as a direct triple (confirmed
-   *  live: `t(X, 'children', Target)` returns nothing, unlike a `Set`-typed field). Stamped here
-   *  for every node's *direct* children in one post-pass over the finished tree — correct
-   *  regardless of the adoption/splice logic above, since it only reads final structure, never
-   *  participates in building it. A tree's own root has no `parent` set by this pass (nothing to
-   *  point it at yet); the caller that attaches the root to its owning `ArtifactNode`/
-   *  `FolderNode` (artifacts.ts/folders.ts) sets that one field externally. */
-  parent?: string;
   props?: PropEntry[];
-  /** Raw `[[code]]` targets found in this block's own `title`/`text` — ephemeral, resolved
-   *  into real `BlockNode.links` entries by `artifacts.ts` (which has DB access this pure
-   *  parser doesn't); never written to the DB itself. See Aperas-markdown-fractal-mapping-
-   *  design.md §4. */
-  linkCodes?: string[];
+  /** Raw `[[code]]` occurrences found in this block's own `text` — ephemeral, resolved into real
+   *  `BlockNode.links` entries by `artifacts.ts` (which has DB access this pure parser doesn't);
+   *  never written to the DB itself. See Aperas-markdown-fractal-mapping-design.md §4 and
+   *  Aperas-apeironngn-design.md §4 Step 8 (occurrence positions, target-deduped `Link`s). Never
+   *  scanned from `title` — see `LINK_URL_RE`'s neighboring doc comment on why a heading's own
+   *  title line is excluded from link-scanning entirely. */
+  linkCodes?: LinkOccurrence[];
+}
+
+/** One `[[code]]` occurrence found while scanning a block's own text (`collectLinkCodes` below).
+ *  `position` is the occurrence's start offset *relative to the owning block's own trimmed
+ *  `text`* — deliberately block-relative, never file-relative (Aperas-apeironngn-design.md §4
+ *  Step 8): a file-relative offset drifts with every edit before it, the same fragility git
+ *  patches need fuzzy context-matching to cope with, and precisely what the fractal block
+ *  architecture exists to avoid by construction. See `relativeOffset` below for the conversion. */
+export interface LinkOccurrence {
+  code: string;
+  position: number;
 }
 
 // `list` is never converted as its own node except when orphaned (nothing precedes it to adopt
@@ -79,10 +81,27 @@ function groupByHeadings(nodes: any[]): any[] {
   return result;
 }
 
-function rawSlice(node: any, markdown: string): string {
+/** Like `rawSlice`, but also exposes exactly where the trimmed text actually starts (as an
+ *  absolute file offset) — the one extra number `relativeOffset` below needs to convert a
+ *  descendant node's own absolute offset into one relative to *this* trimmed slice. */
+function sliceWithOffset(node: any, markdown: string): { text: string; trimmedStart: number } {
   const startOffset = node.position?.start?.offset ?? 0;
   const endOffset = node.position?.end?.offset ?? markdown.length;
-  return markdown.slice(startOffset, endOffset).trim();
+  const raw = markdown.slice(startOffset, endOffset);
+  return { text: raw.trim(), trimmedStart: startOffset + (raw.length - raw.trimStart().length) };
+}
+
+function rawSlice(node: any, markdown: string): string {
+  return sliceWithOffset(node, markdown).text;
+}
+
+/** Converts `descendantNode`'s own absolute file offset into one relative to `containerNode`'s
+ *  own trimmed rawSlice/text (Aperas-apeironngn-design.md §4 Step 8) — `containerNode` is always
+ *  the specific mdast node whose own `rawSlice` became a block's `text`, so this is exactly the
+ *  coordinate space a reader already has in hand when reading `node.text`. */
+function relativeOffset(containerNode: any, descendantNode: any, markdown: string): number {
+  const { trimmedStart } = sliceWithOffset(containerNode, markdown);
+  return (descendantNode.position?.start?.offset ?? 0) - trimmedStart;
 }
 
 const LINK_URL_RE = /^\[\[(.+)\]\]$/;
@@ -99,7 +118,7 @@ const LINK_URL_RE = /^\[\[(.+)\]\]$/;
 export const WIKILINK_PREDICATE = '[[wikilink]]';
 
 /**
- * Recursively collects internal-code link targets from a raw mdast (sub)tree: a `link` node
+ * Recursively collects internal-code link occurrences from a raw mdast (sub)tree: a `link` node
  * whose `url` is wrapped in `[[...]]` — the convention marking a target as an internal code
  * rather than an external URL (Aperas-markdown-fractal-mapping-design.md §4). Deliberately walks
  * mdast's own inline nodes rather than regexing the rendered text string: an `inlineCode`/`code`
@@ -109,19 +128,28 @@ export const WIKILINK_PREDICATE = '[[wikilink]]';
  * (confirmed live: this doc's own example of the convention triggered exactly that false
  * positive before this fix). CommonMark disallows nested links, so a matched `link` node's own
  * children are never descended into either.
+ *
+ * `containerNode` is fixed for the whole recursion — the specific mdast node whose own `rawSlice`
+ * becomes the resulting `text` (every call site below passes the same node it's about to compute
+ * `text` from) — so every occurrence's `position` lands in that one coordinate space, matching
+ * what a reader actually has in hand (Aperas-apeironngn-design.md §4 Step 8). Never called on a
+ * `heading` node itself: a heading functions as an anchor/target in its own right (other content
+ * links *to* it by title), so a link nested inside its own title text is an HTML nested-anchor
+ * situation — invalid, and just as confusable in practice as the ban implies. Only a heading's
+ * *consumed leading paragraph* (§2, a separate string entirely) may contain links.
  */
-function collectLinkCodes(mdastNode: any, out: string[] = []): string[] {
-  if (mdastNode.type === 'inlineCode' || mdastNode.type === 'code') {
-    return out;
-  }
-  if (mdastNode.type === 'link') {
-    const match = LINK_URL_RE.exec(mdastNode.url ?? '');
-    if (match) out.push(match[1]);
-    return out;
-  }
-  for (const child of mdastNode.children ?? []) {
-    collectLinkCodes(child, out);
-  }
+function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[] {
+  const out: LinkOccurrence[] = [];
+  const walk = (mdastNode: any): void => {
+    if (mdastNode.type === 'inlineCode' || mdastNode.type === 'code') return;
+    if (mdastNode.type === 'link') {
+      const match = LINK_URL_RE.exec(mdastNode.url ?? '');
+      if (match) out.push({ code: match[1], position: relativeOffset(containerNode, mdastNode, markdown) });
+      return;
+    }
+    for (const child of mdastNode.children ?? []) walk(child);
+  };
+  walk(containerNode);
   return out;
 }
 
@@ -136,10 +164,10 @@ interface ChildrenResult {
   children: ParsedBlockNode[];
   /** The leading paragraph's raw text, consumed into the caller's own `text` — '' if none. */
   leadingText: string;
-  /** Link codes found in the consumed leading paragraph — the caller merges these into its own
-   *  `linkCodes`, since that paragraph's raw mdast node (and its inline `link` children) never
+  /** Link occurrences found in the consumed leading paragraph — the caller merges these into its
+   *  own `linkCodes`, since that paragraph's raw mdast node (and its inline `link` children) never
    *  becomes a `BlockNode` of its own to carry them itself. */
-  leadingLinkCodes: string[];
+  leadingLinkCodes: LinkOccurrence[];
   /** Set only when a list adopted directly into the *caller* (the `adoptionAnchor === 'parent'`
    *  case) — the caller applies these as its own `orderedList`/`startIndex` props. */
   parentListProps?: { orderedList: boolean; startIndex: number };
@@ -160,7 +188,7 @@ interface ChildrenResult {
 function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListItem: boolean): ChildrenResult {
   const children: ParsedBlockNode[] = [];
   let leadingText = '';
-  let leadingLinkCodes: string[] = [];
+  let leadingLinkCodes: LinkOccurrence[] = [];
   let parentListProps: { orderedList: boolean; startIndex: number } | undefined;
   let adoptionAnchor: 'parent' | ParsedBlockNode | null = null;
 
@@ -201,7 +229,7 @@ function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListIt
       // iteration) adopts into the container itself, not into a paragraph node that no longer
       // exists (§8's "interaction with §2's consuming rule").
       leadingText = rawSlice(raw, markdown);
-      leadingLinkCodes = collectLinkCodes(raw);
+      leadingLinkCodes = collectLinkCodes(raw, markdown);
       adoptionAnchor = 'parent';
       continue;
     }
@@ -239,15 +267,16 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
 
   let title = blockId; // fallback title; kg:title (Aperas-interactive-summarization-design.md §3) overrides it interactively
   let text = rawText;
-  let linkCodes: string[] = [];
+  let linkCodes: LinkOccurrence[] = [];
 
   if (node.type === 'heading') {
     title = rawText;
     text = '';
-    // The heading's own title line can itself contain a link — collected from `node` directly
-    // since groupByHeadings only adds a `headingChildren` bucket alongside it, never touching
-    // `node.children` (the heading's actual inline title content).
-    linkCodes = collectLinkCodes(node);
+    // The heading's own title line is deliberately never scanned for links (Aperas-apeironngn-
+    // design.md §4 Step 8): a heading functions as an anchor/target in its own right (other
+    // content links *to* it by title), so a link nested inside its own title text is an HTML
+    // nested-anchor situation — invalid, and just as confusable in practice as the ban implies.
+    // Only its consumed leading paragraph (`leadingLinkCodes` below) may contain links.
   } else if (node.type === 'root') {
     title = 'Document Root';
     text = '';
@@ -268,7 +297,7 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
   if (node.type === 'blockquote') {
     // Opaque leaf (§3) — no children at all, regardless of what's nested inside. Still prose,
     // so its own inline links are collected the same as a paragraph's.
-    linkCodes = collectLinkCodes(node);
+    linkCodes = collectLinkCodes(node, markdown);
   } else if (node.type === 'list') {
     // Reached only for an orphaned list (convertChildren's own adoption branches never call
     // convertAstNode on a `list` node when a valid adoption anchor exists).
@@ -279,7 +308,7 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
     // Opaque leaf — `children` stays empty here. A paragraph *may* still end up with adopted
     // listItem children (§8), but that's applied by the *caller's* convertChildren after this
     // block already exists, not here.
-    linkCodes = collectLinkCodes(node);
+    linkCodes = collectLinkCodes(node, markdown);
   } else if (node.type === 'code' || node.type === 'thematicBreak' || node.type === 'html' || node.type === 'table') {
     // Opaque leaves with no meaningful inline `link` content of their own (code/HTML source
     // isn't inline-parsed at all; table stays fully opaque, no per-cell decomposition — §4) —
@@ -317,9 +346,16 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
 
 /**
  * First pre-order descendant (excluding the root itself) with non-empty `text` — the naive
- * "first paragraph" abstract used for ArtifactNode/FolderNode.text (§5 folding philosophy,
- * AI-driven summarization is a future enhancement). Root's own `text` is always blank, so the
- * abstract necessarily comes from a descendant.
+ * "first paragraph" abstract used for both `ArtifactNode.text` (`node.ts`'s `ingestFromDisk`) and
+ * `FolderNode.text` (`folders.ts`'s `buildFolderTree`, over a README's own parsed tree) — AI-driven
+ * summarization is a future enhancement. Deliberately a copy, not a consume: unlike a heading's own
+ * leading paragraph (§2), an artifact/folder is a pure container with no content of its own, so its
+ * `text` is honestly a derived preview, expected to duplicate whatever the first real descendant
+ * with content already is — never removed from `children` the way §2's consuming rule removes a
+ * heading's. A single top-level leading-paragraph requirement was tried and dropped: a real README
+ * is usually headed (`# Title` first), not a bare paragraph, so that produced an empty abstract for
+ * the common case — this recurses instead. Root's own `text` is always blank, so the abstract
+ * necessarily comes from a descendant.
  */
 export function extractAbstract(root: ParsedBlockNode): string {
   function findFirst(node: ParsedBlockNode, isRoot: boolean): string | null {
@@ -343,26 +379,13 @@ export interface ParsedMarkdown {
 /**
  * Parses raw Markdown content into a structured, nested tree of BlockNodes, plus any leading
  * YAML frontmatter extracted separately (file-level metadata, not a block — §5).
+ *
+ * No `.parent` stamping pass over the result any more (Aperas-apeironngn-design.md §5's `parent`/
+ * `PARENT_PRED` merge retired the old `stampParents` — it existed solely to feed `node.ts`'s
+ * `hydrateFromParsed`, which no longer reads a parsed-tree `.parent` at all: the real `parent`
+ * quad is now a side effect of whichever container's `children` write includes a node, using
+ * final, already-reconciled ids directly, with no separate early stamp to go stale).
  */
-/**
- * Sets `child.parent` to `node`'s own full id for every direct child, recursively — see
- * `ParsedBlockNode.parent`'s doc comment. Run once over the finished tree, not during
- * construction — and **must** be re-run by any caller that reassigns `blockId`s afterward
- * (`reconcile.ts`'s `carryForwardFields`, for a matched pair, replaces a fresh parse's
- * transient `blockId` with the old carried-forward one). Confirmed live as a real bug before
- * this was understood: stamping only once, pre-reconciliation, left every reconciled child's
- * `parent` pointing at its container's *discarded* pre-reassignment id — a dangling reference
- * to a document that never gets written, rejected by TerminusDB's schema check
- * (`references_untyped_object`) on the next write, not silently. Exported so `artifacts.ts` can
- * call it again after `reconcileTree` reassigns ids, on the same tree this parses.
- */
-export function stampParents(node: ParsedBlockNode): void {
-  for (const child of node.children ?? []) {
-    child.parent = `BlockNode/${node.blockId}`;
-    stampParents(child);
-  }
-}
-
 export function parseMarkdownTree(markdown: string): ParsedMarkdown {
   const processor = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter, ['yaml']);
   const ast = processor.parse(markdown);
@@ -371,6 +394,5 @@ export function parseMarkdownTree(markdown: string): ParsedMarkdown {
   const frontmatter = typeof yamlNode?.value === 'string' ? (yamlNode.value as string) : undefined;
 
   const rootBlock = convertAstNode(ast, markdown)!;
-  stampParents(rootBlock);
   return { root: rootBlock, ...(frontmatter !== undefined ? { frontmatter } : {}) };
 }

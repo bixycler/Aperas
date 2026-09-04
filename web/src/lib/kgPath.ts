@@ -7,6 +7,7 @@ import type { Store } from 'oxigraph';
 import { resolveTreeRef } from './apeironNgn/tree';
 import { wrap, type TreeNode } from './apeironNgn/node';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 export function runPath(store: Store, idArg: string): string {
   const id = resolveTreeRef(store, idArg);
@@ -20,6 +21,19 @@ export function runPath(store: Store, idArg: string): string {
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: 'Resolve a node to its walkable path.',
+      usage: 'kg:path -- <id or exact path> [--reload]',
+      args: [
+        { name: '<id or exact path>', description: 'Full node id or exact tracked artifact/folder path to resolve.' },
+      ],
+      flags: [
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
   const reload = rawArgs.includes('--reload');
   const [idArg] = rawArgs.filter((p) => p !== '--reload');
   if (!idArg) {

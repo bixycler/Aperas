@@ -9,9 +9,17 @@
  *
  * §4 rollout step 3: per-hop child matching is `TreeNode.findChild` and attachment is
  * `TreeNode.appendChild` (`node.ts`) now, not this file's own kind-switching helpers — the direct
- * payoff of the `TreeNode`/`treeChildren` refactor. `ArtifactNode`'s "already has a root" check
- * stays here, ahead of minting, so a rejected create doesn't leave an orphan `BlockNode` behind —
- * `appendChild`'s own version of that same check is a backstop, not the primary guard.
+ * payoff of the `TreeNode`/`treeChildren` refactor. This module's wikilink resolution
+ * (`artifacts.ts`'s `resolveBlockLinks`) runs *during* artifact ingestion, so a `treeChildren`-based
+ * hop here relies on the tree already being consistent at that point — `kgIngest.ts`'s `runIngest`
+ * guarantees that deliberately (every artifact tracked and the folder tree rebuilt *before* any
+ * content gets parsed or any wikilink resolved), after an earlier version of this file resolved a
+ * link back into its own still-unattached folder and threw trying to invent a `document-root`
+ * heading. An artifact and its document content are the same node now (`ArtifactNode extends
+ * BlockNode`, merged — Aperas-apeironngn-design.md) — `ArtifactNode.findChild`/`.appendChild` are
+ * `BlockNode`'s own plain versions, unmodified, so a miss on the artifact tier here is an ordinary
+ * "create a new top-level heading" case, not an error; there's no separate root to guard against a
+ * second one of, so nothing here needs to special-case that anymore either.
  *
  * Kept as its own module rather than folded into `resolve.ts`: the read-only tier is used as a
  * plain read by four other migrated commands (`kg:unfold`/`kg:fold`/`kg:tree`'s ref resolution/
@@ -42,17 +50,6 @@ function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
 
 function kindOf(id: string): 'BlockNode' | 'ArtifactNode' | 'FolderNode' | null {
   return (FULL_NODE_ID_RE.exec(id)?.[1] as any) ?? null;
-}
-
-function resolveArtifactOrFolderPrefix(store: Store, tokens: Token[]): { id: string; consumed: number } | null {
-  let nameCount = 0;
-  while (nameCount < tokens.length && tokens[nameCount].kind === 'name') nameCount++;
-  for (let k = nameCount; k >= 1; k--) {
-    const candidate = tokens.slice(0, k).map((t) => (t as { text: string }).text).join('/');
-    const id = findByExactPath(store, candidate);
-    if (id) return { id, consumed: k };
-  }
-  return null;
 }
 
 export interface ResolveTraceEntry {
@@ -132,19 +129,33 @@ function createImaginedPrefix(store: Store, tokens: Token[], opts: CreateOpts, t
   return descend(store, newArtifactFullId, rest, opts, trace);
 }
 
+/** §3 entry point: a real, read-only, hop-by-hop probe over the leading NAME tokens via
+ *  `TreeNode.findChild` — the same mechanism headings use, now safe to reuse for folder/file
+ *  segments too since `runIngest` guarantees the tree is already consistent by the time this runs
+ *  (see the module doc). Never mints anything itself; a genuine "nothing real matches at all"
+ *  falls to `createImaginedPrefix` when `--create-holder` is set. */
 function resolveTokens(store: Store, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
-  const prefixMatch = resolveArtifactOrFolderPrefix(store, tokens);
-  if (prefixMatch) {
-    const node = wrap(store, prefixMatch.id) as unknown as TreeNode;
-    trace.push({ id: prefixMatch.id, kind: kindOf(prefixMatch.id)!, title: node.title ?? '', created: false });
-    const rest = tokens.slice(prefixMatch.consumed);
-    if (rest.length === 0) return prefixMatch.id;
-    return descend(store, prefixMatch.id, rest, opts, trace);
+  const rootId = findByExactPath(store, '.');
+  if (!rootId) return null;
+
+  let currentId = rootId;
+  let consumed = 0;
+  while (consumed < tokens.length && tokens[consumed].kind === 'name' && nodeExists(store, currentId)) {
+    const node = wrap(store, currentId) as unknown as TreeNode;
+    const match = node.findChild((tokens[consumed] as { text: string }).text); // throws on ambiguity
+    if (!match) break;
+    currentId = match.id;
+    trace.push({ id: currentId, kind: kindOf(currentId)!, title: (match.title as string) ?? '', created: false });
+    consumed++;
+  }
+
+  if (consumed > 0) {
+    const rest = tokens.slice(consumed);
+    if (rest.length === 0) return currentId;
+    return descend(store, currentId, rest, opts, trace);
   }
 
   if (tokens.length > 0 && tokens[0].kind !== 'name') {
-    const rootId = findByExactPath(store, '.');
-    if (!rootId) return null;
     return descend(store, rootId, tokens, opts, trace);
   }
 
@@ -186,6 +197,9 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
           throw new Error(`'..' from ${currentId} has nowhere to go — no parent recorded (may need re-ingestion).`);
         }
         currentId = parent.id;
+        // A top-level heading's `.parent` already points straight at the owning `ArtifactNode`
+        // (merged with its document content — no separate root block in between anymore), so one
+        // hop is always enough here.
         if (kindOf(currentId) !== 'BlockNode') {
           const landed = wrap(store, currentId) as unknown as { path?: string };
           return resolveFromFolderPath(store, landed.path as string, tokens.slice(i + 1), opts, trace);
@@ -210,10 +224,10 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
     if (!kind || !nodeExists(store, currentId)) return null;
     const node = wrap(store, currentId) as unknown as TreeNode;
 
-    const match = node.findChild(token.text) as unknown as BlockNode | null; // throws on ambiguity, same as before
+    const match = node.findChild(token.text); // throws on ambiguity, same as before — any kind now, not just BlockNode
     if (match) {
       currentId = match.id;
-      trace.push({ id: currentId, kind: match.type!, title: match.title!, created: false });
+      trace.push({ id: currentId, kind: kindOf(currentId)!, title: (match.title as string) ?? '', created: false });
       continue;
     }
 
@@ -225,17 +239,6 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
       );
     }
 
-    // ArtifactNode's one "child" is its singular `root`, not a `children` list — a node that
-    // already has a root can't gain a second one this way (same schema-shape constraint
-    // `nodeRef.ts` documents against real TerminusDB behavior). Checked *before* minting, so a
-    // rejected create doesn't leave an orphan BlockNode behind.
-    if (kind === 'ArtifactNode' && (node as unknown as ArtifactNode).root !== undefined) {
-      throw new Error(
-        `${currentId} already has a root block — can't create '${wantTitle}' as a second one; ` +
-        `a holder can only be added *inside* existing content, not beside its single root.`
-      );
-    }
-
     const blockId = generateNodeId();
     const newId = `BlockNode/${blockId}`;
     const holder = wrap(store, newId) as unknown as BlockNode;
@@ -243,8 +246,10 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
     holder.title = wantTitle;
     holder.children = [];
     holder.holder = true;
-    holder.parent = currentId as unknown as TreeNode;
 
+    // `node.appendChild(newId)` alone now also sets `holder.parent` (Aperas-apeironngn-design.md
+    // §5's `parent`/`PARENT_PRED` merge) — a separate `holder.parent = currentId` write here would
+    // just be setting the same quad twice.
     node.appendChild(newId);
     currentId = newId;
     trace.push({ id: currentId, kind: 'heading', title: wantTitle, created: true });

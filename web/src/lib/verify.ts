@@ -39,13 +39,16 @@ import { parseMarkdownTree, WIKILINK_PREDICATE } from './astParser';
 import { getArtifactsDir } from './artifacts';
 import { serializeBlock } from './project';
 import { reconcileTree } from './reconcile';
-import { getProp } from './props';
+import { getProp, getProps } from './props';
 import { rehydrateStore } from './apeironNgn/store';
 import { dehydrateToJsonLd } from './apeironNgn/dehydrate';
 import { trackArtifact, ingestArtifact } from './apeironNgn/artifacts';
 import { ingestFolderTree, getFolderRecord } from './apeironNgn/folders';
 import { findByExactPath } from './apeironNgn/tree';
-import { wrap, type ArtifactNode, type BlockNode, type FolderNode } from './apeironNgn/node';
+import { wrap, ensureDefaultView, pruneUnreachableTombstones, type ArtifactNode, type BlockNode, type FolderNode, type Link, type TreeView, type ApeironNode } from './apeironNgn/node';
+import { nodeExists } from './apeironNgn/vocab';
+import { generateNodeId } from './snowflake';
+import { runAddBlockLink, runRemoveBlockLink } from './kgLink';
 
 const DEMO_DIR = '__verify_apeironngn_demo';
 const DEMO_ARTIFACT_PATH = `${DEMO_DIR}/demo.md`;
@@ -204,10 +207,10 @@ An introductory sentence.
   const projectedSample = serializeBlock(rootBlock);
   const { root: reparsedBlock } = parseMarkdownTree(projectedSample);
   const { stats: roundTripStats } = reconcileTree(rootBlock, reparsedBlock);
-  console.log(`   - vs. re-parsed projection: ${roundTripStats.unchanged} unchanged, ${roundTripStats.moved} moved, ${roundTripStats.added} added, ${roundTripStats.removed} removed.`);
-  if (roundTripStats.added !== 0 || roundTripStats.removed !== 0) {
+  console.log(`   - vs. re-parsed projection: ${roundTripStats.matched} matched, ${roundTripStats.moved} moved, ${roundTripStats.changed} changed, ${roundTripStats.added} added, ${roundTripStats.removed} removed.`);
+  if (roundTripStats.added !== 0 || roundTripStats.removed !== 0 || roundTripStats.changed !== 0) {
     throw new Error(
-      `Round-trip projection mismatch: expected zero added/removed, got added=${roundTripStats.added} removed=${roundTripStats.removed}.\nProjected Markdown:\n${projectedSample}`
+      `Round-trip projection mismatch: expected zero added/removed/changed, got added=${roundTripStats.added} removed=${roundTripStats.removed} changed=${roundTripStats.changed}.\nProjected Markdown:\n${projectedSample}`
     );
   }
   console.log("   [✓] Artifact Projection round-trip verified successfully.\n");
@@ -227,6 +230,10 @@ An introductory sentence.
     const demoAbsPath = join(getArtifactsDir(), DEMO_ARTIFACT_PATH);
     writeFileSync(demoAbsPath, sampleMarkdown, 'utf-8');
     trackArtifact(store, DEMO_ARTIFACT_PATH);
+    // Folder tree rebuilt *before* ingesting content, same order `kgIngest.ts`'s `runIngest` uses
+    // — otherwise this demo artifact's own wikilinks would resolve against a tree that doesn't
+    // have it attached into its parent folder yet (`resolveCreate.ts`'s module doc has the story).
+    ingestFolderTree(store);
     const ingestResult = ingestArtifact(store, DEMO_ARTIFACT_PATH);
     console.log(`   - Blocks ingested: ${ingestResult?.blockCount}`);
     console.log("   [✓] Artifact tracking & ingestion verified successfully.\n");
@@ -235,36 +242,41 @@ An introductory sentence.
     const demoId = findByExactPath(store, DEMO_ARTIFACT_PATH);
     if (!demoId) throw new Error('No ArtifactNode found for the demo artifact after ingestion — cannot continue verification.');
     const artifactNode = wrap(store, demoId) as unknown as ArtifactNode;
-    const rootNode = artifactNode.root as unknown as BlockNode;
-    if (!rootNode) throw new Error('ArtifactNode.root is unset after ingestion — cannot continue verification.');
-    const rootId = rootNode.id;
-    const firstChildId = ((rootNode.children as unknown as BlockNode[] | undefined)?.[0])?.id;
-    console.log(`   - Blocks resolved via wrap(): ${collectIds(rootNode).length}`);
+    if (artifactNode.ingestedHash === undefined) throw new Error('ArtifactNode has no ingested content — cannot continue verification.');
+    const rootId = artifactNode.id;
+    const firstChildId = ((artifactNode.children as unknown as BlockNode[] | undefined)?.[0])?.id;
+    console.log(`   - Blocks resolved via wrap(): ${collectIds(artifactNode).length}`);
     console.log("   [✓] In-process tree read verified successfully.\n");
 
     console.log("5. Re-ingesting an edited version and verifying reconciliation...");
     const rootBareCode = rootId.split('/')[1];
-    const editedMarkdown = sampleMarkdown + `\n\n## A New Section\n\nA freshly added paragraph.\n\nA [self link]([[${rootBareCode}]]) back to the root, a [forward reference]([[NotYetWritten]]) that should become a holder, and a [truly dangling one]([[../../../../nowhere]]) that still can't resolve.`;
+    // The dangling link's `..` count must overshoot past the true artifacts root to stay
+    // genuinely unresolvable — an artifact and its document content are literally the same node
+    // now (`ArtifactNode extends BlockNode`, merged — Aperas-apeironngn-design.md), so
+    // `../../../../nowhere` from here would land *inside* the demo artifact's own document and
+    // validly create a new top-level heading there, rather than staying dangling.
+    const editedMarkdown = sampleMarkdown + `\n\n## A New Section\n\nA freshly added paragraph.\n\nA [self link]([[${rootBareCode}]]) back to the root, a [forward reference]([[NotYetWritten]]) that should become a holder, and a [truly dangling one]([[../../../../../../nowhere]]) that still can't resolve.`;
     writeFileSync(demoAbsPath, editedMarkdown, 'utf-8');
     trackArtifact(store, DEMO_ARTIFACT_PATH);
+    ingestFolderTree(store);
     const reingestResult = ingestArtifact(store, DEMO_ARTIFACT_PATH);
     if (!reingestResult?.reconciliation) {
       throw new Error('Expected a reconciliation report on re-ingestion of an already-ingested artifact.');
     }
-    const { unchanged, moved, added, removed } = reingestResult.reconciliation;
-    console.log(`   - Reconciliation: ${unchanged} unchanged, ${moved} moved, ${added} added, ${removed} removed.`);
-    if (unchanged === 0 || added === 0) {
-      throw new Error(`Expected both unchanged and added blocks from this edit, got unchanged=${unchanged} added=${added}.`);
+    const { matched, moved, changed, added, removed } = reingestResult.reconciliation;
+    console.log(`   - Reconciliation: ${matched} matched, ${moved} moved, ${changed} changed, ${added} added, ${removed} removed.`);
+    if (matched === 0 || added === 0) {
+      throw new Error(`Expected both matched and added blocks from this edit, got matched=${matched} added=${added}.`);
     }
-    const reingestedRoot = (wrap(store, demoId) as unknown as ArtifactNode).root as unknown as BlockNode;
-    const reingestedIds = new Set(collectIds(reingestedRoot));
+    const reingestedArtifact = wrap(store, demoId) as unknown as ArtifactNode;
+    const reingestedIds = new Set(collectIds(reingestedArtifact));
     if (!reingestedIds.has(rootId) || (firstChildId && !reingestedIds.has(firstChildId))) {
-      throw new Error('Expected the root and first child to keep their id across reconciliation — identity was not preserved.');
+      throw new Error('Expected the artifact and first child to keep their id across reconciliation — identity was not preserved.');
     }
     console.log("   [✓] Reconciliation matching verified successfully.\n");
 
     console.log("5b. Testing BlockNode.links extraction (Aperas-markdown-fractal-mapping-design.md §4)...");
-    const linkBlockSummary = findByText(reingestedRoot, 'self link');
+    const linkBlockSummary = findByText(reingestedArtifact, 'self link');
     if (!linkBlockSummary) throw new Error('Expected to find the paragraph containing the self-link.');
     const linkBlock = wrap(store, linkBlockSummary.id) as unknown as BlockNode;
     const links = (linkBlock.links as unknown as Array<{ target: BlockNode; predicate: string }>) ?? [];
@@ -283,6 +295,139 @@ An introductory sentence.
     }
     console.log(`   - Resolved links: self-link -> ${rootId}; forward reference -> new holder ${holderTarget.id} ("${holderTarget.title}"); truly-dangling link correctly skipped.`);
     console.log("   [✓] BlockNode.links extraction verified successfully.\n");
+
+    console.log("5c. Testing wikilink regeneration on re-ingestion (no duplication; manual kg:link survives)...");
+    // A real kg:link-equivalent manual reference, distinct from any [[wikilink]] — should survive
+    // untouched across re-ingestion, unlike a resolved wikilink Link (regenerated fresh each time).
+    if (!runAddBlockLink(store, linkBlockSummary.id, rootId).resolved) {
+      throw new Error('Expected the manual kg:link to resolve against the artifact itself.');
+    }
+    // A third ingestion where the self-link paragraph's own text is unchanged (a heading added
+    // elsewhere forces a real file-hash change, so this isn't just the unchanged-hash skip path) —
+    // it should still match via reconciliation and keep its identity, the exact case that used to
+    // silently duplicate its resolved wikilink Links on every such re-ingestion.
+    const thirdMarkdown = editedMarkdown + `\n\n## Yet Another Section\n\nUnrelated content, just to force a real file-hash change elsewhere.`;
+    writeFileSync(demoAbsPath, thirdMarkdown, 'utf-8');
+    trackArtifact(store, DEMO_ARTIFACT_PATH);
+    ingestFolderTree(store);
+    const thirdIngestResult = ingestArtifact(store, DEMO_ARTIFACT_PATH);
+    if (!thirdIngestResult?.reconciliation) {
+      throw new Error('Expected a reconciliation report on the third ingestion.');
+    }
+    const rewrappedLinkBlock = wrap(store, linkBlockSummary.id) as unknown as BlockNode;
+    const linksAfterThirdIngest = (rewrappedLinkBlock.links as unknown as Array<{ target: BlockNode; predicate: string }>) ?? [];
+    const wikilinkCount = linksAfterThirdIngest.filter((l) => l.predicate === WIKILINK_PREDICATE).length;
+    const manualCount = linksAfterThirdIngest.filter((l) => l.predicate === 'references').length;
+    if (wikilinkCount !== 2) {
+      throw new Error(`Expected the self-link paragraph's wikilink Links to be regenerated, not duplicated, across a re-ingestion where its own text was unchanged — expected 2, got ${wikilinkCount}.`);
+    }
+    if (manualCount !== 1) {
+      throw new Error(`Expected the manually-added 'references' link to survive the wikilink-regeneration fix untouched — expected 1, got ${manualCount}.`);
+    }
+    console.log(`   - After a third ingestion (self-link paragraph's own text unchanged): ${wikilinkCount} wikilink Link(s) — not duplicated — plus ${manualCount} manual Link(s), preserved.`);
+    // Not just "not duplicated" — actually the *same* Link identity each time (Aperas-apeironngn-
+    // design.md §5's "tractable half": a wikilink Link used to churn its own id on every
+    // re-ingestion even when nothing about it changed). Captured here, checked again after the
+    // next (5d) ingestion, which touches this same artifact but leaves this paragraph untouched.
+    const wikilinkIdsByTarget = new Map(
+      linksAfterThirdIngest
+        .filter((l) => l.predicate === WIKILINK_PREDICATE)
+        .map((l) => [(l.target as unknown as { id: string }).id, (l as unknown as { id: string }).id])
+    );
+    console.log("   [✓] Wikilink regeneration verified successfully.\n");
+
+    console.log("5d. Testing target-deduped wikilink Links with occurrence positions (Aperas-apeironngn-design.md §4 Step 8)...");
+    // The same target mentioned twice in one paragraph should collapse to one Link carrying two
+    // `position` props, not two Links — `.links` is a real traversal axis (Aperas-apeironngn-
+    // design.md §4 Step 8), so a duplicate edge to the same target is a correctness bug, not just
+    // a display nit.
+    const dedupMarkdown = thirdMarkdown + `\n\n## A Dedup Section\n\nMentioned twice: a [first mention]([[${rootBareCode}]]) and again a [second mention]([[${rootBareCode}]]).`;
+    writeFileSync(demoAbsPath, dedupMarkdown, 'utf-8');
+    trackArtifact(store, DEMO_ARTIFACT_PATH);
+    ingestFolderTree(store);
+    const fourthIngestResult = ingestArtifact(store, DEMO_ARTIFACT_PATH);
+    if (!fourthIngestResult?.reconciliation) {
+      throw new Error('Expected a reconciliation report on the fourth ingestion.');
+    }
+    const dedupBlockSummary = findByText(wrap(store, demoId) as unknown as ArtifactNode, 'Mentioned twice');
+    if (!dedupBlockSummary) throw new Error('Expected to find the paragraph mentioning the same target twice.');
+    const dedupBlock = wrap(store, dedupBlockSummary.id) as unknown as BlockNode;
+    const dedupLinks = (dedupBlock.links as unknown as Array<{ target: BlockNode; predicate: string; props?: any[] }>) ?? [];
+    const dedupWikilinks = dedupLinks.filter((l) => l.predicate === WIKILINK_PREDICATE);
+    if (dedupWikilinks.length !== 1) {
+      throw new Error(`Expected the two mentions of the same target to collapse into one Link, got ${dedupWikilinks.length}.`);
+    }
+    const positions = getProps(dedupWikilinks[0] as any, 'position').map(Number).sort((a, b) => a - b);
+    if (positions.length !== 2) {
+      throw new Error(`Expected the one Link to carry two 'position' props (one per occurrence), got ${positions.length}: ${JSON.stringify(positions)}.`);
+    }
+    const blockText = dedupBlock.text as unknown as string;
+    for (const position of positions) {
+      if (blockText[position] !== '[') {
+        throw new Error(`Expected position ${position} to land on the opening '[' of a link occurrence in block.text, got '${blockText[position]}' (text: ${JSON.stringify(blockText)}).`);
+      }
+    }
+    console.log(`   - One Link for the doubly-mentioned target, positions [${positions.join(', ')}] both correctly locating a '[' in block.text.`);
+    console.log("   [✓] Target-deduped wikilink positions verified successfully.\n");
+    const dedupLinkId = (dedupWikilinks[0] as unknown as { id: string }).id;
+
+    console.log("5e. Testing wikilink Link identity stays stable across a later, unrelated re-ingestion...");
+    // The 5d ingestion above touched this same artifact (added a whole new section elsewhere) but
+    // never touched the self-link paragraph's own text — its self-link wikilink Link should carry
+    // the exact same id captured after 5c, not a fresh one. (The paragraph's *other* wikilink, the
+    // forward reference to "NotYetWritten", is deliberately not checked here: each ingestion that
+    // resolves it before the target exists mints a brand-new holder BlockNode with its own fresh id
+    // — `resolveDeepPathDetail`'s own `--create-holder` doesn't look up a prior holder by title —
+    // so that Link's *target* itself legitimately differs each time, a separate, pre-existing
+    // holder-churn question this fix isn't about.)
+    const linkBlockAfterFourth = wrap(store, linkBlockSummary.id) as unknown as BlockNode;
+    const linksAfterFourth = (linkBlockAfterFourth.links as unknown as Array<{ target: BlockNode; predicate: string; id: string }>) ?? [];
+    const selfLinkAfterFourth = linksAfterFourth.find(
+      (l) => l.predicate === WIKILINK_PREDICATE && (l.target as unknown as { id: string }).id === rootId
+    );
+    const expectedSelfLinkId = wikilinkIdsByTarget.get(rootId);
+    if (!selfLinkAfterFourth || selfLinkAfterFourth.id !== expectedSelfLinkId) {
+      throw new Error(`Expected the self-link wikilink Link to keep its id (${expectedSelfLinkId}) across an unrelated re-ingestion, got ${selfLinkAfterFourth?.id}.`);
+    }
+    console.log(`   - Self-link wikilink Link (${selfLinkAfterFourth.id}) kept its exact id across an unrelated re-ingestion — no id churn.`);
+    console.log("   [✓] Wikilink identity stability verified successfully.\n");
+
+    console.log("5f. Testing that position drift alone (target unchanged) does not churn a wikilink Link's id...");
+    // Inserting a clause *before* the two mentions shifts both of their offsets without changing
+    // which target they point at — `target`, not `position`, is the identity key (a real user
+    // correction to the original design here: positions routinely drift from edits elsewhere in
+    // the same block, and treating that drift as an identity change would defeat the whole point
+    // of this fix). The `Link` should keep its id; only its `position` props should change.
+    const driftedMarkdown = dedupMarkdown.replace(
+      'Mentioned twice: a [first mention]',
+      'Mentioned twice: with an inserted clause first, a [first mention]'
+    );
+    if (driftedMarkdown === dedupMarkdown) throw new Error('Expected the dedup paragraph text to actually change.');
+    writeFileSync(demoAbsPath, driftedMarkdown, 'utf-8');
+    trackArtifact(store, DEMO_ARTIFACT_PATH);
+    ingestFolderTree(store);
+    const fifthIngestResult = ingestArtifact(store, DEMO_ARTIFACT_PATH);
+    if (!fifthIngestResult?.reconciliation) {
+      throw new Error('Expected a reconciliation report on the fifth ingestion.');
+    }
+    const dedupBlockAfterDrift = wrap(store, dedupBlockSummary.id) as unknown as BlockNode;
+    const dedupLinksAfterDrift = (dedupBlockAfterDrift.links as unknown as Array<{ predicate: string; id: string }>) ?? [];
+    const dedupWikilinksAfterDrift = dedupLinksAfterDrift.filter((l) => l.predicate === WIKILINK_PREDICATE);
+    if (dedupWikilinksAfterDrift.length !== 1 || dedupWikilinksAfterDrift[0].id !== dedupLinkId) {
+      throw new Error(`Expected exactly one wikilink Link keeping id ${dedupLinkId} after position drift, got: ${JSON.stringify(dedupWikilinksAfterDrift)}.`);
+    }
+    const positionsAfterDrift = getProps(dedupWikilinksAfterDrift[0] as any, 'position').map(Number).sort((a, b) => a - b);
+    const textAfterDrift = dedupBlockAfterDrift.text as unknown as string;
+    for (const position of positionsAfterDrift) {
+      if (textAfterDrift[position] !== '[') {
+        throw new Error(`Expected drifted position ${position} to still land on '[', got '${textAfterDrift[position]}' (text: ${JSON.stringify(textAfterDrift)}).`);
+      }
+    }
+    if (JSON.stringify(positionsAfterDrift) === JSON.stringify(positions)) {
+      throw new Error(`Expected positions to actually shift after the inserted clause, still got [${positionsAfterDrift.join(', ')}].`);
+    }
+    console.log(`   - Same Link (${dedupLinkId}) after position drift — positions updated to [${positionsAfterDrift.join(', ')}], id unchanged.`);
+    console.log("   [✓] Position-drift identity stability verified successfully.\n");
 
     console.log("6. Ingesting FolderNode structural tree...");
     const { folderCount } = ingestFolderTree(store);
@@ -305,9 +450,16 @@ Intro sentence for the demo folder.
     const folderRecord = getFolderRecord(store, DEMO_DIR);
     if (!folderRecord) throw new Error(`Expected a FolderNode for '${DEMO_DIR}' after ingestion.`);
     const folderNode = wrap(store, `FolderNode/${folderRecord.folderId}`) as unknown as FolderNode;
+    // Copy, not consume (Aperas-apeironngn-design.md): the demo README is headed (`# Demo
+    // Folder` first, not a bare leading paragraph) — a real-world shape the old top-level-
+    // leading-paragraph consuming rule produced an *empty* abstract for. `folderNode.text` should
+    // still pick up the heading's own consumed sentence via `extractAbstract`'s recursive search.
+    if (folderNode.text !== 'Intro sentence for the demo folder.') {
+      throw new Error(`Expected FolderNode.text to be copied from the first descendant with content, got: ${JSON.stringify(folderNode.text)}`);
+    }
     const projected = folderNode.toReadme();
     if (!projected.includes('draft: true') || !projected.includes('Intro sentence for the demo folder.') || !projected.includes('item one')) {
-      throw new Error(`Expected projected README to include frontmatter, consumed text, and list items, got:\n${projected}`);
+      throw new Error(`Expected projected README to include frontmatter, the intro sentence, and list items, got:\n${projected}`);
     }
     // Write-by-default: actually write the regenerated content, re-ingest it, and confirm
     // projecting again reproduces the exact same output -- a stable fixed point, not drift.
@@ -332,15 +484,143 @@ Intro sentence for the demo folder.
         throw new Error(`Expected the round-tripped Store to have the same quad count as the original, got ${scratchQuadCount} vs ${store.size}.`);
       }
       const rehydratedArtifact = wrap(rehydrated, demoId) as unknown as ArtifactNode;
-      const rehydratedRootId = (rehydratedArtifact.root as unknown as BlockNode | undefined)?.id;
-      if (rehydratedArtifact.title !== artifactNode.title || rehydratedRootId !== reingestedRoot.id) {
-        throw new Error('Expected the demo artifact\'s title and root id to survive a dehydrate -> rehydrate round-trip unchanged.');
+      if (rehydratedArtifact.title !== artifactNode.title || rehydratedArtifact.id !== reingestedArtifact.id) {
+        throw new Error('Expected the demo artifact\'s title and id to survive a dehydrate -> rehydrate round-trip unchanged.');
       }
       console.log(`   - ${scratchQuadCount} quads round-tripped, 0 dangling references, demo artifact identity intact.`);
       console.log("   [✓] Dehydrate/rehydrate round-trip verified successfully.\n");
     } finally {
       rmSync(scratchDir, { recursive: true, force: true });
     }
+
+    console.log("8. Testing tombstone visibility in tree rendering (Aperas-apeironngn-design.md §5)...");
+    // Tombstoning only clears a dead node's *own* children/links/props — it never sweeps other
+    // documents' references *to* it, so a tombstoned node reached through a stale `children`
+    // pointer, or through a still-live Link elsewhere, used to render with no signal it had died.
+    // Constructed directly against the store (a standalone victim node + a manual link to it from
+    // an already-ingested block, rather than driven through a full re-ingestion) to isolate exactly
+    // the rendering code path being fixed. Run *after* section 7's round-trip check, deliberately:
+    // `TreeView`/`Profile` (minted below by `ensureDefaultView`) are per-viewer state dehydrated
+    // separately from the main JSON-LD mirror (Aperas-treeview-design.md §8), outside what section
+    // 7's plain-content round-trip check exercises or expects present in the store.
+    const victimId = `BlockNode/${generateNodeId()}`;
+    const victim = wrap(store, victimId) as unknown as BlockNode;
+    victim.type = 'heading';
+    victim.title = 'A Node That Will Be Tombstoned';
+    victim.children = [];
+    victim.tombstonedAt = new Date().toISOString();
+
+    const dedupBlockForTombstoneTest = wrap(store, dedupBlockSummary.id) as unknown as BlockNode;
+    const priorLinkIds = ((dedupBlockForTombstoneTest.links as unknown as Link[] | undefined) ?? []).map((l) => (l as unknown as { id: string }).id);
+    const victimLinkId = dedupBlockForTombstoneTest.mintWikilink(victimId, [0]);
+    dedupBlockForTombstoneTest.links = [...priorLinkIds, victimLinkId] as unknown as ApeironNode[];
+
+    const view = ensureDefaultView(store);
+    view.unfold(dedupBlockSummary.id); // makes this block's own .links visible in the view render
+    const viewLines = (wrap(store, demoId) as unknown as ArtifactNode).renderTree({ view });
+    const tombstonedLine = viewLines.find((l) => l.includes(victimId));
+    if (!tombstonedLine || !tombstonedLine.includes('(tombstoned)')) {
+      throw new Error(`Expected a rendered line for the tombstoned target ${victimId} tagged '(tombstoned)', got: ${JSON.stringify(tombstonedLine)}.`);
+    }
+    console.log(`   - Tombstoned target rendered with a visible marker: ${tombstonedLine.trim()}`);
+    console.log("   [✓] Tombstone visibility verified successfully.\n");
+
+    console.log("9. Testing dangling `unfolds` cleanup on a genuinely-deleted Link (Aperas-apeironngn-design.md §5)...");
+    // A Link/StringProp has no tombstone concept of its own — deleting one is a real hard delete
+    // (`hardDeleteNode`). `unfolds` is the only field that can reference a Link directly, so
+    // deleting a Link that's currently unfolded must sweep it out of `unfolds` too, or the entry
+    // dangles forever with zero trace (the "hard half" of §5's Link-tombstone open question).
+    const scratchLinkId = dedupBlockForTombstoneTest.mintWikilink(rootId, [0]);
+    const existingLinkIds = ((dedupBlockForTombstoneTest.links as unknown as Link[] | undefined) ?? []).map((l) => (l as unknown as { id: string }).id);
+    dedupBlockForTombstoneTest.links = [...existingLinkIds, scratchLinkId] as unknown as ApeironNode[];
+    view.unfold(scratchLinkId);
+    const unfoldsBeforeDelete = ((view.unfolds as unknown as Array<{ id: string }> | undefined) ?? []).map((n) => n.id);
+    if (!unfoldsBeforeDelete.includes(scratchLinkId)) {
+      throw new Error(`Expected '${scratchLinkId}' to be present in unfolds before deletion.`);
+    }
+    // Delete just the scratch Link by reassigning `.links` without it — `writeField`'s embed-diff
+    // (Step 8) is what actually calls `hardDeleteNode` on it.
+    dedupBlockForTombstoneTest.links = existingLinkIds.filter((id) => id !== scratchLinkId) as unknown as ApeironNode[];
+    const viewAfterDelete = wrap(store, view.id) as unknown as TreeView;
+    const unfoldsAfterDelete = ((viewAfterDelete.unfolds as unknown as Array<{ id: string }> | undefined) ?? []).map((n) => n.id);
+    if (unfoldsAfterDelete.includes(scratchLinkId)) {
+      throw new Error(`Expected '${scratchLinkId}' to be swept out of unfolds once its Link was deleted, still present: ${JSON.stringify(unfoldsAfterDelete)}.`);
+    }
+    console.log(`   - Deleted Link's dangling 'unfolds' entry was swept automatically (${unfoldsBeforeDelete.length} -> ${unfoldsAfterDelete.length} entries).`);
+    console.log("   [✓] Dangling unfolds cleanup verified successfully.\n");
+
+    console.log("10. Testing mark-and-sweep GC collects a cyclic dead cluster but spares a referenced tombstone...");
+    // The naive design considered for this (drop a tombstoned node once it has *zero* incoming
+    // references, dead or alive) fails exactly like refcounting GC fails on a cycle: two
+    // tombstoned nodes pointing only at *each other*, with nothing live pointing in, would each
+    // show a nonzero referrer count forever. Real mark-and-sweep (starting from live roots) has
+    // no such blind spot — constructed here directly against the store, standalone (unattached to
+    // any real tree), since building a genuinely disconnected dead cluster through real ingestion
+    // isn't practical.
+    const deadAId = `BlockNode/${generateNodeId()}`;
+    const deadBId = `BlockNode/${generateNodeId()}`;
+    const deadA = wrap(store, deadAId) as unknown as BlockNode;
+    const deadB = wrap(store, deadBId) as unknown as BlockNode;
+    deadA.type = 'heading'; deadA.title = 'Dead A'; deadA.children = [];
+    deadB.type = 'heading'; deadB.title = 'Dead B'; deadB.children = [];
+    deadA.addLink('references', deadBId);
+    deadB.addLink('references', deadAId);
+    deadA.tombstonedAt = new Date().toISOString();
+    deadB.tombstonedAt = new Date().toISOString();
+
+    // A third tombstoned node, kept alive by a manual link from a still-live block — must survive
+    // the same GC pass, proving it isn't just deleting every tombstoned node unconditionally.
+    const keptDeadId = `BlockNode/${generateNodeId()}`;
+    const keptDead = wrap(store, keptDeadId) as unknown as BlockNode;
+    keptDead.type = 'heading'; keptDead.title = 'Kept Dead'; keptDead.children = [];
+    keptDead.tombstonedAt = new Date().toISOString();
+    const stillLiveBlock = wrap(store, linkBlockSummary.id) as unknown as BlockNode;
+    const stillLiveLinkIds = ((stillLiveBlock.links as unknown as Link[] | undefined) ?? []).map((l) => (l as unknown as { id: string }).id);
+    stillLiveBlock.addLink('references', keptDeadId);
+
+    const { pruned } = pruneUnreachableTombstones(store);
+    if (nodeExists(store, deadAId) || nodeExists(store, deadBId)) {
+      throw new Error(`Expected the mutually-referencing dead cluster (${deadAId}, ${deadBId}) to be pruned, but at least one still exists.`);
+    }
+    if (!nodeExists(store, keptDeadId)) {
+      throw new Error(`Expected '${keptDeadId}' to survive — it's still referenced by a live block's manual link.`);
+    }
+    if (pruned < 2) {
+      throw new Error(`Expected at least 2 nodes pruned (the dead cluster), got ${pruned}.`);
+    }
+    console.log(`   - Pruned ${pruned} unreachable tombstone(s), including the mutually-referencing pair; the still-referenced tombstone survived.`);
+    console.log("   [✓] Mark-and-sweep GC verified successfully.\n");
+
+    console.log("11. Testing kg:unlink (runRemoveBlockLink) — the missing removal counterpart to kg:link...");
+    // `runAddBlockLink` has never had a removal counterpart — a manually-added `kg:link` could only
+    // ever be added, never taken back, short of tombstoning its whole owning block. Also exercises
+    // exactly what let `keptDead` survive GC above: removing this same manual link should let a
+    // *later* GC pass finally collect it, proving `kg:unlink` and the GC compose correctly.
+    const removeResult = runRemoveBlockLink(store, linkBlockSummary.id, keptDeadId);
+    if (!removeResult.removed) {
+      throw new Error(`Expected runRemoveBlockLink to remove the manual link from ${linkBlockSummary.id} to ${keptDeadId}.`);
+    }
+    const linksAfterRemove = ((wrap(store, linkBlockSummary.id) as unknown as BlockNode).links as unknown as Link[] | undefined) ?? [];
+    const stillPointsAtKeptDead = linksAfterRemove.some(
+      (l) => l.predicate === 'references' && (l.target as unknown as { id: string } | undefined)?.id === keptDeadId
+    );
+    if (stillPointsAtKeptDead) {
+      throw new Error(`Expected no remaining manual link to ${keptDeadId} after removal.`);
+    }
+    const wikilinkCountAfterRemove = linksAfterRemove.filter((l) => l.predicate === WIKILINK_PREDICATE).length;
+    const manualCountAfterRemove = linksAfterRemove.filter((l) => l.predicate === 'references').length;
+    if (manualCountAfterRemove !== stillLiveLinkIds.filter((id) => {
+      const l = wrap(store, id) as unknown as Link;
+      return l.predicate === 'references';
+    }).length) {
+      throw new Error(`Expected runRemoveBlockLink to touch only the targeted link, leaving this block's other manual links untouched.`);
+    }
+    const { pruned: prunedAfterUnlink } = pruneUnreachableTombstones(store);
+    if (nodeExists(store, keptDeadId)) {
+      throw new Error(`Expected '${keptDeadId}' to finally be collected by GC now that its only reference was removed via kg:unlink.`);
+    }
+    console.log(`   - Manual link removed (${wikilinkCountAfterRemove} wikilink(s), ${manualCountAfterRemove} manual link(s) remain); a further GC pass then collected the now-unreferenced tombstone (${prunedAfterUnlink} pruned).`);
+    console.log("   [✓] kg:unlink verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Substrate Integration complete & verified!");
   } finally {

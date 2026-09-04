@@ -7,6 +7,14 @@
  *
  * §4 rollout step 3: per-hop child matching is `TreeNode.findChild` (`node.ts`) now, not this
  * file's own kind-switching helper — the direct payoff of the `TreeNode`/`treeChildren` refactor.
+ * `findChild` matches any kind of child (`BlockNode` heading, or a `FolderNode`/`ArtifactNode` one
+ * level down the structural tree), so a leading run of NAME tokens resolves the same way whether
+ * it's walking folders/files or headings — one hop-by-hop descent from the root `FolderNode`. That
+ * relies on the tree already being consistent at resolution time, which `kgIngest.ts`'s
+ * `runIngest` now guarantees deliberately: every artifact is tracked and the folder tree rebuilt
+ * *before* any content gets parsed or any wikilink resolved (`resolveCreate.ts`'s own module doc
+ * has the incident this fixed — a tree hop used to run mid-ingestion, before an artifact being
+ * ingested was attached into its own parent folder's children yet).
  *
  * Scope cut, deliberately: no `--create-holder`/`--titles` (write path, its own future rollout
  * step per §4), so no `trace`/`ResolveDetail` bookkeeping either — the plain (non-createHolder)
@@ -38,49 +46,19 @@ function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
   return null;
 }
 
-/** §3: longest-prefix search for an ArtifactNode/FolderNode among the leading NAME tokens. A
- *  single `path`-literal lookup replaces `nodeRef.ts`'s separate artifact-then-folder tries —
- *  `path` is only declared on those two classes, so any match is inherently one or the other. */
-function resolveArtifactOrFolderPrefix(store: Store, tokens: Token[]): { id: string; consumed: number } | null {
-  let nameCount = 0;
-  while (nameCount < tokens.length && tokens[nameCount].kind === 'name') nameCount++;
-
-  for (let k = nameCount; k >= 1; k--) {
-    const candidate = tokens
-      .slice(0, k)
-      .map((t) => (t as { text: string }).text)
-      .join('/');
-    const id = findByExactPath(store, candidate);
-    if (id) return { id, consumed: k };
-  }
-  return null;
-}
-
 /** §2.1's `..` at the artifact/folder tier: not a field on the node, a property of the stored
  *  `path` string — trim the last segment and re-resolve via `findByExactPath`. */
 function resolveFromFolderPath(store: Store, folderPath: string, restTokens: Token[]): string | null {
   return resolveTokens(store, [...pathToNameTokens(folderPath), ...restTokens]);
 }
 
-/** §3 entry point: try the flat prefix search first; if nothing matches and the leading token is
- *  `.`/`..` with no name to search at all, anchor at the true root FolderNode and hand off to §4.
- *  A leading name with nothing at all matching declines outright — `--create-holder`'s "imagine
- *  the whole chain" fallback (§7.2) isn't part of this read-only tier. */
+/** §3 entry point: anchor at the true root `FolderNode` and hand off to §4's hop-by-hop descent —
+ *  `descend`'s `findChild` call handles folder/file segments exactly like heading segments, so
+ *  there's nothing left for this function to special-case ahead of it. */
 function resolveTokens(store: Store, tokens: Token[]): string | null {
-  const prefixMatch = resolveArtifactOrFolderPrefix(store, tokens);
-  if (prefixMatch) {
-    const rest = tokens.slice(prefixMatch.consumed);
-    if (rest.length === 0) return prefixMatch.id;
-    return descend(store, prefixMatch.id, rest);
-  }
-
-  if (tokens.length > 0 && tokens[0].kind !== 'name') {
-    const rootId = findByExactPath(store, '.');
-    if (!rootId) return null;
-    return descend(store, rootId, tokens);
-  }
-
-  return null;
+  const rootId = findByExactPath(store, '.');
+  if (!rootId) return null;
+  return descend(store, rootId, tokens);
 }
 
 /** §4 + §2.1's nav tokens, starting from an already-resolved node. No holder creation here — a
@@ -102,6 +80,9 @@ function descend(store: Store, startId: string, tokens: Token[]): string | null 
           throw new Error(`'..' from ${currentId} has nowhere to go — no parent recorded (may need re-ingestion).`);
         }
         currentId = parent.id;
+        // A top-level heading's `.parent` already points straight at the owning `ArtifactNode`
+        // (merged with its document content — Aperas-apeironngn-design.md — no separate root
+        // block in between anymore), so one hop is always enough here.
         if (!currentId.startsWith('BlockNode/')) {
           const landed = wrap(store, currentId) as unknown as { path?: string };
           return resolveFromFolderPath(store, landed.path as string, tokens.slice(i + 1));

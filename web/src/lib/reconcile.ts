@@ -8,13 +8,18 @@
  * Myers/LCS diffing for "natural" matches over "optimal" edit scripts (see the design doc §1
  * for the full rationale).
  *
- * A note on "changed" as a reporting category (design §5): at block level, Stage A only
- * matches on exact key equality ("heading XOR text"), so a matched leaf is by construction
- * unchanged content — an edited paragraph has a different key and surfaces as removed+added,
- * which is the intended "decline rather than guess" behavior (§2), not a gap. "Changed"
- * therefore only applies one level up, at ArtifactNode/FolderNode scope, where matching is by
- * path/abstract rather than exact-content equality (see matchLeftoverByAbstract and its
- * callers in artifacts.ts/folders.ts).
+ * A note on "changed" as a reporting category (design §5): at block level, Stage A matches on
+ * exact key equality ("heading XOR text"), so a matched leaf is *usually* unchanged content by
+ * construction — an edited paragraph has a different key and surfaces as removed+added, which is
+ * the intended "decline rather than guess" behavior (§2), not a gap. A heading is the one
+ * exception: its key is `title` alone, but its adopted leading-paragraph `text` (`astParser.ts`)
+ * isn't part of that key, so a matched pair of headings can still differ in `text` — checked
+ * explicitly (`headingTextChanged`) rather than assumed away, and counted as `changed` rather than
+ * folded into `matched` (named for "matched, not moved, not changed" — not "unchanged", which
+ * reads as a claim the `changed` bucket next to it would contradict). "Changed" also applies one
+ * level up, at ArtifactNode/FolderNode scope, where matching is by path/abstract rather than
+ * exact-content equality (see matchLeftoverByAbstract and its callers in
+ * artifacts.ts/folders.ts) — a separate mechanism from this one, not the same counter.
  */
 
 const LEAF_TYPES = new Set(['heading', 'paragraph', 'code', 'thematicBreak', 'html', 'table', 'blockquote']);
@@ -106,10 +111,18 @@ function leafKey(node: any): string {
  * this fix: a matched block's title/links silently reverted on every re-ingest). `unfolded` no
  * longer exists as a per-node field to carry forward (Aperas-treeview-design.md — fold state moved
  * to `TreeView.unfolds`, per-view rather than per-node). Safe unconditionally: for a heading,
- * `oldNode.title` and the fresh parse's title
- * are identical anyway since the heading text itself is the match key; `links` here is `oldNode`'s
- * already-resolved ref-id strings — `resolveBlockLinks` (artifacts.ts) merges freshly-resolved
- * wikilink `Link`s onto whatever this leaves on `newNode.links`, rather than overwriting it.
+ * `oldNode.title` and the fresh parse's title are identical anyway since the heading text itself
+ * is the match key; `links` here is `oldNode`'s already-resolved ref-id strings, carried forward
+ * wholesale (this function has no `Store` to check — it's deliberately engine-agnostic, so it
+ * can't tell a manual `kg:link` apart from a previously-resolved `[[wikilink]]` by id alone).
+ * `node.ts`'s `BlockNode.hydrateFromParsed`, which *does* have a `Store`, is where that split
+ * actually happens: it drops every carried-forward wikilink-predicate entry before writing, since
+ * `resolveBlockLinks` (`artifacts.ts`) regenerates those fresh right after — only a manual link
+ * genuinely survives this carry-forward through to the write. An earlier version of this doc
+ * comment claimed `resolveBlockLinks` "merges" its fresh wikilinks onto whatever this function
+ * leaves here — it never actually did (plain `BaseNode.addLink` append, no dedup), so every
+ * re-ingestion of a block with an unchanged `[[wikilink]]` added one more duplicate `Link`
+ * forever; fixed by the drop in `hydrateFromParsed` instead of a merge here.
  *
  * `props` is different from `links`: it's *rebuilt from the fresh parse every time* (list
  * numbering, checkbox state — genuinely re-derived from the current document, not a separately
@@ -221,8 +234,12 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
 }
 
 export interface ReconciliationStats {
-  unchanged: number;
+  /** Matched, same position, same content — the ordinary case. Named `matched`, not `unchanged`,
+   *  since a matched-but-different-content heading falls into `changed` instead (`headingTextChanged`
+   *  below); calling this bucket `unchanged` would read as a claim `changed` next to it contradicts. */
+  matched: number;
   moved: number;
+  changed: number;
   added: number;
   removed: number;
 }
@@ -263,6 +280,18 @@ interface ReconcileContext {
 }
 
 /**
+ * `leafKey`'s one exception to "matched implies content-identical" (its own doc comment above):
+ * a heading matches by `title` alone, but its adopted leading-paragraph `text`
+ * (`astParser.ts`'s "leading paragraph" — real, independently-editable content, not derived from
+ * `title`) isn't part of that key, so a matched pair of headings can still differ in `text`. Every
+ * other leaf type's key *is* its own `text`, so a changed leaf there can never end up "matched" in
+ * the first place (`leafKey`'s doc comment). Checked, not assumed, so `matched`/`changed` stay a
+ * true statement about what the reconciler actually saw. */
+function headingTextChanged(oldNode: any, newNode: any): boolean {
+  return oldNode.type === 'heading' && (oldNode.text ?? '') !== (newNode.text ?? '');
+}
+
+/**
  * Recurses only into matched pairs (Stage A/B within diffChildren). Unmatched children are
  * collected into ctx.removedCandidates/addedCandidates rather than finalized immediately —
  * cross-parent moves (a leaf relocated to a different section) are only distinguishable from a
@@ -277,7 +306,7 @@ function reconcileNode(oldNode: any, newNode: any, ctx: ReconcileContext): void 
   // Same-parent reordering: Stage B's type-grouped container zipping can produce inversions
   // (e.g. a list and a blockquote swapping places within a segment) even though every element
   // individually matched — a greedy longest-increasing-run scan over new-index order (sorted by
-  // old index) classifies which matched pairs are "in order" (unchanged) vs an inversion (moved).
+  // old index) classifies which matched pairs are "in order" (not moved) vs an inversion (moved).
   const byOldIndex = [...diff.matched].sort((a, b) => a.oldIndex - b.oldIndex);
   let runningMaxNew = -1;
   const movedPairs = new Set<number>(); // keyed by oldIndex
@@ -295,8 +324,10 @@ function reconcileNode(oldNode: any, newNode: any, ctx: ReconcileContext): void 
     reconcileNode(oldChild, newChild, ctx);
     if (movedPairs.has(oldIndex)) {
       ctx.stats.moved++;
+    } else if (headingTextChanged(oldChild, newChild)) {
+      ctx.stats.changed++;
     } else {
-      ctx.stats.unchanged++;
+      ctx.stats.matched++;
     }
   }
 
@@ -334,9 +365,12 @@ function detectCrossParentMoves(ctx: ReconcileContext, now: string): any[] {
       if ((oldNode.children?.length ?? 0) > 0 && (newNode.children?.length ?? 0) > 0) {
         const subDiff = diffChildren(oldNode.children, newNode.children);
         for (const { oldIndex, newIndex } of subDiff.matched) {
-          reconcileNode(oldNode.children[oldIndex], newNode.children[newIndex], ctx);
+          const oldChild = oldNode.children[oldIndex];
+          const newChild = newNode.children[newIndex];
+          reconcileNode(oldChild, newChild, ctx);
+          if (headingTextChanged(oldChild, newChild)) ctx.stats.changed++;
+          else ctx.stats.matched++;
         }
-        ctx.stats.unchanged += subDiff.matched.length;
         for (const oi of subDiff.removedOld) ctx.removedCandidates.push(oldNode.children[oi]);
         for (const ni of subDiff.addedNew) ctx.addedCandidates.push(newNode.children[ni]);
       }
@@ -360,13 +394,14 @@ function detectCrossParentMoves(ctx: ReconcileContext, now: string): any[] {
 
 /**
  * Reconciles a freshly-parsed tree against the previously-ingested tree for the same artifact.
- * The root is trivially matched (one root per ArtifactNode). Returns the tree to submit
+ * The top level is trivially paired — `oldRoot`/`newRoot` are each artifact's own current vs.
+ * freshly-parsed state, one call per artifact, nothing to search for. Returns the tree to submit
  * (newRoot, mutated in place so matched nodes reuse their old identity), the tombstone records
  * to write separately (unmatched old nodes, whole subtrees), and block-level stats.
  */
 export function reconcileTree(oldRoot: any, newRoot: any, now: string = new Date().toISOString()): ReconciliationResult {
   const ctx: ReconcileContext = {
-    stats: { unchanged: 0, moved: 0, added: 0, removed: 0 },
+    stats: { matched: 0, moved: 0, changed: 0, added: 0, removed: 0 },
     removedCandidates: [],
     addedCandidates: [],
   };

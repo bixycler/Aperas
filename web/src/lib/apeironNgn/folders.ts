@@ -101,6 +101,8 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
     const node = wrap(store, id) as unknown as FolderNode;
     console.log(`[ApeironNgn Folders] Tombstoning removed folder '${node.path}'`);
     node.children = [];
+    node.links = undefined;
+    node.props = undefined;
     node.tombstonedAt = new Date().toISOString();
     sweep.removed++;
   }

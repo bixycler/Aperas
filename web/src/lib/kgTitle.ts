@@ -12,6 +12,7 @@ import { resolveDeepPath } from './apeironNgn/resolve';
 import { wrap, type TreeNode } from './apeironNgn/node';
 import { createLineReader } from './lineReader';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 export function runTitleCandidates(store: Store, pathArg: string, recursive: boolean) {
   const id = resolveDeepPath(store, pathArg);
@@ -31,15 +32,30 @@ export function runSetBlockTitle(store: Store, blockId: string, title: string): 
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: 'Interactively prompt for a real title on every still-unlabeled BlockNode in scope.',
+      usage: 'kg:title -- <path> [--recursive] [--reload]',
+      args: [
+        { name: '<path>', description: 'Tracked artifact/folder path, deep path, bare node code, or full node id to scope the prompt to.' },
+      ],
+      flags: [
+        { name: '--recursive', description: "Scope includes all of <path>'s descendants, not just its immediate children." },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
   const recursive = rawArgs.includes('--recursive');
-  const [pathArg] = rawArgs.filter((p) => p !== '--recursive');
+  const reload = rawArgs.includes('--reload');
+  const [pathArg] = rawArgs.filter((p) => p !== '--recursive' && p !== '--reload');
   if (!pathArg) {
-    console.error('Usage: kg:title -- <path> [--recursive]');
+    console.error('Usage: kg:title -- <path> [--recursive] [--reload]');
     process.exit(1);
   }
 
   await ensureServiceRunning();
-  const candidates = await request<ReturnType<typeof runTitleCandidates>>({ op: 'titleCandidates', pathArg, recursive });
+  const candidates = await request<ReturnType<typeof runTitleCandidates>>({ op: 'titleCandidates', pathArg, recursive, reload });
   if (candidates.length === 0) {
     console.log('[ApeironNgn kg:title] No blocks need a title in scope.');
     return;

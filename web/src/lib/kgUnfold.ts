@@ -12,6 +12,7 @@ import { wrap, type TreeNode, type BlockNode, type Link, type TreeView } from '.
 import { nodeKindFromId, nodeExists } from './apeironNgn/vocab';
 import { displayLabel } from './apeironNgn/tree';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 /** `ref` for a `TreeNode` resolves the normal deep-path way; for a `Link`, only a bare id
  *  (snowflake code) is accepted — a `Link` has no `path` field and no natural slug of its own to
@@ -63,8 +64,24 @@ export function runUnfold(store: Store, pathArg: string, view: TreeView) {
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: "Add one TreeNode/Link ref to a TreeView's unfolds set — only that one ref; the view's own rendering decides what becomes visible as a result. Prints the target's title plus each immediate child's/link's abstract as a preview of what just got revealed.",
+      usage: 'kg:unfold -- <ref> [--view <viewRef>] [--flush] [--reload]',
+      args: [
+        { name: '<ref>', description: 'TreeNode (deep path, bare node code, or full id) or Link (bare id only — a Link has no path of its own) to reveal.' },
+      ],
+      flags: [
+        { name: '--view <viewRef>', description: 'TreeView to modify. Defaults to the "default"-named view.' },
+        { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
   const flush = rawArgs.includes('--flush');
-  const withoutFlush = rawArgs.filter((p) => p !== '--flush');
+  const reload = rawArgs.includes('--reload');
+  const withoutFlush = rawArgs.filter((p) => p !== '--flush' && p !== '--reload');
   const viewFlagIdx = withoutFlush.indexOf('--view');
   const viewRef = viewFlagIdx !== -1 ? withoutFlush[viewFlagIdx + 1] : undefined;
   const withoutFlags = viewFlagIdx !== -1
@@ -72,12 +89,12 @@ async function main(): Promise<void> {
     : withoutFlush;
   const [pathArg] = withoutFlags;
   if (!pathArg) {
-    console.error('Usage: kg:unfold -- <ref> [--view <viewRef>] [--flush]');
+    console.error('Usage: kg:unfold -- <ref> [--view <viewRef>] [--flush] [--reload]');
     process.exit(1);
   }
 
   await ensureServiceRunning();
-  const result = await request<ReturnType<typeof runUnfold>>({ op: 'unfold', ref: pathArg, viewRef, flush });
+  const result = await request<ReturnType<typeof runUnfold>>({ op: 'unfold', ref: pathArg, viewRef, flush, reload });
 
   console.log(`${result.id}  [${result.label}]  ${result.title}`);
   for (const child of result.children) {

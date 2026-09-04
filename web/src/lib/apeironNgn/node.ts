@@ -7,7 +7,10 @@
  *   ApeironInstance (store/id only)
  *     -> BaseNode (links/props/tombstonedAt/holder)
  *          -> TreeNode (title/text/key — every tree-positioned kind)
- *               -> BlockNode / ArtifactNode / FolderNode
+ *               -> BlockNode (type/parent/children) -> ArtifactNode (merged with its own root
+ *                    content — same fields and methods, unmodified, not a separate wrapper)
+ *               -> FolderNode (deliberately not a BlockNode — never merged with anything, own
+ *                    independent `path`/`children`; see `shape.ts`'s own doc comment for why)
  *   ApeironInstance -> Link, ApeironInstance -> StringProp   (leaf subdocs, data only)
  *   ApeironInstance -> Profile, ApeironInstance -> TreeView  (Aperas-treeview-design.md — an i-view
  *     over the TreeNode/Link graph; `unfolded`'s old per-node flag moved into `TreeView.unfolds`)
@@ -41,21 +44,22 @@ import {
   SIBLING_INDEX_PRED,
 } from './vocab';
 import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIFACT_NODE_SHAPE, FOLDER_NODE_SHAPE, LINK_SHAPE, PROP_SHAPE, PROFILE_SHAPE, TREE_VIEW_SHAPE } from './shape';
+import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
-import { parseMarkdownTree, extractAbstract, stampParents, type ParsedBlockNode } from '../astParser';
+import { parseMarkdownTree, extractAbstract, WIKILINK_PREDICATE, type ParsedBlockNode } from '../astParser';
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
-import { carryForwardProp, type PropEntry } from '../props';
+import { carryForwardProp, getProps, type PropEntry, type HasProps } from '../props';
 import type { ParsedFolderNode } from '../folders';
 
 export interface ApeironNode {
   /** Escape hatch: the raw node id (e.g. `"BlockNode/00C..."`), never proxied further. */
   readonly id: string;
   /** Reified containment (Aperas-apeironngn-design.md §3): reverse-queries the `parent` index,
-   *  sorted by `siblingIndex`. Present on `BlockNode`/`FolderNode`; absent (reads `undefined`) on
-   *  everything else — `ArtifactNode`'s one "child" is its singular `root`, not a list. */
+   *  sorted by `siblingIndex`. Present on `BlockNode`/`ArtifactNode`/`FolderNode`; absent (reads
+   *  `undefined`) on everything else. */
   readonly children?: ApeironNode[];
   [field: string]: unknown;
 }
@@ -75,6 +79,28 @@ function childrenOf(store: Store, id: string): ApeironNode[] {
   });
   withIndex.sort((a, b) => a.idx - b.idx);
   return withIndex.map(({ childId }) => wrap(store, childId));
+}
+
+/** A true incremental append for reified `orderedContainment` — writes only `childId`'s own
+ *  `__parent`/`__siblingIndex` triples, touching no other child's data. `TreeNode.appendChild`'s
+ *  old implementation went through the generic `this.children = [...(this.children ?? []),
+ *  childId]` setter instead, which (per `writeField`'s `orderedContainment` branch) detaches
+ *  *every* current child of the parent first, then rewrites all of them from the array it read —
+ *  correct when nothing else can observe the gap in between, but for a single append that's a lot
+ *  of needless churn, and a genuine hazard the moment the "read current children" step can ever
+ *  miss one that's real (a stale/incomplete view of the store) — a miss there doesn't just fail to
+ *  include it, it permanently deletes its containment on the very next write, even though nothing
+ *  touched that child's own fields. Also detaches `childId`'s own prior containment first (if it
+ *  already had a different parent) — the old full-rewrite path never did this either, since it only
+ *  ever cleared the *target* parent's existing children, not whatever the moving child used to
+ *  belong to — so this closes that gap too, for free, without querying or touching any sibling. */
+function appendOrderedChild(store: Store, parentId: string, childId: string): void {
+  const childSubject = nodeIri(childId);
+  for (const m of store.match(childSubject, PARENT_PRED, null, null)) store.delete(m);
+  for (const m of store.match(childSubject, SIBLING_INDEX_PRED, null, null)) store.delete(m);
+  const siblingCount = store.match(null, PARENT_PRED, nodeIri(parentId), null).length;
+  store.add(quad(childSubject, PARENT_PRED, nodeIri(parentId)));
+  store.add(quad(childSubject, SIBLING_INDEX_PRED, encodeLiteral(siblingCount)));
 }
 
 function decodeTerm(store: Store, m: Quad): unknown {
@@ -137,6 +163,57 @@ function mintEmbedded(store: Store, parentId: string, field: string, entry: Reco
   return newId;
 }
 
+/** Recursively deletes `id`'s own quads — and, for any of its own `storageKind: 'embed'` fields,
+ *  whatever those point at too. Originally written for an orphaned embedded subdocument no longer
+ *  referenced by anything (`Link`/`StringProp`, Aperas-apeironngn-design.md §4 Step 8), but written
+ *  generically off `SHAPE_BY_KIND` from the start, so it works unmodified as the *general* "actually
+ *  delete this node" primitive — including a top-level `BlockNode`/`ArtifactNode`/`FolderNode` a
+ *  mark-and-sweep pass (`pruneUnreachableTombstones`, below) has determined is a tombstoned node
+ *  nothing live points to any more. Merely detaching a forward reference (what `clearField` alone
+ *  does) leaves the deleted node's own quads sitting in the store forever: invisible to
+ *  `dehydrateToJsonLd` (nothing references it any more, so nothing ever walks to it), but very real
+ *  memory in the long-lived service process (`service.ts`) that holds one `Store` alive across every
+ *  `kg:track`/`kg:ingest` call for its entire uptime, not a fresh one per command — and, per §5's own
+ *  WASM-memory note, a *permanent* one: WebAssembly linear memory only grows, so a peak this avoided
+ *  can never be handed back to the OS short of restarting the process regardless. Confirmed live as
+ *  the mechanism behind exactly this leak, pre-generalization: a wikilink `Link` dropped by
+ *  `BlockNode.hydrateFromParsed` on re-ingestion kept its own `target`/`predicate`/`props` quads
+ *  sitting orphaned, `Link.props`'s own `position` `StringProp`s included (one level of embedding
+ *  deeper than anything `props`/`links` previously nested). */
+function hardDeleteNode(store: Store, id: string): void {
+  const shape = SHAPE_BY_KIND[nodeKindFromId(id)];
+  if (shape) {
+    for (const [field, spec] of Object.entries(shape)) {
+      if (spec.storageKind !== 'embed') continue;
+      for (const m of store.match(nodeIri(id), predIri(field), null, null)) {
+        if (isNamedNodeTerm(m.object)) hardDeleteNode(store, idFromNodeIri(m.object.value));
+      }
+    }
+  }
+  removeDanglingUnfolds(store, id);
+  for (const m of store.match(nodeIri(id), null, null, null)) store.delete(m);
+}
+
+/** Sweeps every `TreeView`'s `unfolds` set for a reference to `deletedId` and removes it —
+ *  `unfolds` is the *only* `reference`-kind field anywhere in the schema whose target can be a
+ *  `Link`/`StringProp` (a top-level kind is only ever referenced via `Link.target`/`children`/
+ *  `parent`, all handled by `pruneUnreachableTombstones`'s own reachability walk, not by dangling
+ *  *this* field), so a hard delete (`hardDeleteNode`, above — the only way any node ever actually
+ *  disappears) is the only event that could leave `unfolds` naming something gone. Called from
+ *  `hardDeleteNode` itself, right before it deletes `deletedId`'s own quads (which only clear quads
+ *  with `deletedId` as *subject* — an incoming `unfolds` reference has `deletedId` as *object*, so
+ *  it's untouched unless swept separately here) — every deletion path (wikilink regeneration, Step
+ *  9's tombstone-consistency cleanup, `pruneUnreachableTombstones`'s GC) gets this for free, with no
+ *  new call site needed anywhere. */
+function removeDanglingUnfolds(store: Store, deletedId: string): void {
+  const deletedIri = nodeIri(deletedId);
+  for (const viewId of allIdsOfKind(store, 'TreeView')) {
+    for (const m of store.match(nodeIri(viewId), predIri('unfolds'), deletedIri, null)) {
+      store.delete(m);
+    }
+  }
+}
+
 function writeField(store: Store, id: string, field: string, spec: FieldSpec, value: unknown): void {
   if (spec.cardinality === 'orderedContainment') {
     if (!Array.isArray(value)) throw new Error(`ApeironNgn: '${field}' is ordered containment — expected an array.`);
@@ -156,6 +233,27 @@ function writeField(store: Store, id: string, field: string, spec: FieldSpec, va
     return;
   }
 
+  const storageKind = spec.storageKind ?? 'literal';
+
+  // Embed-kind fields *own* whatever they reference — nothing else can address a `Link`/
+  // `StringProp` independently — so reassigning one needs to delete whichever currently-referenced
+  // subdocuments won't survive into `value`, not just detach them (`hardDeleteNode`'s own doc
+  // comment). Deliberately scoped to `embed` only: a `reference`-kind field (`parent`, `children`)
+  // points at an independently-addressable document that reassigning must never delete.
+  if (storageKind === 'embed') {
+    const survivingValues = value === null || value === undefined ? [] : Array.isArray(value) ? value : [value];
+    const survivingIds = new Set<string>();
+    for (const entry of survivingValues) {
+      const survivingId = typeof entry === 'string' ? entry : (entry as any)?.['@id'] ?? (entry as any)?.id;
+      if (typeof survivingId === 'string') survivingIds.add(survivingId);
+    }
+    for (const m of store.match(nodeIri(id), predIri(field), null, null)) {
+      if (!isNamedNodeTerm(m.object)) continue;
+      const oldId = idFromNodeIri(m.object.value);
+      if (!survivingIds.has(oldId)) hardDeleteNode(store, oldId);
+    }
+  }
+
   clearField(store, id, field);
 
   if (value === null || value === undefined) {
@@ -163,7 +261,6 @@ function writeField(store: Store, id: string, field: string, spec: FieldSpec, va
     return;
   }
 
-  const storageKind = spec.storageKind ?? 'literal';
   const writeOne = (entry: unknown) => {
     if (storageKind === 'literal') {
       if (typeof entry !== 'string' && typeof entry !== 'number' && typeof entry !== 'boolean') {
@@ -228,14 +325,46 @@ export class BaseNode extends ApeironInstance {
   addLink(predicate: string, target: string): void {
     this.links = [...(this.links ?? []), { predicate, target } as unknown as ApeironNode];
   }
+
+  /** `resolveBlockLinks`'s (`artifacts.ts`) own way of minting a wikilink-derived `Link` — one per
+   *  distinct target, never one per raw `[[code]]` occurrence (Aperas-apeironngn-design.md §4
+   *  Step 8: `.links` is a real traversal axis alongside `children`, so two edges to the same
+   *  target is a graph-correctness smell, not just a display nit). `positions` (block-relative
+   *  offsets, one per occurrence of `target` in this block's text) become one `{key: 'position',
+   *  value: '<offset>'}` prop per entry. Reintroduces the "mint id, wrap, set fields" half of the
+   *  workaround `addLink`'s own doc comment says `links` becoming `storageKind: 'embed'` retired —
+   *  necessarily so this time: `mintEmbedded` only writes an entry's own top-level reference/
+   *  literal fields, it doesn't recurse into a nested `Set`-typed one, so a single-call
+   *  `{predicate, target, props}` literal can't mint its `props` correctly.
+   *
+   *  Deliberately does *not* attach the fresh `Link` to `this.links` itself (the "attach by id"
+   *  half of that old workaround) — `resolveBlockLinks` calls this only for a target/position-set
+   *  that has no reusable match among this block's existing wikilink `Link`s, then assembles the
+   *  *whole* surviving id list (reused + freshly minted) and writes `.links` once. That single
+   *  write is what makes `writeField`'s own embed-diff (`hardDeleteNode`) clean up whatever
+   *  didn't survive — a stale wikilink whose target disappeared, or one superseded by a fresh mint
+   *  for the same target with different positions — without this method needing to delete
+   *  anything itself. */
+  mintWikilink(target: string, positions: number[]): string {
+    const linkId = `${this.id}/links/Link/${generateNodeId()}`;
+    const link = wrap(this.store, linkId) as unknown as Link;
+    link.predicate = WIKILINK_PREDICATE;
+    link.target = target as unknown as TreeNode;
+    link.props = positions.map((position) => ({ '@type': 'StringProp', key: 'position', value: String(position) })) as unknown as ApeironNode[];
+    return linkId;
+  }
 }
 
-/** `title`/`text`/`key` — shared by every tree-positioned kind. `key` replaces the old per-class
- *  `blockId`/`artifactId`/`folderId` literal fields: each was always identical to its own id's
- *  local part by construction, so it's derived here, never its own stored triple. */
+/** `title`/`text`/`key`/`parent` — shared by every tree-positioned kind. `key` replaces the old
+ *  per-class `blockId`/`artifactId`/`folderId` literal fields: each was always identical to its own
+ *  id's local part by construction, so it's derived here, never its own stored triple. `parent` is
+ *  populated automatically as a side effect of whichever container's `children` write includes this
+ *  node — `vocab.ts`'s `PARENT_PRED` doc comment has the full mechanism and why it's never assigned
+ *  directly. */
 export class TreeNode extends BaseNode {
   declare title?: string;
   declare text?: string;
+  declare parent?: TreeNode;
 
   get key(): string {
     return this.id.slice(this.id.indexOf('/') + 1);
@@ -268,7 +397,9 @@ export class TreeNode extends BaseNode {
   /** `path.ts`'s old `resolveIdToPath`, folded. Walks `.parent` up to the owning
    *  `ArtifactNode`/`FolderNode`, collecting each hop's slugified `title`, then prepends that
    *  node's own `path`. Returns `null` on anything unwalkable: a missing document, or a
-   *  `BlockNode` with no `parent` set. */
+   *  `BlockNode` with no `parent` set. An artifact and its document content are the same node now
+   *  (`ArtifactNode extends BlockNode`, merged) — a heading directly under it is `<artifact>/
+   *  <heading>`, one hop, with nothing synthetic in between to skip. */
   toPath(): string | null {
     const segments: string[] = [];
     let current: TreeNode = this;
@@ -282,18 +413,19 @@ export class TreeNode extends BaseNode {
       if (kind !== 'BlockNode') return null; // a subdoc (Link/StringProp) — no structural parent
       if (current.title === undefined) return null;
       segments.unshift(slugify(current.title));
-      const parent = (current as unknown as BlockNode).parent;
-      if (!parent) return null;
-      current = parent;
+      if (!current.parent) return null;
+      current = current.parent;
     }
   }
 
   /** `resolve.ts`'s old `descend`/`resolveCreate.ts`'s equivalent single hop, folded — exact-then-
-   *  prefix slug match among this node's `BlockNode` `treeChildren`. Read-only: returns the
-   *  matched child, or `null` on a miss; throws on ambiguity, same distinction the free functions
-   *  already drew. */
+   *  prefix slug match among this node's `treeChildren`, whatever kind they are (a `BlockNode`
+   *  heading, or a `FolderNode`/`ArtifactNode` one level down the structural tree — both declare
+   *  `title` on `TreeNode` itself, so one match rule covers every hop of the deep-path grammar,
+   *  not just the heading tier). Read-only: returns the matched child, or `null` on a miss; throws
+   *  on ambiguity, same distinction the free functions already drew. */
   findChild(text: string): TreeNode | null {
-    const candidates = this.treeChildren.filter((c) => nodeKindFromId(c.id) === 'BlockNode' && c.title !== undefined);
+    const candidates = this.treeChildren.filter((c) => c.title !== undefined);
     const wantSlug = slugify(text);
     let matches = candidates.filter((c) => slugify(c.title!) === wantSlug);
     if (matches.length === 0) {
@@ -324,20 +456,21 @@ export class TreeNode extends BaseNode {
 
 export class BlockNode extends TreeNode {
   declare type?: string;
-  declare parent?: TreeNode;
   declare children?: TreeNode[];
 
   get treeChildren(): TreeNode[] {
     return this.children ?? [];
   }
   appendChild(childId: string): void {
-    this.children = [...(this.children ?? []), childId as unknown as TreeNode];
+    appendOrderedChild(this.store, this.id, childId);
   }
 
   /** `project.ts`'s old block-rendering half of `projectArtifactToMarkdown`, folded — a real
    *  instance's property reads are indistinguishable from a plain object's to `serializeBlock`,
-   *  so nothing there needed changing. */
-  toMarkdown(): string {
+   *  so nothing there needed changing. Return type is `string | null` only so `ArtifactNode`'s
+   *  override (nullable — "nothing ingested yet") stays override-compatible; an ordinary
+   *  `BlockNode` always has a `type` and never actually returns `null` here. */
+  toMarkdown(): string | null {
     return serializeBlock(this);
   }
 
@@ -368,14 +501,32 @@ export class BlockNode extends TreeNode {
    *  `ParsedBlockNode` tree into the `Store`, one node at a time. Every node already carries a
    *  real `blockId` by this point (freshly minted at parse time for a brand-new node, or carried
    *  forward from its old match by `reconcile.ts`'s `carryForwardFields`) — `this` is already
-   *  `wrap()`ped at that id, nothing left to mint here. */
+   *  `wrap()`ped at that id, nothing left to mint here.
+   *
+   *  Carries `links` forward unconditionally now — manual `kg:link` *and* wikilink `Link`s alike.
+   *  Earlier this dropped every carried-forward `WIKILINK_PREDICATE` entry unconditionally here
+   *  (the fix for a real duplication bug: `resolveBlockLinks`, run right after this, used to
+   *  unconditionally append a fresh wikilink `Link` on top of whatever survived, so an unchanged
+   *  `[[wikilink]]` grew one more duplicate every re-ingestion). That fix is now one layer further
+   *  down instead: `resolveBlockLinks` has since gained its own reuse-or-remint logic (a snapshot
+   *  of each block's *old* wikilink `Link`s — id, target, positions — taken by `ingestFromDisk`
+   *  just before this method runs), so it needs the carried-forward ids still live here in order to
+   *  reuse an exact-match one's identity, and writes `.links` itself exactly once with the final
+   *  surviving set — `writeField`'s embed-diff cleans up whatever that write doesn't include.
+   *
+   *  No explicit `this.parent = ...` here any more (Aperas-apeironngn-design.md §5's `parent`/
+   *  `PARENT_PRED` merge): `this.children = [...]` below already stamps each child's `parent` as a
+   *  side effect of the containment write, using final (already-reconciled) ids — the separate
+   *  early stamp this used to need, and the "must re-run after reconciliation reassigns ids" bug
+   *  class it was prone to (`astParser.ts`'s old `stampParents`), doesn't exist any more; there's no
+   *  earlier stamp to go stale. */
   hydrateFromParsed(parsed: ParsedBlockNode): void {
     this.type = parsed.type;
     this.title = parsed.title;
     this.text = parsed.text ?? undefined;
-    this.parent = (parsed as any).parent;
     this.props = parsed.props?.length ? (parsed.props as unknown as ApeironNode[]) : undefined;
-    this.links = (parsed as any).links?.length ? (parsed as any).links : undefined;
+    const carriedLinkIds = ((parsed as any).links as string[] | undefined) ?? [];
+    this.links = carriedLinkIds.length ? (carriedLinkIds as unknown as ApeironNode[]) : undefined;
     for (const child of parsed.children ?? []) {
       (wrap(this.store, `BlockNode/${child.blockId}`) as unknown as BlockNode).hydrateFromParsed(child);
     }
@@ -383,26 +534,20 @@ export class BlockNode extends TreeNode {
   }
 }
 
-export class ArtifactNode extends TreeNode {
+/** Merged with what used to be a separate synthetic root `BlockNode` per artifact — an
+ *  `ArtifactNode` *is* its own document content now (`extends BlockNode`), not a thin wrapper
+ *  pointing at one via a `root` reference. `treeChildren`/`findChild`/`appendChild` all come
+ *  straight from `BlockNode` unmodified: a top-level heading is an ordinary child, appending one
+ *  is an ordinary ordered-containment append, no "already has a root" singular-child case to
+ *  guard. `text` is a derived abstract/preview (`extractAbstract`, copied from the first
+ *  descendant with content — deliberately duplicated with whatever's already in `children`, not
+ *  consumed away from it), never `this`'s own leading paragraph the way a heading's `text` is. */
+export class ArtifactNode extends BlockNode {
   declare path?: string;
   declare fileHash?: string;
   declare lastTrackedAt?: string;
   declare ingestedHash?: string;
   declare lastIngestedAt?: string;
-  declare root?: BlockNode;
-
-  get treeChildren(): TreeNode[] {
-    return this.root ? [this.root] : [];
-  }
-  appendChild(childId: string): void {
-    // ArtifactNode's one "child" is its singular `root`, not a `children` list — a node that
-    // already has a root can't gain a second one this way (same schema-shape constraint
-    // `nodeRef.ts` documents against real TerminusDB behavior).
-    if (this.root !== undefined) {
-      throw new Error(`ApeironNgn: '${this.id}' already has a root block — can't attach a second one.`);
-    }
-    this.root = childId as unknown as BlockNode;
-  }
 
   /** `artifacts.ts`'s old `trackArtifact`'s per-node half, folded — registers or refreshes this
    *  lightweight ArtifactNode against `artifactPath`'s current file content, skipping when the
@@ -424,10 +569,17 @@ export class ArtifactNode extends TreeNode {
   }
 
   /** `project.ts`'s old `projectArtifactToMarkdown`'s render half, folded. `null` when this
-   *  artifact has no root yet (nothing ingested). */
+   *  artifact has no content yet (nothing ingested). `super.toMarkdown()` is `BlockNode`'s own
+   *  (`serializeBlock(this)`) — dispatching on `this.type` (still `'root'`, unchanged from the old
+   *  synthetic wrapper's own type) hits `serializeBlock`'s container-fallback case, rendering
+   *  `children` with nothing of `this`'s own emitted first, exactly as it did through the old
+   *  `this.root.toMarkdown()` indirection. */
   toMarkdown(): string | null {
-    if (!this.root) return null;
-    return withFrontmatter(this.root.toMarkdown(), this);
+    if (this.ingestedHash === undefined) return null;
+    // Non-null: `ingestedHash` set means real content was hydrated, so `super.toMarkdown()`'s own
+    // `string | null` (widened only for override-compatibility, see `BlockNode.toMarkdown`'s own
+    // doc comment) is never actually `null` here.
+    return withFrontmatter(super.toMarkdown()!, this);
   }
 
   /** `artifacts.ts`'s old `ingestArtifact`'s per-node half, folded — AST-parses and commits this
@@ -437,8 +589,19 @@ export class ArtifactNode extends TreeNode {
    *  afterward (`artifacts.ts`'s `resolveBlockLinks` — a multi-block sweep, stays free) rather
    *  than resolving them here: the implicit `[[wikilink]]` base needs an already-persisted
    *  `.parent` chain, so link resolution has to run *after* the tree write completes, not as
-   *  part of it. */
-  ingestFromDisk(): (IngestResult & { pendingLinks: PendingLinkCodes[] }) | null {
+   *  part of it. Also returns `oldLinkTargets` (this artifact's *previous* per-block resolved
+   *  target sets, before anything in this ingestion runs) for that same later caller to diff
+   *  against — reconciliation itself can't see whether a block's *link resolution outcome*
+   *  changed, only whether its own text/structure did: `resolveBlockLinks` runs after this
+   *  method returns, so no block's *new* links exist yet at this point, matched or not. Same
+   *  reasoning for `oldWikilinksByBlock` (id/target/positions, not just target ids) — the only
+   *  chance to see a matched block's *existing* wikilink `Link`s before `hydrateFromParsed`'s own
+   *  carry-forward and `resolveBlockLinks`'s reuse-or-remint decision both run on them. */
+  ingestFromDisk(): (IngestResult & {
+    pendingLinks: PendingLinkCodes[];
+    oldLinkTargets: Map<string, Set<string>>;
+    oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>>;
+  }) | null {
     if (this.ingestedHash === this.fileHash) {
       console.log(`[ApeironNgn Artifacts] '${this.path}' unchanged since last ingestion — skipping.`);
       return null;
@@ -459,37 +622,51 @@ export class ArtifactNode extends TreeNode {
     let finalRoot: ParsedBlockNode = newRoot;
     let reconciliation: ReconciliationStats | null = null;
 
-    const oldRoot = this.root;
-    if (oldRoot) {
-      const oldTree = oldRoot.toReconcileShape();
+    // Whether this artifact already has ingested content from a previous run. `children` can't
+    // answer this — `orderedContainment` always reads back as a real (possibly empty) array, never
+    // `undefined` — so this reads the same "ever ingested" signal `ingestedHash` already exists
+    // for. `this` plays the role the separate root `BlockNode` used to play, so reconciling
+    // against "the old tree" now means reconciling against `this`'s own current state, via the
+    // very same `toReconcileShape` every ordinary `BlockNode` already has (inherited, not
+    // overridden).
+    const hadContent = this.ingestedHash !== undefined;
+    const oldLinkTargets = new Map<string, Set<string>>();
+    const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
+    if (hadContent) {
+      const oldTree = this.toReconcileShape();
       console.log(`[ApeironNgn Artifacts] Reconciling '${artifactPath}' against its previously ingested tree...`);
       const { finalTree, tombstones, stats } = reconcileTree(oldTree, newRoot, now);
       finalRoot = finalTree;
       reconciliation = stats;
       for (const tombstone of tombstones) applyTombstone(this.store, tombstone);
-      console.log(`[ApeironNgn Artifacts] Reconciliation: ${stats.unchanged} unchanged, ${stats.moved} moved, ${stats.added} added, ${stats.removed} removed.`);
+      console.log(`[ApeironNgn Artifacts] Reconciliation: ${stats.matched} matched, ${stats.moved} moved, ${stats.changed} changed, ${stats.added} added, ${stats.removed} removed.`);
+      collectLinkTargetsByBlock(this, oldLinkTargets);
+      collectOldWikilinksByBlock(this, oldWikilinksByBlock);
     }
 
-    stampParents(finalRoot);
-    (finalRoot as any).parent = `ArtifactNode/${this.key}`;
+    // `finalRoot` itself is never materialized as its own document any more — only its `children`
+    // are real `BlockNode`s. Its own `blockId`/`parent` (whether freshly minted by this parse, or
+    // carried forward from `oldTree` by `reconcileTree`'s `carryForwardFields`) are simply
+    // discarded — nothing needs to stamp `.parent` onto the parsed tree any more (§5's `parent`/
+    // `PARENT_PRED` merge): `this.children = ...` inside `hydrateFromParsed`, below, stamps each
+    // direct child's real `parent` straight to `this.id` as a side effect of the containment write.
 
     const pendingLinks = extractLinkCodes(finalRoot);
-    const blockCount = countBlocks(finalRoot);
+    const blockCount = (finalRoot.children ?? []).reduce((sum, c) => sum + countBlocks(c), 0);
     console.log(`[ApeironNgn Artifacts] Ingesting '${artifactPath}' as fractal tree (${blockCount} blocks)...`);
 
     const title = basename(artifactPath);
     const text = extractAbstract(newRoot);
 
-    (wrap(this.store, `BlockNode/${finalRoot.blockId}`) as unknown as BlockNode).hydrateFromParsed(finalRoot);
+    this.hydrateFromParsed(finalRoot);
 
     this.title = title;
     this.text = text || undefined;
     this.ingestedHash = this.fileHash;
     this.lastIngestedAt = now;
-    this.root = `BlockNode/${finalRoot.blockId}` as unknown as BlockNode;
     this.props = props as unknown as ApeironNode[];
 
-    return { blockCount, reconciliation, pendingLinks };
+    return { blockCount, reconciliation, pendingLinks, oldLinkTargets, oldWikilinksByBlock };
   }
 }
 
@@ -500,16 +677,101 @@ export interface IngestResult {
 
 /** Applies one `reconcile.ts` tombstone record — an unmatched old subtree node, already fully
  *  detached from `finalTree`'s own structure, so this only needs to set its own fields (`children:
- *  []` clears whatever it used to point at; nothing re-attaches it). */
+ *  []` clears whatever it used to point at; nothing re-attaches it). `links`/`props` both cleared
+ *  too — a dead, unaddressable node has no more use for a manual `kg:link`, a resolved wikilink
+ *  `Link`, or a prop than for its own children (Aperas-apeironngn-design.md §5's tombstone-
+ *  consistency open question — `props` was the one field this left live, inconsistently with the
+ *  stated rationale for the other two). */
 function applyTombstone(store: Store, tombstone: any): void {
   const node = wrap(store, `BlockNode/${tombstone.blockId}`) as unknown as BlockNode;
   node.type = tombstone.type;
   node.title = tombstone.title;
   node.text = tombstone.text ?? undefined;
   node.children = [];
+  node.links = undefined;
+  node.props = undefined;
   node.tombstonedAt = tombstone.tombstonedAt;
 }
 
+/** Tombstones `node`'s entire *live* subtree in place, depth-first — the artifact-removal
+ *  counterpart to `applyTombstone` above, used when a whole tracked file disappears from disk
+ *  (`artifacts.ts`'s artifact-tombstone path). That path never runs `reconcileTree`, so there are
+ *  no captured old-shape tombstone records to replay — just one live tree to mark dead, all at
+ *  once. Recurses into `children` *before* clearing them on `node` itself so every descendant gets
+ *  its own `tombstonedAt`/cleared `children`/`links`/`props`, closing the gap this path used to
+ *  have entirely (previously it set nothing but the top `ArtifactNode`'s own `tombstonedAt`,
+ *  leaving its whole block subtree — and every one of those blocks' own links/props — fully live
+ *  and permanently unreferenced; Aperas-apeironngn-design.md §5). */
+export function tombstoneLiveSubtree(node: BlockNode, now: string): void {
+  for (const child of node.children ?? []) {
+    tombstoneLiveSubtree(child as unknown as BlockNode, now);
+  }
+  node.children = [];
+  node.links = undefined;
+  node.props = undefined;
+  node.tombstonedAt = now;
+}
+
+/** Walks a real (already-persisted) `BlockNode` tree collecting each block's resolved link target
+ *  ids, keyed by `key` (the bare snowflake `resolveBlockLinks`'s own `pending`/`PendingLinkCodes`
+ *  already key by) — `ingestFromDisk`'s own doc comment has the full reasoning for why this has to
+ *  be captured *before* this ingestion runs, from the real tree rather than `toReconcileShape()`'s
+ *  plain-object copy (whose own `links` is just an array of `Link` subdocument ids, not target
+ *  ids — real `TreeNode.links` accessors resolve `target` for free instead). */
+function collectLinkTargetsByBlock(node: TreeNode, out: Map<string, Set<string>>): void {
+  const links = (node.links as unknown as Link[] | undefined) ?? [];
+  if (links.length > 0) {
+    const targets = new Set<string>();
+    for (const link of links) {
+      if (link.target) targets.add(link.target.id);
+    }
+    if (targets.size > 0) out.set(node.key, targets);
+  }
+  for (const child of node.treeChildren) {
+    if (nodeKindFromId(child.id) === 'BlockNode') collectLinkTargetsByBlock(child, out);
+  }
+}
+
+/** `collectLinkTargetsByBlock`'s sibling, capturing each existing wikilink `Link`'s own id and
+ *  `position` list (not just its target) — what `resolveBlockLinks` needs to decide whether a
+ *  freshly-resolved target/position grouping can reuse an existing `Link`'s identity instead of
+ *  minting a new one (Aperas-apeironngn-design.md §5's "tractable half": wikilink `Link`s used to
+ *  churn identity on every re-ingestion even when nothing changed, since `hydrateFromParsed` used
+ *  to drop them all unconditionally before this could ever be checked). Must run at the same point
+ *  `collectLinkTargetsByBlock` does — before `hydrateFromParsed` touches anything — since this is
+ *  the only moment a matched block's *old* wikilink `Link`s are both still live and known to be
+ *  old. */
+function collectOldWikilinksByBlock(
+  node: TreeNode,
+  out: Map<string, Array<{ id: string; target: string; positions: number[] }>>
+): void {
+  const links = (node.links as unknown as Link[] | undefined) ?? [];
+  const wikilinks = links.filter((l) => l.predicate === WIKILINK_PREDICATE && l.target);
+  if (wikilinks.length > 0) {
+    out.set(
+      node.key,
+      wikilinks.map((l) => ({
+        id: l.id,
+        target: l.target!.id,
+        positions: getProps(l as unknown as HasProps, 'position').map(Number),
+      }))
+    );
+  }
+  for (const child of node.treeChildren) {
+    if (nodeKindFromId(child.id) === 'BlockNode') collectOldWikilinksByBlock(child, out);
+  }
+}
+
+/** Deliberately `extends TreeNode` directly, not `BlockNode` — unlike `ArtifactNode`, a folder was
+ *  never merged with anything (a README's content already lived straight in `FolderNode.children`,
+ *  no synthetic wrapper to begin with), and everything `BlockNode` would hand it — `type`/`parent`,
+ *  a `serializeBlock`-based `toMarkdown`, `hydrateFromParsed`'s `ParsedBlockNode` parameter shape —
+ *  is either unused or actively wrong (`hydrateFromParsed` below takes a `ParsedFolderNode`, a
+ *  genuinely different shape — sharing `BlockNode`'s name would be a real override violation, not
+ *  just close-enough polymorphism). `children` is declared independently here, the same
+ *  `orderedContainment` shape `BlockNode` happens to also have, for its own reason: a folder's
+ *  children are a genuine 3-way `BlockNode`/`FolderNode`/`ArtifactNode` mix, so `treeChildren`/
+ *  `appendChild` are this class's own, never `BlockNode`'s homogeneous default. */
 export class FolderNode extends TreeNode {
   declare path?: string;
   declare children?: TreeNode[];
@@ -518,26 +780,27 @@ export class FolderNode extends TreeNode {
     return this.children ?? [];
   }
   appendChild(childId: string): void {
-    this.children = [...(this.children ?? []), childId as unknown as TreeNode];
+    appendOrderedChild(this.store, this.id, childId);
   }
 
   /** `project.ts`'s old `projectFolderToReadme`'s render half, folded. Nested `FolderNode`/
    *  `ArtifactNode` children are structural, not textual content — filtered out here, keyed off
-   *  `nodeKindFromId` rather than GraphQL's old `_type` tag. */
+   *  `nodeKindFromId` rather than GraphQL's old `_type` tag. `text` (a derived abstract, copied
+   *  from — not consumed out of — the README's own content, `folders.ts`'s `buildFolderTree`) is
+   *  never re-emitted here: it already duplicates something present among `children`, so pushing
+   *  it into the body too would print it twice. */
   toReadme(): string {
     const blockChildren = this.treeChildren.filter((c) => nodeKindFromId(c.id) === 'BlockNode');
-    const parts: string[] = [];
-    if (this.text) parts.push(this.text);
     const body = renderChildren({ children: blockChildren });
-    if (body) parts.push(body);
-    return withFrontmatter(parts.join('\n\n'), this);
+    return withFrontmatter(body, this);
   }
 
-  /** `folders.ts`'s old `writeFolderTree`, folded — kept as its own override rather than sharing
-   *  `BlockNode`'s method of the same name, since a folder's children mix `BlockNode`/
-   *  `FolderNode`/`ArtifactNode` 3-ways where a block's are homogeneous. `ArtifactNode` entries
-   *  are bare reference ids already (`folders.ts`'s own `buildFolderTree` never inlines them),
-   *  nothing to write for those here. */
+  /** `folders.ts`'s old `writeFolderTree`, folded — kept as its own method (not an override of
+   *  `BlockNode.hydrateFromParsed`; `FolderNode` doesn't extend `BlockNode`) since a folder's
+   *  children mix `BlockNode`/`FolderNode`/`ArtifactNode` 3-ways where a block's are homogeneous,
+   *  and its own parameter shape (`ParsedFolderNode`) is genuinely different from a block's
+   *  (`ParsedBlockNode`) regardless. `ArtifactNode` entries are bare reference ids already
+   *  (`folders.ts`'s own `buildFolderTree` never inlines them), nothing to write for those here. */
   hydrateFromParsed(parsed: ParsedFolderNode): void {
     this.title = parsed.title;
     this.path = parsed.path;
@@ -558,14 +821,34 @@ export class FolderNode extends TreeNode {
         ids.push(`BlockNode/${c.blockId}`);
       }
     }
+
+    // Preserve any currently-attached holder before overwriting — a forward-reference placeholder
+    // minted by `resolveDeepPathDetail`'s `createHolder` path (`resolveCreate.ts`), a pure graph
+    // construct with no file on disk to correspond to. `buildFolderTree` only ever walks the real
+    // filesystem, so `parsed.children` above structurally can never include one — without this,
+    // every full-tree ingest (which runs this unconditionally, on every `kg:ingest`, even a
+    // single unrelated file) would silently drop every holder's containment here on the very next
+    // call after it's created, even though nothing about the holder itself changed. Kind-agnostic:
+    // `createImaginedPrefix`'s own holder chain (an imagined ArtifactNode + wrapping FolderNodes,
+    // for a reference that resolved nothing at all) is exactly as invisible to a disk walk as a
+    // single holder BlockNode is.
+    const newIds = new Set(ids);
+    for (const existing of this.treeChildren) {
+      if (newIds.has(existing.id)) continue;
+      if ((existing as unknown as { holder?: boolean }).holder) ids.push(existing.id);
+    }
+
     this.children = ids as unknown as TreeNode[];
   }
 }
 
-/** Leaf subdoc — data only (`target`/`predicate`), never a `this` for any migrated function. */
+/** Leaf subdoc — data only (`target`/`predicate`/`props`), never a `this` for any migrated
+ *  function. `props` (Aperas-apeironngn-design.md §4 Step 8) is a `LINK_SHAPE` field, not
+ *  inherited — `Link` deliberately doesn't extend `BaseNode`. */
 export class Link extends ApeironInstance {
   declare target?: TreeNode;
   declare predicate?: string;
+  declare props?: ApeironNode[];
 }
 
 /** Leaf subdoc — data only (`key`/`value`), never a `this` for any migrated function. */
@@ -667,6 +950,17 @@ defineAccessors(StringProp, PROP_SHAPE);
 defineAccessors(Profile, PROFILE_SHAPE);
 defineAccessors(TreeView, TREE_VIEW_SHAPE);
 
+/** `(tombstoned)` marker for a node's rendered title line — every render site below shares it.
+ *  Tombstoning (`applyTombstone`/`tombstoneLiveSubtree`, §5) clears a dead node's own `children`/
+ *  `links`/`props` but never sweeps *other* documents' references to it, and actively re-sets
+ *  `title` to its last-known value rather than clearing it — so a tombstoned node reached through a
+ *  stale `children` pointer, or through a still-live `Link.target` elsewhere, used to render
+ *  identically to a live one, with no signal anything had died (confirmed by tracing every render
+ *  path — Aperas-apeironngn-design.md §5). */
+function tombstoneTag(node: { tombstonedAt?: string }): string {
+  return node.tombstonedAt ? '  (tombstoned)' : '';
+}
+
 /** Renders one line per node plus its subtree, title-only, always recursing (`maxDepth`/
  *  `noHolders` aside) — `TreeNode.renderTree`'s plain default when no `TreeOptions.view` is
  *  supplied. Kept as a module-scope function rather than a method so the recursion doesn't need to
@@ -682,7 +976,7 @@ function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, lines
   if (!hidden) {
     const indent = '  '.repeat(depth);
     const holderTag = isLiteralHolder ? '  (holder)' : '';
-    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${node.title}${holderTag}`);
+    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${node.title}${holderTag}${tombstoneTag(node)}`);
   }
 
   const refs = node.treeChildren;
@@ -702,21 +996,13 @@ function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, lines
 // TreeView is a lens, not a parallel structure.
 // ---------------------------------------------------------------------------------------------
 
-/** Generic structural up-pointer, one hop. A `BlockNode` carries its own explicit `parent` field
- *  (set at ingest time, `hydrateFromParsed`/`ingestFromDisk`'s `stampParents`), pointing at
- *  whichever `TreeNode` structurally contains it — another `BlockNode`, or the owning
- *  `ArtifactNode` for a root block. An `ArtifactNode`/`FolderNode` has no such explicit field of
- *  its own; when nested under a `FolderNode`, it's found the same way `childrenOf` finds children
- *  in the down direction — reverse-querying the reified `__parent` triple every orderedContainment
- *  member carries — just read from the child's own side instead of the parent's. `null` means
- *  top-level (whatever `kg:tree` was pointed at — this doc's "Root"). */
+/** Generic structural up-pointer, one hop — now a uniform `.parent` read for any kind
+ *  (Aperas-apeironngn-design.md §5's `parent`/`PARENT_PRED` merge: every `TreeNode` gets it,
+ *  populated automatically by whichever container's `children` write included this id). `null`
+ *  means top-level (whatever `kg:tree` was pointed at — this doc's "Root"). */
 function structuralParentOf(store: Store, id: string): string | null {
-  if (nodeKindFromId(id) === 'BlockNode') {
-    const p = (wrap(store, id) as unknown as BlockNode).parent;
-    return p ? p.id : null;
-  }
-  const m = store.match(nodeIri(id), PARENT_PRED, null, null);
-  return m.length > 0 && isNamedNodeTerm(m[0].object) ? idFromNodeIri(m[0].object.value) : null;
+  const p = (wrap(store, id) as unknown as TreeNode).parent;
+  return p ? p.id : null;
 }
 
 /** The one `TreeNode` a `Link` belongs to — reverse-queries the `links` predicate pointing at the
@@ -824,7 +1110,7 @@ function renderViewLines(
     const star = ctx.starred.has(id) ? '  [*]' : '';
     const isTextlessList = nodeKindFromId(id) === 'BlockNode' && (node as unknown as BlockNode).type === 'list';
     const content = !showAbstract ? node.title : isTextlessList ? `(no text of its own — see kg:unfold ${id})` : (node.text ?? node.title);
-    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${content}${holderTag}${star}`);
+    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${content}${holderTag}${star}${tombstoneTag(node)}`);
   }
 
   const childDepth = hidden ? depth : depth + 1;
@@ -861,24 +1147,25 @@ function renderLinkLine(store: Store, linkId: string, depth: number, opts: TreeO
   }
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
   const targetTitle = targetNode.title ?? '<not found>';
+  const deadTag = tombstoneTag(targetNode);
   const head = `${indent}${linkId}  [Link]  ${predicate} → ${targetId}  `;
   const attempt = ctx.linkOwnerAndTarget.has(linkId);
 
   if (!attempt) {
-    lines.push(`${head}${targetTitle}`); // plain preview, never subject to dedup (§4)
+    lines.push(`${head}${targetTitle}${deadTag}`); // plain preview, never subject to dedup (§4)
     return;
   }
   const canon = ctx.canonical.get(targetId);
   const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
   if (isCanonicalHere) {
     const star = ctx.starred.has(linkId) ? '  [*]' : '';
-    lines.push(`${head}${targetTitle}${star}`);
+    lines.push(`${head}${targetTitle}${star}${deadTag}`);
     for (const child of targetNode.treeChildren) renderViewLines(store, child.id, depth + 1, opts, ctx, true, lines);
     for (const l of (targetNode.links as ApeironNode[] | undefined) ?? []) renderLinkLine(store, l.id, depth + 1, opts, ctx, lines);
     return;
   }
   const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
-  lines.push(`${head}${targetTitle}  (see ${pointerTo})`);
+  lines.push(`${head}${targetTitle}${deadTag}  (see ${pointerTo})`);
 }
 
 /** `TreeNode.renderTree`'s `opts.view` branch — entry point for the whole view-based render. */
@@ -930,4 +1217,60 @@ export function wrap(store: Store, id: string): ApeironNode {
  *  TerminusDB had no equivalent for. */
 export function backlinks(store: Store, id: string, field: string): ApeironNode[] {
   return store.match(null, predIri(field), nodeIri(id), null).map((m) => wrap(store, idFromNodeIri(String(m.subject.value))));
+}
+
+/** Mark-and-sweep GC for tombstoned top-level documents (`BlockNode`/`ArtifactNode`/`FolderNode`)
+ *  that have become fully unreferenced (Aperas-apeironngn-design.md §5) — resolving the "hard half"
+ *  of the Link-tombstone open question one level up, at the top-level-node scope. An earlier design
+ *  considered here checked each tombstoned candidate for *any* incoming reference, dead or alive,
+ *  and was rejected for the same reason refcounting can't collect a cycle: a cluster of mutually-
+ *  referencing tombstoned nodes would each show a nonzero referrer count forever, from each other,
+ *  even with nothing live pointing in from outside. Real mark-and-sweep instead: the mark phase
+ *  starts from every *live* (`!tombstonedAt`) `ArtifactNode`/`FolderNode` — the only genuine roots,
+ *  since a live `BlockNode` is always reachable transitively through its owning artifact — and walks
+ *  `treeChildren` (structural descent, kind-agnostic) plus each visited node's own `Link.target`s
+ *  (the one non-structural edge a tombstoned node can still be kept alive by, e.g. a still-live
+ *  manual `kg:link` elsewhere — which is exactly why `kg:unlink`, not just this GC, is needed to ever
+ *  let such a node go). Anything tombstoned that's never marked — including a whole disconnected
+ *  dead cluster — is genuinely unreachable and gets `hardDeleteNode`d, which also sweeps its own
+ *  `unfolds` entries via `removeDanglingUnfolds`.
+ *
+ *  Mutates the *live* store directly (not just filtering what a subsequent dehydrate writes), so
+ *  both `dehydrateToJsonLd` and the separate `dehydrateStateToJsonLd` (over `TreeView`/`Profile`)
+ *  see a consistent post-prune state without either needing its own special-casing — the same eager-
+ *  cleanup rationale `hardDeleteNode`'s own doc comment gives for WASM's grow-only memory applies
+ *  here too, just at a coarser grain. Meant to run as an explicit sweep (`service.ts`'s
+ *  `reloadStore`/`clobberFlush`, both of which always flush *both* mirrors together) rather than
+ *  after every mutation — cheap only in bulk, unlike `hardDeleteNode`'s own per-write embed
+ *  cleanup. */
+export function pruneUnreachableTombstones(store: Store): { pruned: number } {
+  const live = new Set<string>();
+
+  const mark = (node: TreeNode): void => {
+    if (live.has(node.id)) return;
+    live.add(node.id);
+    for (const child of node.treeChildren) mark(child);
+    for (const link of (node.links as unknown as Link[] | undefined) ?? []) {
+      if (link.target) mark(link.target);
+    }
+  };
+
+  for (const kind of ['ArtifactNode', 'FolderNode'] as const) {
+    for (const id of allIdsOfKind(store, kind)) {
+      const node = wrap(store, id) as unknown as TreeNode;
+      if (!node.tombstonedAt) mark(node);
+    }
+  }
+
+  let pruned = 0;
+  for (const kind of ['BlockNode', 'ArtifactNode', 'FolderNode'] as const) {
+    for (const id of allIdsOfKind(store, kind)) {
+      if (live.has(id)) continue;
+      const node = wrap(store, id) as unknown as TreeNode;
+      if (!node.tombstonedAt) continue; // never tombstoned — not a GC candidate regardless of reachability
+      hardDeleteNode(store, id);
+      pruned++;
+    }
+  }
+  return { pruned };
 }

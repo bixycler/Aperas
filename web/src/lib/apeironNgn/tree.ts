@@ -10,20 +10,16 @@ import type { Store } from 'oxigraph';
 import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId } from './vocab';
 import type { TreeView } from './node';
 
-/** `kg:path -- <path>`'s common case, not the full deep-path grammar (`resolveNodeRefDetail`) —
- *  an exact match on a `path` literal, same as `resolveArtifactOrFolderPrefix`'s single-segment
- *  case. Deep multi-segment/`.`/`..`/snowflake-code addressing is `kg:resolve`'s own migration,
- *  not duplicated here. */
+/** An exact match on a stored `path` literal — only ever true for an `ArtifactNode`/`FolderNode`
+ *  itself (a `BlockNode`'s path is never stored, only computed on demand by `TreeNode.toPath()`).
+ *  Used internally as a building block (anchoring at the root `FolderNode`, checking how much of a
+ *  `--create-holder` prefix chain already exists) by `resolve.ts`/`resolveCreate.ts`'s real deep-path
+ *  grammar — `kg:tree`/`kg:path`'s own public ref resolution is `resolveDeepPath` (`resolve.ts`),
+ *  not this function directly. */
 export function findByExactPath(store: Store, path: string): string | null {
   const matches = store.match(null, predIri('path'), encodeLiteral(path), null);
   if (matches.length === 0) return null;
   return idFromNodeIri(String(matches[0].subject.value));
-}
-
-/** Accepts a full node id as-is, otherwise resolves as an exact artifact/folder `path`. */
-export function resolveTreeRef(store: Store, ref: string): string | null {
-  if (nodeKindFromId(ref) !== 'Unknown') return ref;
-  return findByExactPath(store, ref);
 }
 
 export function displayLabel(id: string, node: any): string {

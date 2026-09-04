@@ -78,7 +78,7 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
   const dbOnlyIds = new Map(dbOnlyPaths.map((p) => [p, folderIdByPath.get(p)!]));
 
   const removedCandidates = dbOnlyPaths.map((p) => {
-    const id = `FolderNode/${dbOnlyIds.get(p)}`;
+    const id = `FolderNode:${dbOnlyIds.get(p)}`;
     return { key: ((wrap(store, id) as unknown as FolderNode).text as string) ?? '', item: id };
   });
   const addedCandidates = diskOnlyPaths.map((p) => ({ key: newByPath.get(p)!.text ?? '', item: newByPath.get(p)! }));
@@ -101,12 +101,14 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
     const node = wrap(store, id) as unknown as FolderNode;
     console.log(`[ApeironNgn Folders] Tombstoning removed folder '${node.path}'`);
     node.children = [];
+    node.links = undefined;
+    node.props = undefined;
     node.tombstonedAt = new Date().toISOString();
     sweep.removed++;
   }
 
   console.log(`[ApeironNgn Folders] Ingesting folder tree (${folderCount} folder(s))...`);
-  (wrap(store, `FolderNode/${tree.folderId}`) as unknown as FolderNode).hydrateFromParsed(tree);
+  (wrap(store, `FolderNode:${tree.folderId}`) as unknown as FolderNode).hydrateFromParsed(tree);
 
   return { folderCount, sweep };
 }

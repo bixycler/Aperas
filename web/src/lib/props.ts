@@ -32,6 +32,14 @@ export function getProp(node: HasProps, key: string): string | undefined {
   return node.props?.find((p) => p.key === key)?.value;
 }
 
+/** `getProp`'s plural sibling, for a genuinely multi-valued key — `position` (Aperas-apeironngn-
+ *  design.md §4 Step 8: a wikilink-derived `Link` carries one `position` prop per occurrence of
+ *  its target in the owning block's text) is the first one, unlike single-valued props
+ *  (`frontmatter`, `orderedList`) `getProp` already covers. */
+export function getProps(node: HasProps, key: string): string[] {
+  return (node.props ?? []).filter((p) => p.key === key).map((p) => p.value);
+}
+
 /**
  * Builds a fresh single-valued `StringProp` entry for `key`, reusing an existing prop's own id
  * when its `key` and `value` both already match `existing` — the same "carry forward only when

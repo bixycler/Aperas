@@ -6,24 +6,41 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveTreeRef } from './apeironNgn/tree';
-import { wrap, type TreeNode, type TreeView } from './apeironNgn/node';
-import { nodeExists } from './apeironNgn/vocab';
+import { resolveDeepPath } from './apeironNgn/resolve';
+import { wrap, resolveTreeView, type TreeNode, type TreeView } from './apeironNgn/node';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string; reload?: boolean }) {
-  const id = resolveTreeRef(store, req.pathArg);
-  if (!id) throw new Error(`'${req.pathArg}' isn't a full node id or an exact tracked artifact/folder path.`);
-  let view: TreeView | undefined;
-  if (req.viewRef !== undefined) {
-    if (!nodeExists(store, req.viewRef)) throw new Error(`TreeView '${req.viewRef}' not found.`);
-    view = wrap(store, req.viewRef) as unknown as TreeView;
-  }
+  const id = resolveDeepPath(store, req.pathArg);
+  if (!id) throw new Error(`'${req.pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
+  // Unlike `unfold`/`fold` (which always need *some* view to mutate, so an omitted `--view`
+  // resolves to the default one), an omitted `--view` here means plain title-only rendering —
+  // `view` stays `undefined` rather than falling back to `resolveTreeView`'s own default-view
+  // behavior. `viewRef: 'default'` (typed explicitly) still resolves through `resolveTreeView`,
+  // same as every other `--view` value.
+  const view: TreeView | undefined = req.viewRef !== undefined ? resolveTreeView(store, req.viewRef) : undefined;
   return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, view });
 }
 
 async function main(): Promise<void> {
   const paths = process.argv.slice(2);
+  if (wantsHelp(paths)) {
+    printHelp({
+      description: 'Render the fractal tree from a resolved node.',
+      usage: 'kg:tree -- [<path>] [--depth <n>] [--view <viewRef>] [--no-holders] [--reload]',
+      args: [
+        { name: '<path>', description: "Tracked artifact/folder path, deep path, bare node code, or full node id to render from. Defaults to '.', the artifacts root." },
+      ],
+      flags: [
+        { name: '--depth <n>', description: 'Limit rendering to this many levels deep.' },
+        { name: '--view <viewRef>', description: 'Render in unfolded mode, driven by this TreeView\'s unfolds set. Omitting it keeps the plain title-only default rendering.' },
+        { name: '--no-holders', description: 'Omit placeholder holder nodes from the output.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
 
   const noHolders = paths.includes('--no-holders');
   const reload = paths.includes('--reload');

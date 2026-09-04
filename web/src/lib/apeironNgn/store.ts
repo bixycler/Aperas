@@ -9,6 +9,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store, quad } from 'oxigraph';
 import {
+  NODE_BASE,
   nodeIri,
   predIri,
   encodeLiteral,
@@ -20,20 +21,23 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The 3 top-level-addressable kinds (Aperas-apeironngn-design.md §4 rollout step 3's hierarchy
-// refactor): `Link`/`StringProp` are subdocuments now, nested inline inside whichever `BlockNode`/
-// `ArtifactNode`/`FolderNode` document owns them (`encodeDoc`'s embedded-object branch below
-// handles both uniformly, not `props`-specifically) — no standalone `Link.jsonld` to read anymore.
-// `Assertion` is gone entirely, not merely unread: previously listed here (its fields landed as
-// raw quads, since `encodeDoc` doesn't consult any class registry) while `dehydrate.ts` never
-// wrote it back out — a real latent bug (any live `Assertion` doc would silently vanish on the
-// next dehydrate), closed by removing the read path rather than adding the write path back. The
-// real `Assertion.jsonld` had zero documents when this was checked, so nothing was lost.
-const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
+// The top-level-addressable content kinds (Aperas-apeironngn-design.md §4 rollout step 3's
+// hierarchy refactor), plus `Profile` (Aperas-treeview-design.md §8/§11 — stable identity, tracked
+// alongside content now, not per-viewer ephemeral state): `Link`/`StringProp` are subdocuments,
+// nested inline inside whichever `BlockNode`/`ArtifactNode`/`FolderNode`/`Profile` document owns
+// them (`encodeDoc`'s embedded-object branch below handles both `links`/`props`/`preferences`
+// uniformly) — no standalone `Link.jsonld` to read anymore. `Assertion` is gone entirely, not
+// merely unread: previously listed here (its fields landed as raw quads, since `encodeDoc` doesn't
+// consult any class registry) while `dehydrate.ts` never wrote it back out — a real latent bug (any
+// live `Assertion` doc would silently vanish on the next dehydrate), closed by removing the read
+// path rather than adding the write path back. The real `Assertion.jsonld` had zero documents when
+// this was checked, so nothing was lost.
+const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Profile'] as const;
 
-// `Profile`/`TreeView` (Aperas-treeview-design.md §8) — read from the gitignored `.state/`
-// subfolder `dehydrateStateToJsonLd` writes into, not alongside `INSTANCE_FILES` above.
-const STATE_FILES = ['Profile', 'TreeView'] as const;
+// `TreeView` (Aperas-treeview-design.md §8) — genuinely ephemeral per-viewer UI state, read from
+// the gitignored `.state/` subfolder `dehydrateStateToJsonLd` writes into, not alongside
+// `INSTANCE_FILES` above.
+const STATE_FILES = ['TreeView'] as const;
 
 export function getApeironExportDir(): string {
   // web/src/lib/apeironNgn -> web/src/lib -> web/src -> web -> repo root -> AperasKG/Apeiron
@@ -96,9 +100,9 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>)
 }
 
 /** Rehydrates a fresh in-memory Store from the JSON-LD mirror. Pass `dir` only in tests — real
- *  callers always want the actual `AperasKG/Apeiron/` mirror. Also reads `Profile`/`TreeView` from
- *  `stateDir` (default: `dir`'s own `.state/` subfolder, `dehydrateStateToJsonLd`'s output) into
- *  the same `Store` — one in-memory graph either way, just dehydrated to two locations
+ *  callers always want the actual `AperasKG/Apeiron/` mirror. Also reads `TreeView` from `stateDir`
+ *  (default: `dir`'s own `.state/` subfolder, `dehydrateStateToJsonLd`'s output) into the same
+ *  `Store` — one in-memory graph either way, just dehydrated to two locations
  *  (Aperas-treeview-design.md §8). Each `STATE_FILES` entry is read only if it exists: on a fresh
  *  checkout, or before any view has ever been unfolded, `.state/` may not exist yet at all — that's
  *  not a data problem the way a missing `INSTANCE_FILES` entry would be. */
@@ -129,7 +133,7 @@ export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: st
   for (const q of store.match(null, null, null, null)) {
     if (q.object.termType === 'NamedNode') {
       const raw = q.object.value;
-      if (raw.startsWith('urn:aperas:node:')) referencedIds.add(raw.slice('urn:aperas:node:'.length));
+      if (raw.startsWith(NODE_BASE)) referencedIds.add(raw.slice(NODE_BASE.length));
     }
   }
   const danglingRefs = [...referencedIds].filter((id) => !seenIds.has(id)).sort();

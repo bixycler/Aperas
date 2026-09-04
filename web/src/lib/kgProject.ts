@@ -14,6 +14,7 @@ import { nodeKindFromId } from './apeironNgn/vocab';
 import { wrap, type ArtifactNode, type FolderNode } from './apeironNgn/node';
 import { getArtifactsDir } from './artifacts';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
 
 export function runProject(store: Store, path: string) {
   const id = findByExactPath(store, path);
@@ -45,6 +46,20 @@ export function runProject(store: Store, path: string) {
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: "Serialize a tracked ArtifactNode/FolderNode's tree back to Markdown.",
+      usage: 'kg:project -- <path> [--dry-run] [--reload]',
+      args: [
+        { name: '<path>', description: 'Tracked artifact or folder path to serialize. An artifact writes back to the same path; a folder writes to its README.' },
+      ],
+      flags: [
+        { name: '--dry-run', description: 'Print the rendered Markdown instead of writing it to disk.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
   const dryRun = rawArgs.includes('--dry-run');
   const reload = rawArgs.includes('--reload');
   const [path] = rawArgs.filter((p) => p !== '--dry-run' && p !== '--reload');

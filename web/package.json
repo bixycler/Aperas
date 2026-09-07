@@ -22,6 +22,9 @@
     "kg:path": "tsx src/lib/kgPath.ts",
     "kg:backlinks": "tsx src/lib/kgBacklinks.ts",
     "kg:resolve": "tsx src/lib/kgResolve.ts",
+    "kg:insert": "tsx src/lib/kgInsert.ts",
+    "kg:update": "tsx src/lib/kgUpdate.ts",
+    "kg:remove": "tsx src/lib/kgRemove.ts",
     "kg:profile": "tsx src/lib/kgProfile.ts"
   },
   "dependencies": {

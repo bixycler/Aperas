@@ -46,11 +46,14 @@ import { computeFileHash } from '../artifacts';
 import { resolveTreeView, pruneUnreachableTombstones } from './node';
 import { getSocketPath, markReady, clearLock } from './serviceLock';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
-import { runTrack } from '../kgTrack';
+import { runTrack, runReverseTrack } from '../kgTrack';
 import { runIngest } from '../kgIngest';
 import { runUnfold } from '../kgUnfold';
 import { runFold } from '../kgFold';
 import { runResolve } from '../kgResolve';
+import { runInsert } from '../kgInsert';
+import { runUpdate } from '../kgUpdate';
+import { runRemove } from '../kgRemove';
 import { runTitleCandidates, runSetBlockTitle } from '../kgTitle';
 import { runLinkCandidates, runAddBlockLink, runRemoveBlockLink } from '../kgLink';
 import { runProject } from '../kgProject';
@@ -274,14 +277,17 @@ function main(): void {
         return { clobbered: req.clobber };
       case 'track': {
         if (req.reload) reloadStore();
-        const result = runTrack(store, req.paths);
+        const result = runTrack(store, req.paths, req.force);
         dirty = true;
         if (req.flush) flushIfDirty();
         return result;
       }
+      case 'trackReverse':
+        if (req.reload) reloadStore();
+        return runReverseTrack(store);
       case 'ingest': {
         if (req.reload) reloadStore();
-        const result = runIngest(store, req.paths, req.track);
+        const result = runIngest(store, req.paths, req.track, req.force);
         dirty = true;
         if (req.flush) flushIfDirty();
         return result;
@@ -316,6 +322,27 @@ function main(): void {
         if (req.flush) flushIfDirty();
         return result;
       }
+      case 'insert': {
+        if (req.reload) reloadStore();
+        const result = runInsert(store, req);
+        dirty = true;
+        if (req.flush) flushIfDirty();
+        return result;
+      }
+      case 'update': {
+        if (req.reload) reloadStore();
+        const result = runUpdate(store, req);
+        dirty = true;
+        if (req.flush) flushIfDirty();
+        return result;
+      }
+      case 'remove': {
+        if (req.reload) reloadStore();
+        const result = runRemove(store, req);
+        dirty = true;
+        if (req.flush) flushIfDirty();
+        return result;
+      }
       case 'titleCandidates':
         if (req.reload) reloadStore();
         return runTitleCandidates(store, req.pathArg, req.recursive);
@@ -340,9 +367,13 @@ function main(): void {
         if (req.flush) flushIfDirty();
         return result;
       }
-      case 'project':
+      case 'project': {
         if (req.reload) reloadStore();
-        return runProject(store, req.path);
+        const result = runProject(store, req.path, req.dryRun, req.force);
+        if (!req.dryRun && !('conflict' in result)) dirty = true;
+        if (req.flush) flushIfDirty();
+        return result;
+      }
       case 'tree':
         if (req.reload) reloadStore();
         return runTree(store, req);

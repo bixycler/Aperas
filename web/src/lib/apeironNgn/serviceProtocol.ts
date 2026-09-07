@@ -54,11 +54,14 @@ export type ServiceRequest =
   // (`titleCandidates`/`linkCandidates`) — just not on `setBlockTitle`/`addBlockLink`, each one
   // sub-step of an already-in-progress interactive session where reloading mid-loop would
   // invalidate the `blockId`s the candidate list already hands back.
-  | { op: 'track'; paths: string[]; flush: boolean; reload: boolean }
+  | { op: 'track'; paths: string[]; flush: boolean; reload: boolean; force: boolean }
+  // `kg:track --reverse` (Aperas-crud-design.md §15) — read-only drift report, no mutation at all:
+  // never dirties the store, so no `flush` field (nothing for one to flush).
+  | { op: 'trackReverse'; reload: boolean }
   // `track: true` folds a `kg:track` refresh (against the same `paths`) in first — `kgIngest.ts`'s
   // own doc comment has the full reasoning (`ingestedHash === fileHash` doesn't know the file on
   // disk changed until something re-reads it, which only `track` does).
-  | { op: 'ingest'; paths: string[]; flush: boolean; reload: boolean; track: boolean }
+  | { op: 'ingest'; paths: string[]; flush: boolean; reload: boolean; track: boolean; force: boolean }
   // `viewRef` (Aperas-treeview-design.md §5/§8) — a `TreeView` id, or a `TreeNode`/`Link` ref for
   // `unfold`/`fold`'s own `ref`. Omitted `viewRef` resolves to the `"default"`-named view
   // (`node.ts`'s `ensureDefaultView`). A mutating `unfold`/`fold` marks the service's `stateDirty`
@@ -68,12 +71,27 @@ export type ServiceRequest =
   | { op: 'unfold'; ref: string; viewRef?: string; flush: boolean; reload: boolean }
   | { op: 'fold'; ref: string; viewRef?: string; flush: boolean; reload: boolean }
   | { op: 'resolve'; paths: string[]; base?: string; createHolder: boolean; titles?: string[]; flush: boolean; reload: boolean }
+  // `kg:insert` (Aperas-crud-design.md §7) — `markdown` present (even `''`) means create mode,
+  // absent means move/promote mode; the CLI client decides which based on `process.stdin.isTTY`,
+  // never this op itself. Piped content travels as a plain string field — the NDJSON framing above
+  // already escapes embedded newlines, no special handling needed.
+  | { op: 'insert'; path: string; base?: string; markdown?: string; after?: string; before?: string; flush: boolean; reload: boolean }
+  // `kg:update` (Aperas-crud-design.md §9) — `markdown` always required (unlike `insert`'s, which
+  // is absent in move/promote mode); `textOnly` selects the cheap raw-prepend path over the
+  // default full reconcile.
+  | { op: 'update'; path: string; base?: string; markdown: string; textOnly: boolean; flush: boolean; reload: boolean }
+  // `kg:remove` (Aperas-crud-design.md §10) — recursive soft-tombstone, not a hard delete.
+  | { op: 'remove'; path: string; base?: string; flush: boolean; reload: boolean }
   | { op: 'titleCandidates'; pathArg: string; recursive: boolean; reload: boolean }
   | { op: 'setBlockTitle'; blockId: string; title: string; flush: boolean }
   | { op: 'linkCandidates'; pathArg: string; recursive: boolean; all: boolean; reload: boolean }
   | { op: 'addBlockLink'; blockId: string; targetRef: string; flush: boolean }
   | { op: 'removeBlockLink'; blockId: string; targetRef: string; flush: boolean }
-  | { op: 'project'; path: string; reload: boolean }
+  // `dryRun` (Aperas-crud-design.md §6): gates the **(o)** promotion bookkeeping (`.holder` clear,
+  // `.text` derivation, `fileHash`/`ingestedHash`/`lastIngestedAt` refresh) — never runs for a dry
+  // run, since nothing is actually written to disk then. `flush` only meaningful (but harmless
+  // either way) when `!dryRun`, matching every other mutating op's own convention.
+  | { op: 'project'; path: string; dryRun: boolean; force: boolean; flush: boolean; reload: boolean }
   // `viewRef` presence drives unfolded-mode rendering — replaces the old bare `unfoldedMode`
   // boolean (§5): a `--view` flag with no target view still resolves to `"default"`, so this is
   // never actually optional in practice, but stays typed that way to match `unfold`/`fold` above.

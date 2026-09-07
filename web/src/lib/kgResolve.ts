@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       flags: [
         { name: '--base <path>', description: 'Base path deep-path resolution is relative to. Defaults to the artifacts root.' },
         { name: '--create-holder', description: "Create a holder node chain along <path> instead of failing when a segment doesn't exist yet." },
-        { name: '--titles <title>...', description: 'Titles for each newly created holder segment, in order (only with --create-holder).' },
+        { name: '--titles <title>...', description: "Titles for each newly created Block-tier (heading) segment, in order — one per segment past the filename, only with --create-holder. Each must be the full markdown heading line, '#' prefix included (e.g. '### 1.2.3'), not just the heading text; a bare title without '#' will not render as a heading later." },
         { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
       ],

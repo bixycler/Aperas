@@ -48,7 +48,7 @@ export interface FolderSweepStats {
  *  unchanged here. A matched rename reuses the existing `folderId` (via `buildFolderTree`'s own
  *  `existingByPath`/`folderIdByPath` maps, same as the original); a tombstone sets one field
  *  directly rather than replacing the whole document. */
-export function ingestFolderTree(store: Store): { folderCount: number; sweep: FolderSweepStats } {
+export function ingestFolderTree(store: Store, force: boolean = false): { folderCount: number; sweep: FolderSweepStats; pendingRemovals: string[] } {
   const artifactsDir = getArtifactsDir();
 
   const liveFolderIds = allLiveIdsOfKind(store, 'FolderNode');
@@ -74,7 +74,16 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
   collectFolderPaths(tree, newByPath);
 
   const diskOnlyPaths = [...newByPath.keys()].filter((p) => !existingByPath.has(p));
-  const dbOnlyPaths = [...existingByPath.keys()].filter((p) => !newByPath.has(p));
+  // Aperas-crud-design.md §6: a holder-flagged FolderNode not appearing in the fresh disk walk is
+  // never evidence of removal — it was never going to be produced by one in the first place — so
+  // it's excluded here before it can ever reach `removedCandidates` below and get tombstoned by
+  // this sweep, independent of whatever `FolderNode.hydrateFromParsed`'s own preservation loop
+  // does for a *parent's reference* to it.
+  const dbOnlyPaths = [...existingByPath.keys()].filter((p) => {
+    if (newByPath.has(p)) return false;
+    const id = `FolderNode:${folderIdByPath.get(p)}`;
+    return !(wrap(store, id) as unknown as FolderNode).holder;
+  });
   const dbOnlyIds = new Map(dbOnlyPaths.map((p) => [p, folderIdByPath.get(p)!]));
 
   const removedCandidates = dbOnlyPaths.map((p) => {
@@ -89,6 +98,7 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
   const { matched, stillRemoved } = matchLeftoverByAbstract<any>(removedCandidates, addedCandidates);
 
   const sweep: FolderSweepStats = { renamed: 0, removed: 0 };
+  const pendingRemovals: string[] = [];
 
   for (const { old: oldId, new: newNode } of matched as Array<{ old: string; new: ParsedFolderNode }>) {
     const oldNode = wrap(store, oldId) as unknown as FolderNode;
@@ -97,8 +107,17 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
     sweep.renamed++;
   }
 
+  // Aperas-crud-design.md §14: a real folder disappearing from disk is exactly the destructive
+  // case that needs confirmation before applying — held back (left alive, untombstoned) rather
+  // than applied when `!force`, its path reported via `pendingRemovals` instead. Renames/additions
+  // above are unaffected; only this specific removal step is gated.
   for (const id of stillRemoved as string[]) {
     const node = wrap(store, id) as unknown as FolderNode;
+    if (!force) {
+      console.log(`[ApeironNgn Folders] '${node.path}' would be tombstoned as removed — held back pending confirmation (re-run with --force to apply).`);
+      pendingRemovals.push(node.path as string);
+      continue;
+    }
     console.log(`[ApeironNgn Folders] Tombstoning removed folder '${node.path}'`);
     node.children = [];
     node.links = undefined;
@@ -110,5 +129,5 @@ export function ingestFolderTree(store: Store): { folderCount: number; sweep: Fo
   console.log(`[ApeironNgn Folders] Ingesting folder tree (${folderCount} folder(s))...`);
   (wrap(store, `FolderNode:${tree.folderId}`) as unknown as FolderNode).hydrateFromParsed(tree);
 
-  return { folderCount, sweep };
+  return { folderCount, sweep, pendingRemovals };
 }

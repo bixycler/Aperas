@@ -62,8 +62,13 @@ export interface ArtifactSweepStats {
 /** Registers/refreshes ArtifactNodes for every file under `AperasKG/artifacts/`, first detecting
  *  renames/moves across the whole tracked set via `reconcile.ts`'s Gestalt matcher (same abstract-
  *  text similarity `kg:ingest`'s own reconciliation uses) — a rename mutates the existing node in
- *  place (`trackFromDisk`); an unmatched removal is tombstoned. */
-export function trackAllArtifacts(store: Store): { results: TrackResult[]; sweep: ArtifactSweepStats } {
+ *  place (`trackFromDisk`); an unmatched removal is tombstoned.
+ *
+ *  `force` (Aperas-crud-design.md §14): same held-back-by-default gate as `ingestFolderTree`'s own
+ *  removal step — a real `ArtifactNode` whose file disappeared from disk is left alone (not
+ *  tombstoned) and its path reported via `pendingRemovals` instead, unless `force` is true. Renames
+ *  are unaffected — only the removal step itself is gated. */
+export function trackAllArtifacts(store: Store, force: boolean = false): { results: TrackResult[]; sweep: ArtifactSweepStats; pendingRemovals: string[] } {
   const files = listArtifactFiles();
   const diskSet = new Set(files);
 
@@ -71,7 +76,13 @@ export function trackAllArtifacts(store: Store): { results: TrackResult[]; sweep
   const existingByPath = new Map(liveIds.map((id) => [(wrap(store, id) as unknown as ArtifactNode).path as string, id]));
 
   const diskOnlyPaths = files.filter((f) => !existingByPath.has(f));
-  const dbOnlyIds = liveIds.filter((id) => !diskSet.has((wrap(store, id) as unknown as ArtifactNode).path as string));
+  // Aperas-crud-design.md §6: same fix as ingestFolderTree's own dbOnlyPaths — a holder-flagged
+  // ArtifactNode not found on disk is never evidence of removal, so it's excluded here before it
+  // can ever reach `removedCandidates` below and get tombstoned by this sweep.
+  const dbOnlyIds = liveIds.filter((id) => {
+    const node = wrap(store, id) as unknown as ArtifactNode;
+    return !diskSet.has(node.path as string) && !node.holder;
+  });
 
   const artifactsDir = getArtifactsDir();
   const addedCandidates = diskOnlyPaths.map((path) => {
@@ -83,6 +94,7 @@ export function trackAllArtifacts(store: Store): { results: TrackResult[]; sweep
   const { matched, stillRemoved } = matchLeftoverByAbstract(removedCandidates, addedCandidates);
 
   const sweep: ArtifactSweepStats = { renamed: 0, removed: 0 };
+  const pendingRemovals: string[] = [];
 
   for (const { old: oldId, new: newPath } of matched as Array<{ old: string; new: string }>) {
     const node = wrap(store, oldId) as unknown as ArtifactNode;
@@ -93,6 +105,11 @@ export function trackAllArtifacts(store: Store): { results: TrackResult[]; sweep
 
   for (const id of stillRemoved as string[]) {
     const node = wrap(store, id) as unknown as ArtifactNode;
+    if (!force) {
+      console.log(`[ApeironNgn Artifacts] '${node.path}' would be tombstoned as removed — held back pending confirmation (re-run with --force to apply).`);
+      pendingRemovals.push(node.path as string);
+      continue;
+    }
     console.log(`[ApeironNgn Artifacts] Tombstoning removed artifact '${node.path}'`);
     tombstoneLiveSubtree(node, new Date().toISOString());
     sweep.removed++;
@@ -105,7 +122,7 @@ export function trackAllArtifacts(store: Store): { results: TrackResult[]; sweep
     results.push(trackArtifact(store, file));
   }
 
-  return { results, sweep };
+  return { results, sweep, pendingRemovals };
 }
 
 /** Whether a block's resolved link outcome actually differs — this is *not* the same question as
@@ -251,15 +268,22 @@ export function resolveBlockLinks(
 
 /** AST-parses and commits a tracked artifact into a fractal tree of BlockNodes, delegating the
  *  actual work to `ArtifactNode.ingestFromDisk` (`node.ts`) — this wrapper only finds the node and
- *  resolves the wikilinks it turned up, once its own tree write has finished. */
-export function ingestArtifact(store: Store, artifactPath: string): (IngestResult & { linkResolution: LinkResolutionStats }) | null {
+ *  resolves the wikilinks it turned up, once its own tree write has finished.
+ *
+ *  `force` (Aperas-crud-design.md §14): passed straight through to `ingestFromDisk`. When it comes
+ *  back with `pendingConfirmation` set, nothing was actually committed — no wikilinks to resolve
+ *  either, since `pendingLinks` is empty in that case by construction. */
+export function ingestArtifact(store: Store, artifactPath: string, force: boolean = false): (IngestResult & { linkResolution: LinkResolutionStats; pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }> }) | null {
   const existingId = findLiveArtifactByPath(store, artifactPath);
   if (!existingId) {
     throw new Error(`Artifact '${artifactPath}' is not tracked yet — run track first.`);
   }
   const record = wrap(store, existingId) as unknown as ArtifactNode;
-  const result = record.ingestFromDisk();
+  const result = record.ingestFromDisk(force);
   if (!result) return null;
+  if (result.pendingConfirmation) {
+    return { ...result, linkResolution: { resolved: 0, dangling: 0, changed: 0 } };
+  }
   const { pendingLinks, oldLinkTargets, oldWikilinksByBlock, ...rest } = result;
   const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock);
   return { ...rest, linkResolution };
@@ -275,7 +299,7 @@ type SingleIngestResult = NonNullable<ReturnType<typeof ingestArtifact>>;
  *  `kg:ingest`) to pick it up. `untracked` is returned rather than logged directly because this
  *  runs inside the shared service process, spawned with `stdio: 'ignore'` (`serviceClient.ts`) —
  *  anything printed here is discarded; only the CLI client that issued the request can surface it. */
-export function ingestAllArtifacts(store: Store): { ingested: Array<{ path: string } & SingleIngestResult>; untracked: string[] } {
+export function ingestAllArtifacts(store: Store, force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; untracked: string[] } {
   const files = listArtifactFiles();
   const ingested: Array<{ path: string } & SingleIngestResult> = [];
   const untracked: string[] = [];
@@ -284,7 +308,7 @@ export function ingestAllArtifacts(store: Store): { ingested: Array<{ path: stri
       untracked.push(file);
       continue;
     }
-    const result = ingestArtifact(store, file);
+    const result = ingestArtifact(store, file, force);
     if (result) ingested.push({ path: file, ...result });
   }
   return { ingested, untracked };
@@ -295,10 +319,10 @@ export function ingestAllArtifacts(store: Store): { ingested: Array<{ path: stri
  *  Assumes every path is already tracked — `kgIngest.ts`'s `runIngest` tracks each one first (and
  *  rebuilds the folder tree) *before* calling this, specifically so a brand-new file's own folder
  *  is already attached by the time this ingests it and resolves its wikilinks against it. */
-export function ingestArtifacts(store: Store, paths: string[]): Array<{ path: string } & SingleIngestResult> {
+export function ingestArtifacts(store: Store, paths: string[], force: boolean = false): Array<{ path: string } & SingleIngestResult> {
   const results: Array<{ path: string } & SingleIngestResult> = [];
   for (const path of expandArtifactPaths(paths)) {
-    const result = ingestArtifact(store, path);
+    const result = ingestArtifact(store, path, force);
     if (result) results.push({ path, ...result });
   }
   return results;

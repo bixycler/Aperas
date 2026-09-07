@@ -153,6 +153,12 @@ export interface ChildDiff {
   matched: Array<{ oldIndex: number; newIndex: number }>;
   removedOld: number[];
   addedNew: number[];
+  /** Splice target — an index into the final `newChildren` array — for each `removedOld` index
+   *  that's `holder`-flagged (Aperas-crud-design.md §5): the segment-derived position immediately
+   *  before the next real anchor, keyed by `removedOld`'s own old-index. `reconcileNode` uses this
+   *  to preserve an unmatched placeholder in place instead of tombstoning it; every other
+   *  `removedOld` index (not present here) still goes to the ordinary tombstone-candidate pool. */
+  holderSpliceTargets: Map<number, number>;
 }
 
 /**
@@ -230,7 +236,19 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
   const removedOld = oldChildren.map((_, i) => i).filter((i) => !matchedOld.has(i));
   const addedNew = newChildren.map((_, i) => i).filter((i) => !matchedNew.has(i));
 
-  return { matched, removedOld, addedNew };
+  // Aperas-crud-design.md §5: a holder-flagged removedOld child necessarily falls inside exactly
+  // one of the segments computed above (they partition the whole [0, oldChildren.length) range) —
+  // its splice target is that segment's own newRange upper bound, immediately before the next real
+  // anchor. Every other removedOld index gets no entry here and stays destined for the ordinary
+  // tombstone-candidate pool, unaffected.
+  const holderSpliceTargets = new Map<number, number>();
+  for (const oldIndex of removedOld) {
+    if (!oldChildren[oldIndex]?.holder) continue;
+    const segment = segments.find((s) => oldIndex >= s.oldRange[0] && oldIndex < s.oldRange[1]);
+    if (segment) holderSpliceTargets.set(oldIndex, segment.newRange[1]);
+  }
+
+  return { matched, removedOld, addedNew, holderSpliceTargets };
 }
 
 export interface ReconciliationStats {
@@ -331,11 +349,44 @@ function reconcileNode(oldNode: any, newNode: any, ctx: ReconcileContext): void 
     }
   }
 
-  for (const oldIndex of diff.removedOld) {
-    ctx.removedCandidates.push(oldNode.children[oldIndex]);
-  }
+  // Order matters below: every read of `newNode.children[newIndex]` by *original* array position
+  // (the matched-pairs loop above, and `addedNew` here) must finish before the holder splice at the
+  // bottom mutates that same array — splicing any earlier would shift those indices out from under
+  // them (Aperas-crud-design.md §5).
   for (const newIndex of diff.addedNew) {
     ctx.addedCandidates.push(newNode.children[newIndex]);
+  }
+
+  for (const oldIndex of diff.removedOld) {
+    if (diff.holderSpliceTargets.has(oldIndex)) continue; // preserved below, not tombstoned
+    ctx.removedCandidates.push(oldNode.children[oldIndex]);
+  }
+
+  newNode.children = newNode.children ?? [];
+  spliceHolders(newNode.children, oldNode.children, diff);
+}
+
+/**
+ * Preserves every holder-flagged `removedOld` child in place instead of tombstoning it (Aperas-
+ * crud-design.md §5) — mutates `newChildren` directly. Groups by splice target first: two holders
+ * landing in the *same* gap must be spliced together, in their original relative order, in one call
+ * — inserting them one at a time at the same index would reverse their order (each subsequent
+ * insert pushes the previous one one slot further right). Distinct targets are then applied
+ * highest-index-first so an earlier splice never shifts a later target's own position.
+ */
+function spliceHolders(newChildren: any[], oldChildren: any[], diff: ChildDiff): void {
+  const byTarget = new Map<number, number[]>(); // spliceAt -> oldIndexes, in original (ascending) order
+  for (const oldIndex of diff.removedOld) {
+    const target = diff.holderSpliceTargets.get(oldIndex);
+    if (target === undefined) continue;
+    const group = byTarget.get(target);
+    if (group) group.push(oldIndex);
+    else byTarget.set(target, [oldIndex]);
+  }
+  const targets = [...byTarget.keys()].sort((a, b) => b - a);
+  for (const target of targets) {
+    const group = byTarget.get(target)!;
+    newChildren.splice(target, 0, ...group.map((oldIndex) => oldChildren[oldIndex]));
   }
 }
 
@@ -371,8 +422,16 @@ function detectCrossParentMoves(ctx: ReconcileContext, now: string): any[] {
           if (headingTextChanged(oldChild, newChild)) ctx.stats.changed++;
           else ctx.stats.matched++;
         }
-        for (const oi of subDiff.removedOld) ctx.removedCandidates.push(oldNode.children[oi]);
         for (const ni of subDiff.addedNew) ctx.addedCandidates.push(newNode.children[ni]);
+        for (const oi of subDiff.removedOld) {
+          if (subDiff.holderSpliceTargets.has(oi)) continue; // preserved below, not tombstoned
+          ctx.removedCandidates.push(oldNode.children[oi]);
+        }
+        // Same holder-preservation splice as reconcileNode's own (Aperas-crud-design.md §5),
+        // needed here too since a cross-parent-moved node's own children get their own one-level
+        // sub-diff, independent of whatever ran at its old and new parents.
+        newNode.children = newNode.children ?? [];
+        spliceHolders(newNode.children, oldNode.children, subDiff);
       }
       movedOld.add(oldNode);
       movedNew.add(newNode);

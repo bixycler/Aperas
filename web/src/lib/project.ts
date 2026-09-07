@@ -77,9 +77,13 @@ function indentContinuationLines(text: string, prefixWidth: number): string {
  * *this* node's own `orderedList`/`startIndex` props, since a list-hosting node (an orphaned
  * `list` block, or whatever adopted the list per §8) is the sole owner of that list's numbering.
  * Everything else renders one block at a time via the ordinary per-type dispatch.
+ *
+ * Tombstoned children are filtered out first: a tombstone is never spliced out of `children`
+ * (Aperas-crud-design.md §6) so GC/referrer-tracking can still see it, so every renderer — this one
+ * included — must skip it explicitly rather than relying on it being absent.
  */
 export function renderChildren(node: any): string {
-  const children = node.children ?? [];
+  const children = (node.children ?? []).filter((c: any) => !c.tombstonedAt);
   const parts: string[] = [];
   let i = 0;
   while (i < children.length) {

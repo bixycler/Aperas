@@ -82,12 +82,14 @@ export const ARTIFACT_NODE_SHAPE: ClassShape = {
   lastTrackedAt: { cardinality: 'optional' },
   ingestedHash: { cardinality: 'optional' },
   lastIngestedAt: { cardinality: 'optional' },
+  projectedHash: { cardinality: 'optional' },
 };
 
 export const FOLDER_NODE_SHAPE: ClassShape = {
   ...TREE_NODE_SHAPE,
   path: { cardinality: 'one' },
   children: { cardinality: 'orderedContainment', storageKind: 'reference' },
+  projectedHash: { cardinality: 'optional' },
 };
 
 /** No full `BASE_NODE_SHAPE` here — a `Link` doesn't get `links`/`tombstonedAt`/`holder` (a link

@@ -48,7 +48,7 @@ import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIF
 import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
-import { parseMarkdownTree, extractAbstract, truncateForPreviewWithHint, WIKILINK_PREDICATE, type ParsedBlockNode } from '../astParser';
+import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, type ParsedBlockNode } from '../astParser';
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
@@ -102,6 +102,48 @@ function appendOrderedChild(store: Store, parentId: string, childId: string): vo
   const siblingCount = store.match(null, PARENT_PRED, nodeIri(parentId), null).length;
   store.add(quad(childSubject, PARENT_PRED, nodeIri(parentId)));
   store.add(quad(childSubject, SIBLING_INDEX_PRED, encodeLiteral(siblingCount)));
+}
+
+/** The **(p)** channel's primitive (Aperas-crud-design.md §7, alongside `appendOrderedChild`
+ *  above) — positions `childId` immediately before/after `anchorId` among `parentId`'s children,
+ *  instead of always at the tail. Unlike `appendOrderedChild`'s deliberately-incremental single-id
+ *  write, this is a full rewrite: inserting anywhere but the tail shifts every later sibling's own
+ *  `siblingIndex`, so there's no cheaper correct alternative — the same convention `TreeNode`'s
+ *  generic `children` setter (`writeField`'s `orderedContainment` branch) already uses everywhere
+ *  else a position changes. Handles a same-parent reorder and a cross-parent move identically:
+ *  `childId`'s own prior containment (wherever it pointed, including this same parent) is always
+ *  detached first, then the whole finalized order is written fresh. Throws if `anchorId` isn't
+ *  currently a child of `parentId` — no silent fallback to append, since that would silently
+ *  discard the caller's actual positioning intent. */
+function insertOrderedChild(store: Store, parentId: string, childId: string, anchorId: string, side: 'before' | 'after'): void {
+  const parentMatches = store.match(null, PARENT_PRED, nodeIri(parentId), null);
+  const withIndex = parentMatches.map((m) => {
+    const id = idFromNodeIri(String(m.subject.value));
+    const idxMatches = store.match(nodeIri(id), SIBLING_INDEX_PRED, null, null);
+    const idx = idxMatches.length > 0 && isLiteralTerm(idxMatches[0].object) ? Number(idxMatches[0].object.value) : 0;
+    return { id, idx };
+  });
+  withIndex.sort((a, b) => a.idx - b.idx);
+  const currentIds = withIndex.map(({ id }) => id).filter((id) => id !== childId);
+
+  const anchorPos = currentIds.indexOf(anchorId);
+  if (anchorPos === -1) {
+    throw new Error(`insertOrderedChild: anchor '${anchorId}' is not a child of '${parentId}'.`);
+  }
+  const finalIds = [...currentIds];
+  finalIds.splice(side === 'before' ? anchorPos : anchorPos + 1, 0, childId);
+
+  for (const m of store.match(nodeIri(childId), PARENT_PRED, null, null)) store.delete(m);
+  for (const m of store.match(nodeIri(childId), SIBLING_INDEX_PRED, null, null)) store.delete(m);
+  for (const id of currentIds) {
+    for (const m of store.match(nodeIri(id), PARENT_PRED, null, null)) store.delete(m);
+    for (const m of store.match(nodeIri(id), SIBLING_INDEX_PRED, null, null)) store.delete(m);
+  }
+
+  finalIds.forEach((id, index) => {
+    store.add(quad(nodeIri(id), PARENT_PRED, nodeIri(parentId)));
+    store.add(quad(nodeIri(id), SIBLING_INDEX_PRED, encodeLiteral(index)));
+  });
 }
 
 function decodeTerm(store: Store, m: Quad): unknown {
@@ -385,6 +427,15 @@ export class TreeNode extends BaseNode {
     throw new Error(`ApeironNgn: '${this.constructor.name}' doesn't override appendChild.`);
   }
 
+  /** `kg:insert`'s primitive (Aperas-crud-design.md §7) — positions `childId` next to `anchorId`
+   *  among this node's children instead of always at the tail. Overridden by `BlockNode`/
+   *  `FolderNode` (both can parent positioned Block children — a Folder's README content is
+   *  ordered content same as any artifact's); `ArtifactNode` inherits `BlockNode`'s. Not overridden
+   *  by anything else, since only those three kinds have `children` at all. */
+  insertChild(_childId: string, _anchorId: string, _side: 'before' | 'after'): void {
+    throw new Error(`ApeironNgn: '${this.constructor.name}' doesn't override insertChild.`);
+  }
+
   /** `tree.ts`'s old `renderTree`, folded — kind-generic via `treeChildren` instead of
    *  `childIds(node, kind)`'s manual branch. `opts.view` (Aperas-treeview-design.md §5) switches to
    *  the view-based renderer; omitted, this keeps the plain title-only/always-recurse default. */
@@ -466,6 +517,15 @@ export class BlockNode extends TreeNode {
     appendOrderedChild(this.store, this.id, childId);
   }
 
+  /** `kg:insert`'s own primitive (Aperas-crud-design.md §7) — positions `childId` next to
+   *  `anchorId` among `this`'s children, and unconditionally clears `childId`'s own `.holder`:
+   *  asserting a position is itself sufficient promotion signal (§4.2 (p)), independent of whether
+   *  `childId` was ever a placeholder — a no-op clear for an already-real node being plainly moved. */
+  insertChild(childId: string, anchorId: string, side: 'before' | 'after'): void {
+    insertOrderedChild(this.store, this.id, childId, anchorId, side);
+    (wrap(this.store, childId) as unknown as BaseNode).holder = undefined;
+  }
+
   /** `project.ts`'s old block-rendering half of `projectArtifactToMarkdown`, folded — a real
    *  instance's property reads are indistinguishable from a plain object's to `serializeBlock`,
    *  so nothing there needed changing. Return type is `string | null` only so `ArtifactNode`'s
@@ -492,6 +552,7 @@ export class BlockNode extends TreeNode {
       type: this.type,
       title: this.title,
       ...(this.text !== undefined ? { text: this.text } : {}),
+      ...(this.holder ? { holder: true } : {}),
       ...(links.length ? { links } : {}),
       ...(props?.length ? { props } : {}),
       children: (this.children ?? []).map((c) => (c as unknown as BlockNode).toReconcileShape()),
@@ -520,7 +581,16 @@ export class BlockNode extends TreeNode {
    *  side effect of the containment write, using final (already-reconciled) ids — the separate
    *  early stamp this used to need, and the "must re-run after reconciliation reassigns ids" bug
    *  class it was prone to (`astParser.ts`'s old `stampParents`), doesn't exist any more; there's no
-   *  earlier stamp to go stale. */
+   *  earlier stamp to go stale.
+   *
+   *  Always clears `this`'s own `.holder` (Aperas-crud-design.md §6) — `this` reaching this method
+   *  at all means real content is being written to it right now, whether for the first time or as a
+   *  Stage-A-matched placeholder finally being promoted (channel (i)): `carryForwardFields`
+   *  (reconcile.ts) never copies `.holder` onto the reconciled plain-object tree this method reads
+   *  from, but that alone never touched the real stored quad — this write is what actually does.
+   *  Safe unconditionally *only* because of the per-child skip just below — a still-unmatched
+   *  holder child (spliced back in place by `reconcile.ts`'s own fix, §5, rather than promoted)
+   *  never reaches its own `hydrateFromParsed` call at all, so it never hits this line either. */
   hydrateFromParsed(parsed: ParsedBlockNode): void {
     this.type = parsed.type;
     this.title = parsed.title;
@@ -528,7 +598,14 @@ export class BlockNode extends TreeNode {
     this.props = parsed.props?.length ? (parsed.props as unknown as ApeironNode[]) : undefined;
     const carriedLinkIds = ((parsed as any).links as string[] | undefined) ?? [];
     this.links = carriedLinkIds.length ? (carriedLinkIds as unknown as ApeironNode[]) : undefined;
+    this.holder = undefined;
     for (const child of parsed.children ?? []) {
+      // A holder-flagged entry here is one §5's reconciliation splice preserved in place, still
+      // unmatched — the exact same store node it always was, just repositioned. Never re-hydrate
+      // it: that would wrongly clear its own `.holder` above, "promoting" it despite no real
+      // content having actually arrived. Its id still gets wired into `this.children` below, same
+      // as any other child.
+      if ((child as any).holder) continue;
       (wrap(this.store, `BlockNode:${child.blockId}`) as unknown as BlockNode).hydrateFromParsed(child);
     }
     this.children = (parsed.children ?? []).map((c) => `BlockNode:${c.blockId}` as unknown as TreeNode);
@@ -549,6 +626,12 @@ export class ArtifactNode extends BlockNode {
   declare lastTrackedAt?: string;
   declare ingestedHash?: string;
   declare lastIngestedAt?: string;
+  /** Hash of the markdown `kg:project` actually wrote to disk, last time it wrote anything
+   *  (Aperas-crud-design.md §15) — distinct from `ingestedHash`, which tracks the opposite
+   *  direction's own baseline (last content reconciled *from* disk, or refreshed by `kg:update` to
+   *  mean "graph is ahead of disk"). Sole purpose: `kg:track --reverse` compares this against a
+   *  fresh `toMarkdown()` hash to detect drift, without ever writing to disk itself. */
+  declare projectedHash?: string;
 
   /** `artifacts.ts`'s old `trackArtifact`'s per-node half, folded — registers or refreshes this
    *  lightweight ArtifactNode against `artifactPath`'s current file content, skipping when the
@@ -565,21 +648,28 @@ export class ArtifactNode extends BlockNode {
     this.title = basename(artifactPath);
     this.fileHash = fileHash;
     this.lastTrackedAt = new Date().toISOString();
+    // Aperas-crud-design.md §6: a path match here is channel (i)'s whole promotion story for
+    // Folder/Artifact — unconditional, same reasoning as BlockNode.hydrateFromParsed's own clear.
+    this.holder = undefined;
     console.log(`[ApeironNgn Artifacts] Tracking '${artifactPath}' (hash: ${fileHash.slice(0, 12)}...)`);
     return { tracked: true };
   }
 
   /** `project.ts`'s old `projectArtifactToMarkdown`'s render half, folded. `null` when this
-   *  artifact has no content yet (nothing ingested). `super.toMarkdown()` is `BlockNode`'s own
-   *  (`serializeBlock(this)`) — dispatching on `this.type` (still `'root'`, unchanged from the old
-   *  synthetic wrapper's own type) hits `serializeBlock`'s container-fallback case, rendering
-   *  `children` with nothing of `this`'s own emitted first, exactly as it did through the old
-   *  `this.root.toMarkdown()` indirection. */
+   *  artifact has no content yet. `super.toMarkdown()` is `BlockNode`'s own (`serializeBlock(this)`)
+   *  — dispatching on `this.type` (still `'root'`, unchanged from the old synthetic wrapper's own
+   *  type) hits `serializeBlock`'s container-fallback case, rendering `children` with nothing of
+   *  `this`'s own emitted first, exactly as it did through the old `this.root.toMarkdown()`
+   *  indirection.
+   *
+   *  Checks `children.length`, not `ingestedHash` (an earlier version of this guard did, back when
+   *  a real disk-based ingest was the only way content ever arrived) — `kg:insert` (Aperas-crud-
+   *  design.md §7) can now populate a holder `ArtifactNode`'s children directly, with `ingestedHash`
+   *  staying `undefined` forever since `ingestFromDisk` never runs on it. `children` itself is
+   *  never `undefined` for `orderedContainment` (always a real, possibly-empty array by
+   *  construction), so an empty one is the actually-correct "nothing to render yet" signal. */
   toMarkdown(): string | null {
-    if (this.ingestedHash === undefined) return null;
-    // Non-null: `ingestedHash` set means real content was hydrated, so `super.toMarkdown()`'s own
-    // `string | null` (widened only for override-compatibility, see `BlockNode.toMarkdown`'s own
-    // doc comment) is never actually `null` here.
+    if ((this.children ?? []).length === 0) return null;
     return withFrontmatter(super.toMarkdown()!, this);
   }
 
@@ -597,11 +687,21 @@ export class ArtifactNode extends BlockNode {
    *  method returns, so no block's *new* links exist yet at this point, matched or not. Same
    *  reasoning for `oldWikilinksByBlock` (id/target/positions, not just target ids) — the only
    *  chance to see a matched block's *existing* wikilink `Link`s before `hydrateFromParsed`'s own
-   *  carry-forward and `resolveBlockLinks`'s reuse-or-remint decision both run on them. */
-  ingestFromDisk(): (IngestResult & {
+   *  carry-forward and `resolveBlockLinks`'s reuse-or-remint decision both run on them.
+   *
+   *  `force` (Aperas-crud-design.md §14): reconciliation against real disk content can only ever
+   *  discover a removal the same way it always has — anything not in the fresh parse is gone. That
+   *  includes content that only ever existed in-graph (via `kg:insert`/`kg:update`) and was simply
+   *  never projected back to disk yet — reconciliation has no way to tell the two apart. Rather than
+   *  applying such a removal silently, a non-empty `tombstones` list is held back unapplied when
+   *  `force` is false: nothing is written (no `hydrateFromParsed`, no `applyTombstone`, hashes left
+   *  exactly as they were), and the tombstone previews are returned as `pendingConfirmation` instead
+   *  for the caller to surface and re-run with `force: true` once confirmed. */
+  ingestFromDisk(force: boolean = false): (IngestResult & {
     pendingLinks: PendingLinkCodes[];
     oldLinkTargets: Map<string, Set<string>>;
     oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>>;
+    pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }>;
   }) | null {
     if (this.ingestedHash === this.fileHash) {
       console.log(`[ApeironNgn Artifacts] '${this.path}' unchanged since last ingestion — skipping.`);
@@ -637,6 +737,17 @@ export class ArtifactNode extends BlockNode {
       const oldTree = this.toReconcileShape();
       console.log(`[ApeironNgn Artifacts] Reconciling '${artifactPath}' against its previously ingested tree...`);
       const { finalTree, tombstones, stats } = reconcileTree(oldTree, newRoot, now);
+      if (tombstones.length > 0 && !force) {
+        console.log(`[ApeironNgn Artifacts] '${artifactPath}' would remove ${tombstones.length} node(s) — held back pending confirmation (re-run with --force to apply).`);
+        return {
+          blockCount: 0,
+          reconciliation: stats,
+          pendingLinks: [],
+          oldLinkTargets,
+          oldWikilinksByBlock,
+          pendingConfirmation: tombstones.map((t) => ({ blockId: t.blockId, type: t.type, title: t.title })),
+        };
+      }
       finalRoot = finalTree;
       reconciliation = stats;
       for (const tombstone of tombstones) applyTombstone(this.store, tombstone);
@@ -683,7 +794,7 @@ export interface IngestResult {
  *  `Link`, or a prop than for its own children (Aperas-apeironngn-design.md §5's tombstone-
  *  consistency open question — `props` was the one field this left live, inconsistently with the
  *  stated rationale for the other two). */
-function applyTombstone(store: Store, tombstone: any): void {
+export function applyTombstone(store: Store, tombstone: any): void {
   const node = wrap(store, `BlockNode:${tombstone.blockId}`) as unknown as BlockNode;
   node.type = tombstone.type;
   node.title = tombstone.title;
@@ -711,6 +822,39 @@ export function tombstoneLiveSubtree(node: BlockNode, now: string): void {
   node.links = undefined;
   node.props = undefined;
   node.tombstonedAt = now;
+}
+
+/** Aperas-crud-design.md §6 — `kg:project`'s own purity gate for the **(o)** promotion channel:
+ *  nothing today stops projecting a subtree that still has holder descendants mid-tree, silently
+ *  baking placeholder content into a "real" file. Recurses through `treeChildren` regardless of
+ *  kind — a holder can be a `BlockNode` heading or a nested holder `FolderNode`/`ArtifactNode`
+ *  alike, all equally unwritable. */
+export function hasHolderDescendant(node: TreeNode): boolean {
+  for (const child of node.treeChildren) {
+    if ((child as unknown as BaseNode).holder) return true;
+    if (hasHolderDescendant(child)) return true;
+  }
+  return false;
+}
+
+/** Aperas-crud-design.md §6 — **(o)** projection's own equivalent of `astParser.ts`'s
+ *  `extractAbstract`, reading the live graph instead of a freshly parsed file: walks `treeChildren`
+ *  depth-first (`node` itself excluded, same as `extractAbstract`'s own `isRoot` skip), returning
+ *  the first non-empty `.text` found, truncated the same way. Needed when a holder Folder/Artifact
+ *  is promoted by projecting it to a real file for the first time — without this, a
+ *  projected-and-thus-real node would read `.text === undefined` forever, and would fail
+ *  rename-detection (`matchLeftoverByAbstract`) if it's ever later moved. */
+export function deriveAbstractFromLiveChildren(node: TreeNode): string {
+  function findFirst(n: TreeNode, isRoot: boolean): string | null {
+    if (!isRoot && n.text) return n.text as string;
+    for (const child of n.treeChildren) {
+      const found = findFirst(child, false);
+      if (found) return found;
+    }
+    return null;
+  }
+  const raw = findFirst(node, true) ?? '';
+  return raw ? truncateForPreview(raw) : raw;
 }
 
 /** Walks a real (already-persisted) `BlockNode` tree collecting each block's resolved link target
@@ -776,12 +920,21 @@ function collectOldWikilinksByBlock(
 export class FolderNode extends TreeNode {
   declare path?: string;
   declare children?: TreeNode[];
+  /** Same role as `ArtifactNode.projectedHash` (Aperas-crud-design.md §15) — hash of the README
+   *  markdown `kg:project` last actually wrote for this folder. */
+  declare projectedHash?: string;
 
   get treeChildren(): TreeNode[] {
     return this.children ?? [];
   }
   appendChild(childId: string): void {
     appendOrderedChild(this.store, this.id, childId);
+  }
+
+  /** Same as `BlockNode.insertChild` — a Folder's README content is ordered content too. */
+  insertChild(childId: string, anchorId: string, side: 'before' | 'after'): void {
+    insertOrderedChild(this.store, this.id, childId, anchorId, side);
+    (wrap(this.store, childId) as unknown as BaseNode).holder = undefined;
   }
 
   /** `project.ts`'s old `projectFolderToReadme`'s render half, folded. Nested `FolderNode`/
@@ -801,12 +954,22 @@ export class FolderNode extends TreeNode {
    *  children mix `BlockNode`/`FolderNode`/`ArtifactNode` 3-ways where a block's are homogeneous,
    *  and its own parameter shape (`ParsedFolderNode`) is genuinely different from a block's
    *  (`ParsedBlockNode`) regardless. `ArtifactNode` entries are bare reference ids already
-   *  (`folders.ts`'s own `buildFolderTree` never inlines them), nothing to write for those here. */
+   *  (`folders.ts`'s own `buildFolderTree` never inlines them), nothing to write for those here.
+   *
+   *  Always clears `this.holder` (Aperas-crud-design.md §6) — reaching this method at all means a
+   *  real directory was found on disk at `this`'s own path (`ingestFolderTree`/`buildFolderTree`
+   *  only ever call it for a folder the disk walk actually produced), so whatever `holder:true`
+   *  this `FolderNode` carried from being an imagined intermediate segment
+   *  (`resolveCreate.ts`'s scaffolding) is now stale — same reasoning and same fix as
+   *  `BlockNode.hydrateFromParsed`'s own clear. Unrelated to the *children*-preservation loop
+   *  below, which is about a still-unmatched holder *child* surviving this call, not about `this`
+   *  node's own flag. */
   hydrateFromParsed(parsed: ParsedFolderNode): void {
     this.title = parsed.title;
     this.path = parsed.path;
     this.text = parsed.text ?? undefined;
     this.props = parsed.props?.length ? (parsed.props as unknown as ApeironNode[]) : undefined;
+    this.holder = undefined;
 
     const ids: string[] = [];
     for (const child of parsed.children) {

@@ -1,17 +1,28 @@
 /**
- * `kg:update` — replaces an existing node's text/children from piped markdown (Aperas-crud-
- * design.md §9), via the shared ApeironNgn service. Generalizes `ArtifactNode.ingestFromDisk`'s own
- * mechanism (parse, then either fresh-hydrate or `reconcileTree`-reconcile) from "artifact root"
- * down to any existing `BlockNode`/`ArtifactNode`. Always requires stdin; `<path>` always names the
- * existing target — no dual-mode ambiguity the way there is for `kg:insert`.
+ * `kg:update` — replaces an existing node's text/children (and, for a heading target, its title
+ * too) from piped markdown (Aperas-crud-design.md §9), via the shared ApeironNgn service.
+ * Generalizes `ArtifactNode.ingestFromDisk`'s own mechanism (parse, then either fresh-hydrate or
+ * `reconcileTree`-reconcile) from "artifact root" down to any existing `BlockNode`/`ArtifactNode`.
+ * Always requires stdin; `<path>` always names the existing target — no dual-mode ambiguity the way
+ * there is for `kg:insert`.
  *
  * `parseMarkdownTree`'s own leading-paragraph "consuming" rule (`astParser.ts` §2) never applies at
  * its own root — only a real heading/listItem container gets it, and the piped markdown is parsed
  * as a standalone root. But `path` here plays exactly the role a heading would: the piped content
  * is the body that would sit directly beneath it. So this replicates that rule manually: if the
  * parsed root's first child is a `paragraph`, its text becomes `path.text` and it's dropped from
- * the child list; everything else is "overflow." `path`'s own `type`/`title` are never touched —
- * only `text`/`children`.
+ * the child list; everything else is "overflow."
+ *
+ * When `path` itself is a heading, the piped input's own first child may *also* be a heading —
+ * `groupByHeadings` (`astParser.ts`) already parses it into a fully-formed `title`/`text`/
+ * `children`/`props` node (anchor-stripped, tree-anchor stashed, same as any real document parse),
+ * so that whole node is used as `path`'s new state directly, `title` included — this is what
+ * replaces `kg:title` (removed; AperasKG/artifacts/issues/linking.md) for the one block type whose
+ * title is actually projected back to disk. The input heading's own `#` depth must match `path`'s
+ * current depth (checked below) — this command relabels a heading in place, it doesn't restructure
+ * the tree, so a depth change is refused rather than silently reinterpreted. Piping a plain
+ * paragraph instead (no leading heading line) still works exactly as before — the title is left
+ * untouched, only `text`/`children` update.
  *
  * - Default: overflow reconciles against `path`'s existing children via the full Gestalt-match
  *   machinery (`reconcile.ts`) — matched/moved/changed/removed/added, identical to a real re-ingest.
@@ -22,12 +33,14 @@
 import type { Store } from 'oxigraph';
 import { resolveDeepPath } from './apeironNgn/resolve';
 import { wrap, applyTombstone } from './apeironNgn/node';
-import type { BlockNode, TreeNode } from './apeironNgn/node';
+import type { BlockNode, TreeNode, ApeironNode } from './apeironNgn/node';
 import { nodeKindFromId } from './apeironNgn/vocab';
 import { parseMarkdownTree, type ParsedBlockNode } from './astParser';
 import { reconcileTree } from './reconcile';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
+
+const HEADING_DEPTH_RE = /^#+/;
 
 export interface UpdateReq {
   path: string;
@@ -63,16 +76,41 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
 
   const { root } = parseMarkdownTree(req.markdown);
   const parsedChildren = root.children ?? [];
+  const firstChild = parsedChildren[0];
 
   let text: string | undefined;
+  let title: string | undefined;
+  let props: ParsedBlockNode['props'];
   let overflow: ParsedBlockNode[];
-  if (parsedChildren[0]?.type === 'paragraph') {
-    text = parsedChildren[0].text;
+  if (target.type === 'heading' && firstChild?.type === 'heading') {
+    // The piped input's own leading heading is `target`'s new state in full, title included —
+    // already a fully-formed node (anchor-stripped, tree-anchor stashed) via the same
+    // `groupByHeadings`/`convertAstNode` machinery a real document parse uses.
+    const oldDepth = HEADING_DEPTH_RE.exec(target.title ?? '')?.[0].length ?? 0;
+    const newDepth = HEADING_DEPTH_RE.exec(firstChild.title)?.[0].length ?? 0;
+    if (oldDepth !== newDepth) {
+      throw new Error(
+        `'${req.path}' is a depth-${oldDepth} heading — the piped input's own heading is depth-${newDepth}. ` +
+        `kg:update relabels a heading in place, it doesn't change its depth/position; fix the input's '#' count.`
+      );
+    }
+    title = firstChild.title;
+    text = firstChild.text;
+    props = firstChild.props;
+    overflow = firstChild.children ?? [];
+  } else if (firstChild?.type === 'paragraph') {
+    text = firstChild.text;
     overflow = parsedChildren.slice(1);
   } else {
     text = undefined;
     overflow = parsedChildren;
   }
+
+  // `oldShape` is captured *before* any mutation below — it feeds `reconcileTree`'s prop-id-
+  // preservation (an unchanged prop value keeps its stored id), which only works by comparing
+  // against `target`'s real prior state; mutating `target.props` first would make `oldShape`
+  // already reflect the *new* props, quietly defeating that comparison on every heading edit.
+  const oldShape = target.toReconcileShape();
 
   target.text = text;
   // Real content just arrived at `target` regardless of which mode runs below — promoting a holder
@@ -82,6 +120,13 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   target.holder = undefined;
 
   if (req.textOnly) {
+    // Only touch `title`/`props` at all when the heading-replacement branch above actually ran —
+    // an ordinary text-only update (piped input starts with a plain paragraph, or nothing heading-
+    // shaped) must never wipe an existing tree-anchor prop it was never asked to change.
+    if (title !== undefined) {
+      target.title = title;
+      target.props = props?.length ? (props as unknown as ApeironNode[]) : undefined;
+    }
     const overflowIds = overflow.map((c) => {
       const id = `BlockNode:${c.blockId}`;
       (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(c);
@@ -92,8 +137,19 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     return { reconciled: false };
   }
 
-  const oldShape = target.toReconcileShape();
-  const newShape = { blockId: target.key, type: target.type, title: target.title, text, children: overflow };
+  // `props` defaults to `oldShape`'s own (preserving whatever `target` already had, e.g. a
+  // heading's tree-anchor) unless the heading-replacement branch above explicitly supplied a new
+  // value to replace it with — an ordinary text/children-only update was never asked to touch it,
+  // and `carryForwardFields`'s own prop-id-preservation only activates when both sides have props
+  // to compare in the first place (leaving it out here, as this used to, silently dropped it).
+  const newShape = {
+    blockId: target.key,
+    type: target.type,
+    title: title ?? target.title,
+    text,
+    children: overflow,
+    props: title !== undefined ? props : oldShape.props,
+  };
   const { finalTree, tombstones, stats } = reconcileTree(oldShape, newShape);
   for (const tombstone of tombstones) applyTombstone(store, tombstone);
   target.hydrateFromParsed(finalTree);
@@ -120,10 +176,10 @@ async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
-      description: "Replace an existing node's text/children from piped markdown.",
+      description: "Replace an existing node's text/children (and, for a heading target, its title) from piped markdown.",
       usage: 'cat content.md | kg:update -- [--base <path>] <path> [--text-only]',
       args: [
-        { name: '<path>', description: 'Existing Block/Artifact node to update.' },
+        { name: '<path>', description: "Existing Block/Artifact node to update. If it's a heading, piping a leading heading line (e.g. '## New Title') also renames it — '#' depth must match; a plain paragraph leaves the title untouched." },
       ],
       flags: [
         { name: '--base <path>', description: 'Base path deep-path resolution is relative to.' },

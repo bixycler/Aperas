@@ -104,15 +104,11 @@ function leafKey(node: any): string {
 
 /**
  * A matched pair (reconcileNode / detectCrossParentMoves) is content-equivalent by construction
- * — Stage A/B only match on exact key equality — so besides `blockId`, every operator/runtime-
- * set field on the old node (`title` set via `kg:title`, `links` via `kg:link`) should survive
- * onto its replacement rather than reset to the fresh parse's defaults
- * (Aperas-interactive-summarization-design.md §4/§7 — confirmed live as a real regression before
- * this fix: a matched block's title/links silently reverted on every re-ingest). `unfolded` no
- * longer exists as a per-node field to carry forward (Aperas-treeview-design.md — fold state moved
- * to `TreeView.unfolds`, per-view rather than per-node). Safe unconditionally: for a heading,
- * `oldNode.title` and the fresh parse's title are identical anyway since the heading text itself
- * is the match key; `links` here is `oldNode`'s already-resolved ref-id strings, carried forward
+ * — Stage A/B only match on exact key equality — so besides `blockId`, every operator/runtime-set
+ * field on the old node (`links` via `kg:link`) should survive onto its replacement rather than
+ * reset to the fresh parse's defaults. `unfolded` no longer exists as a per-node field to carry
+ * forward (Aperas-treeview-design.md — fold state moved to `TreeView.unfolds`, per-view rather
+ * than per-node). `links` here is `oldNode`'s already-resolved ref-id strings, carried forward
  * wholesale (this function has no `Store` to check — it's deliberately engine-agnostic, so it
  * can't tell a manual `kg:link` apart from a previously-resolved `[[wikilink]]` by id alone).
  * `node.ts`'s `BlockNode.hydrateFromParsed`, which *does* have a `Store`, is where that split
@@ -123,6 +119,15 @@ function leafKey(node: any): string {
  * leaves here — it never actually did (plain `BaseNode.addLink` append, no dedup), so every
  * re-ingestion of a block with an unchanged `[[wikilink]]` added one more duplicate `Link`
  * forever; fixed by the drop in `hydrateFromParsed` instead of a merge here.
+ *
+ * `title` is deliberately *not* carried forward any more — `kg:title` (an out-of-band, graph-only
+ * override decoupled from the text) was removed in favor of the explicit lead-in term
+ * (`astParser.ts`'s `extractLeadInTitle`/heading `title = rawText`): a title is now always a pure,
+ * deterministic function of a block's own current text, recomputed fresh on every parse, the same
+ * way `props` already worked below. A matched pair's key is (for non-heading leaves) that very
+ * text, so a matched block's freshly-computed title is already identical to what carrying the old
+ * one forward would have produced — nothing is lost by not doing it, and there's no more silent,
+ * text-independent override to accidentally clobber or accidentally preserve.
  *
  * `props` is different from `links`: it's *rebuilt from the fresh parse every time* (list
  * numbering, checkbox state — genuinely re-derived from the current document, not a separately
@@ -136,7 +141,6 @@ function leafKey(node: any): string {
  */
 function carryForwardFields(oldNode: any, newNode: any): void {
   newNode.blockId = oldNode.blockId;
-  newNode.title = oldNode.title;
   if (oldNode.links) {
     newNode.links = oldNode.links;
   }

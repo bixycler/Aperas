@@ -17,6 +17,39 @@
  */
 
 import { getProp } from './props';
+import { HEADING_TREE_ANCHOR_PROP, findLeadInSpliceOffset, type DocLang } from './astParser';
+
+/** `<a name='id/<ID>' class='aperas-anchor aperas-id'></a>` for `id` — the permanent anchor
+ *  projection adds alongside a block's existing tree-anchor(s) (AperasKG/artifacts/design/
+ *  linking.md's Anchors section), never replacing them. */
+function idAnchorMarkup(id: string): string {
+  return `<a name='id/${id}' class='aperas-anchor aperas-id'></a>`;
+}
+
+/** Whether `text` already carries its own `id/<idValue>` anchor — the idempotency check both the
+ *  heading and list-item/paragraph cases need before adding a fresh one, so re-projecting an
+ *  already-anchored block never duplicates it. `idValue` is `id` with its `Kind:` prefix included,
+ *  matching exactly what `idAnchorMarkup` embeds. */
+function hasIdAnchor(text: string, id: string): boolean {
+  return text.includes(`name='id/${id}'`);
+}
+
+/** Splices a fresh id-anchor into `text` right after its own lead-in colon (AperasKG/artifacts/
+ *  design/linking.md's Anchors section), if it has one and doesn't already carry this exact anchor —
+ *  a list item/paragraph gets no title-side change (Task 3), so the anchor lives in `text` itself,
+ *  as literal content, at the same colon `astParser.ts`'s `extractLeadInTitle` took the title from.
+ *  A block with no lead-in colon at all is left untouched: it's still addressable via a direct
+ *  `aperas://id/<ID>` graph lookup (no text-scanning involved), so no inline anchor is needed.
+ *  `id` is `undefined` for a bare, not-yet-ingested `ParsedBlockNode` (which only ever carries its
+ *  own scratch `blockId`, not a final graph `id` — reconciliation may still reuse an older id for
+ *  it) — nothing to anchor yet in that case, left as a no-op rather than embedding a bogus value. */
+function spliceIdAnchor(text: string, id: string | undefined, lang: DocLang): string {
+  if (!text || typeof id !== 'string' || hasIdAnchor(text, id)) return text;
+  const colonOffset = findLeadInSpliceOffset(text, lang);
+  if (colonOffset === null) return text;
+  const insertAt = colonOffset + 1;
+  return `${text.slice(0, insertAt)} ${idAnchorMarkup(id)}${text.slice(insertAt)}`;
+}
 
 /** Prepends a re-emitted `---\n...\n---` frontmatter block, if this node's `props` (§5) carries
  *  one, ahead of its otherwise-serialized body. Applies uniformly to ArtifactNode and
@@ -82,7 +115,7 @@ function indentContinuationLines(text: string, prefixWidth: number): string {
  * (Aperas-crud-design.md §6) so GC/referrer-tracking can still see it, so every renderer — this one
  * included — must skip it explicitly rather than relying on it being absent.
  */
-export function renderChildren(node: any): string {
+export function renderChildren(node: any, lang: DocLang = 'en'): string {
   const children = (node.children ?? []).filter((c: any) => !c.tombstonedAt);
   const parts: string[] = [];
   let i = 0;
@@ -93,10 +126,14 @@ export function renderChildren(node: any): string {
       const orderedList = getProp(node, 'orderedList') === 'true';
       const startIndex = Number(getProp(node, 'startIndex') ?? '1');
       const run = children.slice(i, j);
-      parts.push(run.map((item: any, k: number) => serializeListItem(item, orderedList, startIndex + k)).join('\n\n'));
+      // Dense/tight list — items joined by a single newline, not a blank line, regardless of the
+      // source's own original tight/loose style (canonical regeneration, per this module's own
+      // doc comment). A loose list wraps each item's content in its own `<p>` on render; nothing
+      // here needs that, and the corpus's own convention is tight.
+      parts.push(run.map((item: any, k: number) => serializeListItem(item, orderedList, startIndex + k, lang)).join('\n'));
       i = j;
     } else {
-      parts.push(serializeBlock(children[i]));
+      parts.push(serializeBlock(children[i], lang));
       i++;
     }
   }
@@ -108,23 +145,45 @@ export function renderChildren(node: any): string {
  * node's `type`. `list` has no case of its own — an orphaned list block's entire `children` is
  * one contiguous `listItem` run, already handled generically by `renderChildren`'s default case.
  */
-export function serializeBlock(node: any): string {
+export function serializeBlock(node: any, lang: DocLang = 'en'): string {
   switch (node.type) {
     case 'heading': {
-      const parts = [node.title];
+      const treeAnchor = getProp(node, HEADING_TREE_ANCHOR_PROP) ?? '';
+      // Unconditional whenever an id exists (Task 3, AperasKG/artifacts/planning/linking.md):
+      // `node.id` is always a real permanent id post-ingestion, and the same id every time, so
+      // appending it here can never duplicate — there's nothing left in `title` for it to already
+      // be present in, since parsing strips (and drops) any old id-anchor rather than keeping it
+      // (see `astParser.ts`'s `stripTrailingHeadingAnchors`). A bare, not-yet-ingested
+      // `ParsedBlockNode` has no `.id` at all (only its own scratch `blockId`) — nothing to anchor
+      // yet, so this is skipped rather than embedding a bogus value.
+      const idAnchor = typeof node.id === 'string' ? idAnchorMarkup(node.id) : '';
+      const anchors = `${treeAnchor}${idAnchor}`;
+      // Exactly one space before the first anchor (matching the established written convention,
+      // e.g. `## Heading <a name=...>`), never carried over from the source line's own original
+      // whitespace: `astParser.ts`'s `stripTrailingHeadingAnchors` trims that away when stripping,
+      // so it isn't there to preserve even if it wanted to be.
+      const titleLine = anchors ? `${node.title} ${anchors}` : node.title;
+      const parts = [titleLine];
       if (node.text) parts.push(node.text);
-      const body = renderChildren(node);
+      const body = renderChildren(node, lang);
       if (body) parts.push(body);
       return parts.join('\n\n');
     }
-    case 'paragraph':
+    case 'paragraph': {
+      // Opaque leaf whose own content is `text`, but may also host an adopted list (§8) as
+      // `children` — rendered after its own text, if present. Id-anchor splicing (Task 3) applies
+      // only here, not to the other opaque-leaf types below: `thematicBreak`/`html`/`table` don't
+      // carry lead-in-colon-titled prose, so there's nothing for `spliceIdAnchor` to attach to.
+      const own = dedent(spliceIdAnchor(node.text ?? '', node.id, lang), true);
+      const body = renderChildren(node, lang);
+      return body ? `${own}\n\n${body}` : own;
+    }
     case 'thematicBreak':
     case 'html':
     case 'table': {
-      // These are opaque leaves whose own content is `text`, but a paragraph specifically may
-      // also host an adopted list (§8) as `children` — rendered after its own text, if present.
+      // Opaque leaves whose own content is `text`.
       const own = dedent(node.text ?? '', true);
-      const body = renderChildren(node);
+      const body = renderChildren(node, lang);
       return body ? `${own}\n\n${body}` : own;
     }
     case 'code': {
@@ -150,18 +209,18 @@ export function serializeBlock(node: any): string {
     }
     default:
       // root, and any other container fallback: just join my children.
-      return renderChildren(node);
+      return renderChildren(node, lang);
   }
 }
 
-function serializeListItem(item: any, orderedList: boolean, ordinal: number): string {
+function serializeListItem(item: any, orderedList: boolean, ordinal: number, lang: DocLang): string {
   const marker = orderedList ? `${ordinal}. ` : '- ';
   const checkedProp = getProp(item, 'checked');
   const checkbox = checkedProp === 'true' ? '[x] ' : checkedProp === 'false' ? '[ ] ' : '';
   const prefix = marker + checkbox;
   const parts: string[] = [];
-  if (item.text) parts.push(item.text);
-  const body = renderChildren(item);
+  if (item.text) parts.push(spliceIdAnchor(item.text, item.id, lang));
+  const body = renderChildren(item, lang);
   if (body) parts.push(body);
   return prefix + indentContinuationLines(parts.join('\n\n'), prefix.length);
 }

@@ -48,11 +48,11 @@ import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIF
 import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
-import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, type ParsedBlockNode } from '../astParser';
+import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, extractLangFromFrontmatter, type ParsedBlockNode, type DocLang } from '../astParser';
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
-import { carryForwardProp, getProps, type PropEntry, type HasProps } from '../props';
+import { carryForwardProp, getProp, getProps, type PropEntry, type HasProps } from '../props';
 import type { ParsedFolderNode } from '../folders';
 
 export interface ApeironNode {
@@ -530,9 +530,13 @@ export class BlockNode extends TreeNode {
    *  instance's property reads are indistinguishable from a plain object's to `serializeBlock`,
    *  so nothing there needed changing. Return type is `string | null` only so `ArtifactNode`'s
    *  override (nullable — "nothing ingested yet") stays override-compatible; an ordinary
-   *  `BlockNode` always has a `type` and never actually returns `null` here. */
-  toMarkdown(): string | null {
-    return serializeBlock(this);
+   *  `BlockNode` always has a `type` and never actually returns `null` here. `lang` (linking.md's
+   *  Task 1 — lead-in-term extraction/id-anchor splicing need to know which script's length-cap
+   *  unit applies) defaults to `'en'` for a plain nested `BlockNode` called directly, which has no
+   *  frontmatter of its own to read one from; `ArtifactNode`'s own override below is what actually
+   *  computes it, from the owning document's frontmatter, and passes it down through this call. */
+  toMarkdown(lang: DocLang = 'en'): string | null {
+    return serializeBlock(this, lang);
   }
 
   /** `artifacts.ts`'s old `materializeBlockTree`, folded — the old (already-ingested) tree,
@@ -670,7 +674,8 @@ export class ArtifactNode extends BlockNode {
    *  construction), so an empty one is the actually-correct "nothing to render yet" signal. */
   toMarkdown(): string | null {
     if ((this.children ?? []).length === 0) return null;
-    return withFrontmatter(super.toMarkdown()!, this);
+    const lang = extractLangFromFrontmatter(getProp(this as unknown as HasProps, 'frontmatter'));
+    return withFrontmatter(super.toMarkdown(lang)!, this);
   }
 
   /** `artifacts.ts`'s old `ingestArtifact`'s per-node half, folded — AST-parses and commits this
@@ -696,14 +701,23 @@ export class ArtifactNode extends BlockNode {
    *  applying such a removal silently, a non-empty `tombstones` list is held back unapplied when
    *  `force` is false: nothing is written (no `hydrateFromParsed`, no `applyTombstone`, hashes left
    *  exactly as they were), and the tombstone previews are returned as `pendingConfirmation` instead
-   *  for the caller to surface and re-run with `force: true` once confirmed. */
-  ingestFromDisk(force: boolean = false): (IngestResult & {
+   *  for the caller to surface and re-run with `force: true` once confirmed.
+   *
+   *  `bypassUnchangedCheck` (AperasKG/artifacts/history/linking.md's Milestones — the cross-artifact
+   *  dangling-reference retry sweep, `artifacts.ts`'s `retryDanglingRefs`): this artifact's own text
+   *  genuinely hasn't changed, but something *it* links to just came into existence elsewhere, so its
+   *  link resolution needs a fresh pass regardless. Deliberately a separate parameter, not a matter
+   *  of just clearing `ingestedHash` externally first — `hadContent` below reads that same field to
+   *  mean "was this artifact ever ingested before" (reconcile vs. fresh-mint every block), and
+   *  clearing it to force past the skip would also make a real, previously-ingested artifact look
+   *  brand new, discarding every existing block's identity instead of reconciling against it. */
+  ingestFromDisk(force: boolean = false, bypassUnchangedCheck: boolean = false): (IngestResult & {
     pendingLinks: PendingLinkCodes[];
     oldLinkTargets: Map<string, Set<string>>;
     oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>>;
     pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }>;
   }) | null {
-    if (this.ingestedHash === this.fileHash) {
+    if (!bypassUnchangedCheck && this.ingestedHash === this.fileHash) {
       console.log(`[ApeironNgn Artifacts] '${this.path}' unchanged since last ingestion — skipping.`);
       return null;
     }
@@ -945,7 +959,8 @@ export class FolderNode extends TreeNode {
    *  it into the body too would print it twice. */
   toReadme(): string {
     const blockChildren = this.treeChildren.filter((c) => nodeKindFromId(c.id) === 'BlockNode');
-    const body = renderChildren({ children: blockChildren });
+    const lang = extractLangFromFrontmatter(getProp(this as unknown as HasProps, 'frontmatter'));
+    const body = renderChildren({ children: blockChildren }, lang);
     return withFrontmatter(body, this);
   }
 

@@ -16,7 +16,6 @@
     "kg:tree": "tsx src/lib/kgTree.ts",
     "kg:unfold": "tsx src/lib/kgUnfold.ts",
     "kg:fold": "tsx src/lib/kgFold.ts",
-    "kg:title": "tsx src/lib/kgTitle.ts",
     "kg:link": "tsx src/lib/kgLink.ts",
     "kg:unlink": "tsx src/lib/kgUnlink.ts",
     "kg:path": "tsx src/lib/kgPath.ts",

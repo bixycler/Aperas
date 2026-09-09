@@ -11,14 +11,145 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
 import { wrap, tombstoneLiveSubtree } from './node';
-import type { ArtifactNode, BlockNode, Link, ApeironNode, IngestResult } from './node';
+import type { ArtifactNode, BlockNode, TreeNode, Link, ApeironNode, IngestResult } from './node';
 import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId } from './vocab';
 import { allIdsOfKind } from './dehydrate';
 import { resolveDeepPathDetail } from './resolveCreate';
 import { generateNodeId } from '../snowflake';
 import { listArtifactFiles, getArtifactsDir, expandArtifactPaths, type PendingLinkCodes } from '../artifacts';
-import { parseMarkdownTree, extractAbstract, WIKILINK_PREDICATE } from '../astParser';
+import { parseMarkdownTree, extractAbstract, WIKILINK_PREDICATE, HEADING_TREE_ANCHOR_PROP } from '../astParser';
+import { getProp, getProps, type PropEntry } from '../props';
 import { matchLeftoverByAbstract } from '../reconcile';
+import { relativeToCanonicalArtifactPath } from '../leadingPart';
+
+const APERAS_TREE_PREFIX = 'aperas://tree/';
+const APERAS_ID_PREFIX = 'aperas://id/';
+
+/** Prop key an artifact's own currently-unresolved link codes are stashed under, one entry per
+ *  distinct code (`getProps`'s plural form) — `retryDanglingRefs` below is the sole reader, retrying
+ *  each on a later ingestion elsewhere in the corpus in case a matching target has since appeared.
+ *  Rewritten wholesale by `resolveBlockLinks` on every ingestion (the complete current dangling set,
+ *  same "rebuilt from the fresh parse every time" spirit `reconcile.ts` already applies to props),
+ *  never appended to — an old entry disappears the moment its code either resolves or is edited out
+ *  of the text entirely. */
+const DANGLING_REF_PROP = 'danglingRef';
+
+/** Whether `code` is a `requiresAnchorMatch`-style bare `#fragment`/`path#fragment` reference,
+ *  re-derived from the code string alone — the same classification `astParser.ts`'s
+ *  `collectLinkCodes` used when it first flagged the occurrence, needed again here because
+ *  `retryDanglingRefs` only has the bare code string to go on (a `LinkOccurrence`'s own
+ *  `requiresAnchorMatch` flag isn't persisted, just the code). */
+function isFragmentForm(code: string): boolean {
+  return !code.startsWith(APERAS_TREE_PREFIX) && !code.startsWith(APERAS_ID_PREFIX) && code.includes('#');
+}
+
+/** The per-code resolution dispatch shared by `resolveBlockLinks`'s own pass and
+ *  `retryDanglingRefs`'s later retry of a stashed dangling code — same two branches either way:
+ *  a fragment-form code goes through the anchor-matching gate (`resolveFragmentCode`), anything
+ *  else through the ordinary deep-path grammar. `basePath`/`artifactPath` are usually the same
+ *  value at a retry site (only the referring *artifact's* own path is kept, not which specific
+ *  block within it held the code) — sound for every code this corpus actually writes (always an
+ *  absolute `/`-rooted path, or `aperas://`, neither of which ever consults `base` at all) and for
+ *  every fragment-form code (which only ever needs the artifact's own path); a hand-authored
+ *  *relative*, non-absolute `[[code]]`/`aperas://tree/` form relying on one specific block's own
+ *  nested position as its base is the one shape this doesn't reproduce exactly on retry — not used
+ *  anywhere in the corpus today. */
+function resolveOneCode(store: Store, code: string, basePath: string | null, artifactPath: string | null): string | null {
+  if (isFragmentForm(code)) return resolveFragmentCode(store, code, artifactPath);
+  return resolveDeepPathDetail(store, code, {
+    base: basePath ?? undefined,
+    createHolder: true,
+    titles: titlesFromCode(code),
+  })?.id ?? null;
+}
+
+/** `resolveBlockLinks`'s `titles` computation (below) is a separate, non-resolution pass over
+ *  `code` for `--create-holder`'s placeholder-naming — it isn't scheme-aware the way
+ *  `resolveDeepPathDetail` itself is, so an `aperas://tree/`/`aperas://id/` prefix has to be
+ *  stripped (or, for an id code, skipped entirely — it has zero name-tokens) before splitting, or
+ *  the scheme markers themselves get counted as bogus extra segments (AperasKG/artifacts/planning/
+ *  linking.md's "Required companion fix"). */
+function titlesFromCode(code: string): string[] {
+  if (code.startsWith(APERAS_ID_PREFIX)) return [];
+  const stripped = code.startsWith(APERAS_TREE_PREFIX) ? code.slice(APERAS_TREE_PREFIX.length) : code;
+  return stripped.split('/').filter((s) => s.length > 0 && s !== '.' && s !== '..');
+}
+
+/** Walks `.parent` up from `block` to its owning `ArtifactNode`/`FolderNode`, returning that node's
+ *  own `path` — deliberately *not* `block.toPath()`, which appends every intervening heading's own
+ *  slug segment too (needed for slug-path addressing, wrong here): resolving a compatible-context
+ *  fragment link's relative file-path part (`leadingPart.ts`) is anchored to the *artifact's* own
+ *  location on disk, regardless of which heading within it the link happens to sit in. */
+function artifactPathOfBlock(block: BlockNode): string | null {
+  let current: TreeNode = block;
+  for (;;) {
+    const kind = nodeKindFromId(current.id);
+    if (kind === 'ArtifactNode' || kind === 'FolderNode') return (current as unknown as { path?: string }).path ?? null;
+    if (kind !== 'BlockNode') return null;
+    const parent = (current as unknown as BlockNode).parent;
+    if (!parent) return null;
+    current = parent;
+  }
+}
+
+/** The Anchor-Matching Requirement (AperasKG/artifacts/design/linking.md's Topology section):
+ *  `candidateId` was found by the ordinary name-token tree-walk (matching `fragment` against
+ *  *current* titles, live), which only makes it a *candidate* — accepted only if it also carries a
+ *  literal, matching `class="aperas-anchor"` tag, distinguishing a deliberate internal reference
+ *  from an ordinary, unrelated same-page anchor link that happens to share the same fragment shape.
+ *  A heading's tree-anchor(s) are stashed in a prop at parse time (`astParser.ts`'s
+ *  `stripTrailingHeadingAnchors`); a list item/paragraph has no such prop, so its own `text` is
+ *  scanned literally instead — either way, only a *tree*-anchor counts here (an `id/...` fragment
+ *  never reaches this check at all — see `resolveFragmentCode` below). */
+function candidateCarriesAnchor(store: Store, candidateId: string, fragment: string): boolean {
+  if (nodeKindFromId(candidateId) !== 'BlockNode') return false;
+  const node = wrap(store, candidateId) as unknown as BlockNode;
+  const marker = `name='${fragment}' class='aperas-anchor`;
+  if (node.type === 'heading') {
+    // `getProp` (props.ts) is typed against the pure-parser's plain `PropEntry[]` shape; a live,
+    // store-backed node's own `.props` getter returns the same shape at runtime (`project.ts`'s
+    // `withFrontmatter` already relies on this for `ArtifactNode`) but under a looser declared
+    // type — same `as any` project.ts itself uses (its own `getProp` callers are typed `node: any`).
+    return (getProp(node as any, HEADING_TREE_ANCHOR_PROP) ?? '').includes(marker);
+  }
+  return (node.text ?? '').includes(marker);
+}
+
+/**
+ * Resolves a `requiresAnchorMatch` code (`astParser.ts`'s `LinkOccurrence`) — a bare `#fragment` or
+ * `path#fragment` link, syntactically identical to an ordinary anchor link until proven otherwise.
+ * An `id/<ID>` fragment reroutes straight to the direct-id tier, ignoring the file-path part
+ * entirely (unambiguous by construction, so no anchor-matching gate applies). Any other fragment:
+ * the leading file-path part (empty for a same-document link) is resolved to a concrete artifact
+ * path via `leadingPart.ts`'s relative→canonical direction — ordinary OS-relative arithmetic, not
+ * `resolveCreate.ts`'s own uniform per-segment `..` (a different counting rule; see `leadingPart.ts`'s
+ * own doc comment) — then the fragment's own slug segments are walked from there with
+ * `createHolder: false` (a coincidental, non-internal anchor-link match must never mint placeholder
+ * structure), and the result must pass `candidateCarriesAnchor` to be accepted at all.
+ */
+function resolveFragmentCode(store: Store, code: string, currentArtifactPath: string | null): string | null {
+  const hashIndex = code.indexOf('#');
+  const filePath = code.slice(0, hashIndex);
+  const fragment = code.slice(hashIndex + 1);
+
+  if (fragment.startsWith('id/')) {
+    return resolveDeepPathDetail(store, `${APERAS_ID_PREFIX}${fragment.slice(3)}`)?.id ?? null;
+  }
+
+  if (currentArtifactPath === null) return null;
+  const baseArtifactPath = relativeToCanonicalArtifactPath(currentArtifactPath, filePath);
+  if (baseArtifactPath === null || fragment === '') return null;
+
+  let candidateId: string | null;
+  try {
+    candidateId = resolveDeepPathDetail(store, fragment, { base: baseArtifactPath, createHolder: false })?.id ?? null;
+  } catch {
+    // `findChild`'s own ambiguity throw — an unrelated, coincidental multi-match is just "no
+    // confident candidate" for a link that was never confirmed to be an internal reference at all.
+    return null;
+  }
+  return candidateId && candidateCarriesAnchor(store, candidateId, fragment) ? candidateId : null;
+}
 
 /** A live (non-tombstoned) node of `kind` at `path` — `path` is unique per kind by construction
  *  (a filesystem path is either a file or a directory, never both), but a tombstoned entry keeps
@@ -192,11 +323,13 @@ export function resolveBlockLinks(
   store: Store,
   pending: PendingLinkCodes[],
   oldLinkTargets: Map<string, Set<string>> = new Map(),
-  oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map()
+  oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map(),
+  artifactId?: string
 ): LinkResolutionStats {
   let resolved = 0;
   let dangling = 0;
   let changed = 0;
+  const danglingCodes = new Set<string>();
   const codesByBlock = new Map(pending.map((p) => [p.blockId, p.codes]));
   const blockIds = new Set([...codesByBlock.keys(), ...oldWikilinksByBlock.keys()]);
   for (const blockId of blockIds) {
@@ -204,23 +337,13 @@ export function resolveBlockLinks(
     const fullId = `BlockNode:${blockId}`;
     const block = wrap(store, fullId) as unknown as BlockNode;
     const basePath = block.toPath();
+    const artifactPath = artifactPathOfBlock(block);
     const newTargets = new Set<string>();
     const positionsByTarget = new Map<string, number[]>();
-    for (const { code, position } of codes) {
+    for (const { code, position, requiresAnchorMatch } of codes) {
       let target: string | null = null;
       try {
-        const detail = resolveDeepPathDetail(store, code, {
-          base: basePath ?? undefined,
-          createHolder: true,
-          // `.filter(s => s.length > 0 ...)` matches `tokenize()`'s own segment filtering
-          // (`nodeRef.ts`) — without it, a leading `/` (an absolute code, `aperas://tree/`'s
-          // shorthand) produces a stray leading "" entry here that `tokenize()` itself would
-          // never produce, inflating this array past `descend`'s own name-token count and
-          // throwing "too many titles" for every absolute-form code, regardless of whether a
-          // holder was ever actually needed.
-          titles: code.split('/').filter((s) => s.length > 0 && s !== '.' && s !== '..'),
-        });
-        target = detail?.id ?? null;
+        target = resolveOneCode(store, code, basePath, artifactPath);
       } catch (err: any) {
         console.warn(`[ApeironNgn Artifacts] Link target '[[${code}]]' in block ${blockId} failed to resolve: ${err.message || err}`);
       }
@@ -231,8 +354,17 @@ export function resolveBlockLinks(
         if (positions) positions.push(position);
         else positionsByTarget.set(target, [position]);
       } else {
-        console.warn(`[ApeironNgn Artifacts] Link target '[[${code}]]' in block ${blockId} didn't resolve to any live node — skipping.`);
-        dangling++;
+        // Stashed for `retryDanglingRefs` either way — a matching target minted elsewhere later
+        // should get picked back up regardless of which form the code takes. Only a non-fragment
+        // code (an explicit `[[code]]`/`aperas://` reference, always meant as internal) is actually
+        // *warned* about here, though: a `#fragment` that never resolves is routine, not dangling —
+        // most such links are ordinary anchors, never meant as an internal reference at all (see
+        // `LinkOccurrence.requiresAnchorMatch`'s own doc comment) — so it stays silent.
+        danglingCodes.add(code);
+        if (!requiresAnchorMatch) {
+          console.warn(`[ApeironNgn Artifacts] Link target '[[${code}]]' in block ${blockId} didn't resolve to any live node — skipping.`);
+          dangling++;
+        }
       }
     }
 
@@ -263,7 +395,57 @@ export function resolveBlockLinks(
 
     if (!targetSetsEqual(oldLinkTargets.get(blockId) ?? new Set(), newTargets)) changed++;
   }
+
+  // Rewrite the artifact's own `danglingRef` props wholesale to exactly the current set — an old
+  // entry not reproduced here either resolved just now or its code was edited out of the text
+  // entirely, either way no longer worth retrying. `artifactId` is only absent for a caller with no
+  // real artifact context (none exist today; kept optional so this stays a pure addition).
+  if (artifactId) {
+    const artifact = wrap(store, artifactId) as unknown as { props?: ApeironNode[] };
+    const survivingProps = ((artifact.props as unknown as PropEntry[] | undefined) ?? []).filter((p) => p.key !== DANGLING_REF_PROP);
+    const freshDanglingProps = [...danglingCodes].map((code) => ({ '@type': 'StringProp' as const, key: DANGLING_REF_PROP, value: code }));
+    const merged = [...survivingProps, ...freshDanglingProps];
+    artifact.props = merged.length ? (merged as unknown as ApeironNode[]) : undefined;
+  }
+
   return { resolved, dangling, changed };
+}
+
+/**
+ * Retries every currently-stashed `danglingRef` across every live artifact, against the graph's
+ * *current* state — the fix for a real gap: an artifact's own text not changing means it never gets
+ * re-ingested, so a link it couldn't resolve when it was last ingested stays exactly that stale
+ * forever, even after whatever it was looking for genuinely comes into existence somewhere else in
+ * the corpus (a new anchor, a renamed heading, an artifact ingested for the first time). Called once
+ * per `kg:ingest` invocation (`kgIngest.ts`'s `runIngest`), after the explicitly-requested artifacts
+ * and the folder tree are both already settled, so retried resolutions see the fullest possible
+ * picture. An artifact with at least one now-resolvable code is force-reingested via
+ * `bypassUnchangedCheck` (`node.ts`'s `ingestFromDisk`) — its own text is unchanged, so this isn't a
+ * real re-parse, just a fresh run of link resolution against a tree that didn't need rebuilding;
+ * `resolveBlockLinks` running again is what actually mints the newly-resolvable `Link`s and clears
+ * the now-stale `danglingRef` entries. One pass, not a fixed-point loop to a cascade's own end — a
+ * chain of three or more artifacts each newly unblocking the next is vanishingly unlikely in
+ * practice, and not worth the added complexity to cover today.
+ */
+export function retryDanglingRefs(store: Store, force: boolean = false): string[] {
+  const reingested: string[] = [];
+  for (const id of allLiveIdsOfKind(store, 'ArtifactNode')) {
+    const artifact = wrap(store, id) as unknown as ArtifactNode;
+    const danglingCodes = getProps(artifact as unknown as any, DANGLING_REF_PROP);
+    if (danglingCodes.length === 0) continue;
+    const artifactPath = artifact.path as string;
+    const hasNewlyResolvable = danglingCodes.some((code) => {
+      try {
+        return resolveOneCode(store, code, artifactPath, artifactPath) !== null;
+      } catch {
+        return false;
+      }
+    });
+    if (!hasNewlyResolvable) continue;
+    const result = ingestArtifact(store, artifactPath, force, true);
+    if (result && !result.pendingConfirmation) reingested.push(artifactPath);
+  }
+  return reingested;
 }
 
 /** AST-parses and commits a tracked artifact into a fractal tree of BlockNodes, delegating the
@@ -272,20 +454,23 @@ export function resolveBlockLinks(
  *
  *  `force` (Aperas-crud-design.md §14): passed straight through to `ingestFromDisk`. When it comes
  *  back with `pendingConfirmation` set, nothing was actually committed — no wikilinks to resolve
- *  either, since `pendingLinks` is empty in that case by construction. */
-export function ingestArtifact(store: Store, artifactPath: string, force: boolean = false): (IngestResult & { linkResolution: LinkResolutionStats; pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }> }) | null {
+ *  either, since `pendingLinks` is empty in that case by construction.
+ *
+ *  `bypassUnchangedCheck`: passed straight through to `ingestFromDisk` — see its own doc comment
+ *  (`node.ts`); `retryDanglingRefs` below is the one caller that ever passes `true`. */
+export function ingestArtifact(store: Store, artifactPath: string, force: boolean = false, bypassUnchangedCheck: boolean = false): (IngestResult & { linkResolution: LinkResolutionStats; pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }> }) | null {
   const existingId = findLiveArtifactByPath(store, artifactPath);
   if (!existingId) {
     throw new Error(`Artifact '${artifactPath}' is not tracked yet — run track first.`);
   }
   const record = wrap(store, existingId) as unknown as ArtifactNode;
-  const result = record.ingestFromDisk(force);
+  const result = record.ingestFromDisk(force, bypassUnchangedCheck);
   if (!result) return null;
   if (result.pendingConfirmation) {
     return { ...result, linkResolution: { resolved: 0, dangling: 0, changed: 0 } };
   }
   const { pendingLinks, oldLinkTargets, oldWikilinksByBlock, ...rest } = result;
-  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock);
+  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, existingId);
   return { ...rest, linkResolution };
 }
 

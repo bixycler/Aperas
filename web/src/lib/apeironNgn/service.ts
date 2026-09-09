@@ -54,7 +54,6 @@ import { runResolve } from '../kgResolve';
 import { runInsert } from '../kgInsert';
 import { runUpdate } from '../kgUpdate';
 import { runRemove } from '../kgRemove';
-import { runTitleCandidates, runSetBlockTitle } from '../kgTitle';
 import { runLinkCandidates, runAddBlockLink, runRemoveBlockLink } from '../kgLink';
 import { runProject } from '../kgProject';
 import { runTree } from '../kgTree';
@@ -342,15 +341,6 @@ function main(): void {
         dirty = true;
         if (req.flush) flushIfDirty();
         return result;
-      }
-      case 'titleCandidates':
-        if (req.reload) reloadStore();
-        return runTitleCandidates(store, req.pathArg, req.recursive);
-      case 'setBlockTitle': {
-        runSetBlockTitle(store, req.blockId, req.title);
-        dirty = true;
-        if (req.flush) flushIfDirty();
-        return null;
       }
       case 'linkCandidates':
         if (req.reload) reloadStore();

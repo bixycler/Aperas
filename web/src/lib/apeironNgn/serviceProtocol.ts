@@ -51,9 +51,9 @@ export type ServiceRequest =
   // with a mutation in the same request (`reload` then the op then `flush`, all one round trip),
   // since `reloadStore()` itself flushes any dirty work first rather than discarding it. Offered on
   // every op that reads the store's current content, including a candidate-listing op
-  // (`titleCandidates`/`linkCandidates`) — just not on `setBlockTitle`/`addBlockLink`, each one
-  // sub-step of an already-in-progress interactive session where reloading mid-loop would
-  // invalidate the `blockId`s the candidate list already hands back.
+  // (`linkCandidates`) — just not on `addBlockLink`, a sub-step of an already-in-progress
+  // interactive session where reloading mid-loop would invalidate the `blockId`s the candidate
+  // list already hands back.
   | { op: 'track'; paths: string[]; flush: boolean; reload: boolean; force: boolean }
   // `kg:track --reverse` (Aperas-crud-design.md §15) — read-only drift report, no mutation at all:
   // never dirties the store, so no `flush` field (nothing for one to flush).
@@ -82,8 +82,6 @@ export type ServiceRequest =
   | { op: 'update'; path: string; base?: string; markdown: string; textOnly: boolean; flush: boolean; reload: boolean }
   // `kg:remove` (Aperas-crud-design.md §10) — recursive soft-tombstone, not a hard delete.
   | { op: 'remove'; path: string; base?: string; flush: boolean; reload: boolean }
-  | { op: 'titleCandidates'; pathArg: string; recursive: boolean; reload: boolean }
-  | { op: 'setBlockTitle'; blockId: string; title: string; flush: boolean }
   | { op: 'linkCandidates'; pathArg: string; recursive: boolean; all: boolean; reload: boolean }
   | { op: 'addBlockLink'; blockId: string; targetRef: string; flush: boolean }
   | { op: 'removeBlockLink'; blockId: string; targetRef: string; flush: boolean }
@@ -102,8 +100,8 @@ export type ServiceRequest =
   | { op: 'backlinks'; pathArg: string; includeText: boolean; reload: boolean }
   // `kg:profile` (Aperas-treeview-design.md §11) — addresses a `Profile` by its own `handle` field,
   // never a raw node id (`findProfileByHandle`, `node.ts`). Each is a standalone one-shot CLI call,
-  // not a multi-step interactive session the way `titleCandidates`/`linkCandidates` are, so unlike
-  // `setBlockTitle`/`addBlockLink` there's no reason to withhold `reload` here.
+  // not a multi-step interactive session the way `linkCandidates` is, so unlike `addBlockLink`
+  // there's no reason to withhold `reload` here.
   | { op: 'profileCreate'; handle: string; name?: string; kind?: string; flush: boolean; reload: boolean }
   | { op: 'profileList'; handle?: string; reload: boolean }
   | { op: 'profileRemove'; handle: string; flush: boolean; reload: boolean }

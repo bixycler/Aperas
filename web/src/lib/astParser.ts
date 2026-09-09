@@ -45,6 +45,13 @@ export interface ParsedBlockNode {
 export interface LinkOccurrence {
   code: string;
   position: number;
+  /** Set only for a bare `#fragment` link (no `[[...]]`/`aperas://` marker) — syntactically
+   *  identical to an ordinary, unrelated same-page anchor link, so `apeironNgn/artifacts.ts`'s
+   *  resolver must additionally verify the resolved candidate actually carries a matching
+   *  `class="aperas-anchor"` tag before accepting it (AperasKG/artifacts/design/linking.md's
+   *  Anchor-Matching Requirement), and a miss here is routine (not a dangling-link warning) —
+   *  most `#fragment` links in the corpus are ordinary anchors, not internal references at all. */
+  requiresAnchorMatch?: boolean;
 }
 
 // `list` is never converted as its own node except when orphaned (nothing precedes it to adopt
@@ -106,6 +113,177 @@ function relativeOffset(containerNode: any, descendantNode: any, markdown: strin
 
 const LINK_URL_RE = /^\[\[(.+)\]\]$/;
 
+/** See `apeironNgn/resolveCreate.ts`'s identical constants — duplicated here rather than imported
+ *  since this module is engine-agnostic (no `apeironNgn` dependency), and both files need the exact
+ *  same two literal prefixes to recognize the same syntax. */
+const APERAS_TREE_PREFIX = 'aperas://tree/';
+const APERAS_ID_PREFIX = 'aperas://id/';
+
+/** One trailing `<a name='...' class='aperas-anchor aperas-(tree|id)'></a>` on a heading's own raw
+ *  line (AperasKG/artifacts/design/linking.md's Anchors section) — single-quoted attribute values
+ *  only, matching every anchor this convention has ever written; not meant to accept arbitrary
+ *  hand-typed HTML. Matched and stripped one at a time, working backward from line end (see
+ *  `stripTrailingHeadingAnchors` below), since an already-projected heading carries *two*
+ *  concatenated anchors (its tree-anchor and its id-anchor), and the add-only anchor model
+ *  (AperasKG/artifacts/issues/linking.md's Open Issues — a renamed block's old anchor is never
+ *  removed) means more than one tree-anchor can legitimately accumulate over a block's history. */
+const TRAILING_HEADING_ANCHOR_RE = /<a name='([^']*)' class='aperas-anchor(?: aperas-(tree|id))?'><\/a>\s*$/;
+
+/** Prop key a heading's own tree-anchor(s) (if any) are stashed under (`setProp`) once stripped
+ *  from `title` — read back by `project.ts`'s heading case to re-emit them, unchanged, ahead of a
+ *  fresh `aperas-id` anchor computed from the block's own permanent id. Any *id*-anchor already on
+ *  the line is deliberately dropped here rather than kept, not stashed: it's always regenerated
+ *  fresh from `node.id` at projection time (same id, since ingestion never changes it), and keeping
+ *  the old text here too would duplicate it on every re-projection. Kept as raw `<a ...></a>`
+ *  markup (one or more, concatenated in original left-to-right order), not decomposed into
+ *  `name` values separately — nothing else needs those parsed. */
+export const HEADING_TREE_ANCHOR_PROP = 'treeAnchor';
+
+/** Strips every trailing anchor tag from a heading's raw line (working backward from the end, so
+ *  any number of concatenated anchors are all found, not just one), returning the clean `title` and
+ *  the concatenated markup of whichever were tagged `aperas-tree` — an `aperas-id` anchor (or a
+ *  bare `aperas-anchor` with no recognized subtype) is matched and discarded, not returned, per
+ *  `HEADING_TREE_ANCHOR_PROP`'s own doc comment. */
+function stripTrailingHeadingAnchors(rawLine: string): { title: string; treeAnchorMarkup?: string } {
+  let line = rawLine;
+  const treeAnchors: string[] = [];
+  for (;;) {
+    const match = TRAILING_HEADING_ANCHOR_RE.exec(line);
+    if (!match) break;
+    if (match[2] === 'tree') treeAnchors.unshift(`<a name='${match[1]}' class='aperas-anchor aperas-tree'></a>`);
+    line = line.slice(0, match.index).replace(/\s+$/, '');
+  }
+  return { title: line, treeAnchorMarkup: treeAnchors.length ? treeAnchors.join('') : undefined };
+}
+
+/** A document's own written language, read from its frontmatter (`extractLangFromFrontmatter`
+ *  below) — the first three supported are English, Japanese, and Vietnamese. Affects only
+ *  lead-in-term extraction so far (`findLeadInColonOffset`): which length unit its cap uses
+ *  (word count for a space-delimited script, character count for Japanese, which has none). */
+export type DocLang = 'en' | 'vi' | 'ja';
+const SUPPORTED_LANGS: readonly DocLang[] = ['en', 'vi', 'ja'];
+
+/**
+ * Reads a `lang:` line out of a document's own raw YAML frontmatter — never fully YAML-parsed
+ * (§5's own design keeps frontmatter opaque; this is a single deliberately-narrow regex read, not
+ * a general parse), defaulting to `'en'` when absent or unrecognized, since that's the language
+ * every existing doc in the corpus is actually written in. Called both at parse time
+ * (`parseMarkdownTree` below) and at projection time (`project.ts`, off the artifact's stored
+ * `frontmatter` prop) — the one shared reading of the same field, so both sides always agree.
+ */
+export function extractLangFromFrontmatter(frontmatter: string | undefined): DocLang {
+  if (!frontmatter) return 'en';
+  const match = /^lang:\s*['"]?(\w+)['"]?\s*$/m.exec(frontmatter);
+  const value = match?.[1]?.toLowerCase();
+  return (SUPPORTED_LANGS as readonly string[]).includes(value ?? '') ? (value as DocLang) : 'en';
+}
+
+const LEAD_IN_COLON_CHARS = new Set([':', '：']); // half-width, full-width (Japanese) forms
+/** A lead-in term is short, but longer real examples exist in the corpus (a `Resolved` bullet's
+ *  own lead-in can run to a full clause) — capped generously past that so a colon only reachable
+ *  after a long run of ordinary prose (a real English sentence's own internal colon, confirmed
+ *  live: neither this cap nor sentence-boundary detection alone discriminates that case, only
+ *  length does) is correctly never mistaken for one. Best-effort only, not exact: a wrongly-titled
+ *  block is corrected the same way any title is now — edit the lead-in term itself in the text
+ *  (there's no separate out-of-band override any more; `reconcile.ts`'s `carryForwardFields`
+ *  deliberately never carries a title forward, so it's always this deterministic re-extraction,
+ *  nothing else). */
+const MAX_LEAD_IN_WORDS = 10;
+/** Japanese has no spaces to count words by — a rough character-count equivalent instead. */
+const MAX_LEAD_IN_CHARS_JA = 20;
+
+/**
+ * Walks `node`'s own inline mdast children (not raw characters — the actual bug this replaced:
+ * hand-rolled `**`/backtick scanning wrongly matched a colon sitting inside inline code, splicing
+ * anchors into the middle of e.g. `` `Kind:snowflake` `` on projection) for the first lead-in colon
+ * candidate: a `:`/`：` in plain visible text, never inside `inlineCode` (opaque data, not
+ * punctuation — mirrors `collectLinkCodes`'s own inlineCode skip) and never inside a `strong`/
+ * `emphasis` span (design: "the colon, outside any bold, is the sole structural delimiter").
+ *
+ * For a space-delimited script (`lang !== 'ja'`), a candidate additionally has to be followed by
+ * whitespace — an ordinary lead-in always reads "Term: rest", space included, whereas a technical
+ * string that just never got wrapped in backticks (a bare `aperas://tree/...` URL, a `key:value`
+ * pair) almost never has a space right after its own colon. This catches most of what `inlineCode`
+ * exclusion above can't: a colon that's real *data*, just not properly fenced as such. Nothing
+ * following the colon at all (its own mdast text node ends right there — e.g. `- **Term**:` with
+ * only nested list items after it, no inline "rest" on the same line) counts as satisfying this
+ * too: there's no adjacent non-space character to be suspicious of, so it reads the same as a
+ * genuine lead-in whose "rest of text" simply lives in child blocks instead of inline. A rejected
+ * candidate doesn't end the search — scanning continues for a later, genuine one.
+ *
+ * Returns the accepted candidate's absolute offset, gated by `MAX_LEAD_IN_WORDS`/
+ * `MAX_LEAD_IN_CHARS_JA` on the *visible* (non-code) text preceding it — `null` if no candidate
+ * exists at all, or the one found fails the length cap.
+ */
+function findLeadInColonOffset(node: any, lang: DocLang): number | null {
+  let candidateOffset: number | null = null;
+  let precedingText = '';
+  const requireSpaceAfter = lang !== 'ja';
+
+  const walk = (n: any, insideStrong: boolean): boolean => {
+    if (n.type === 'inlineCode' || n.type === 'code') return false; // opaque — see doc comment
+    if (n.type === 'text') {
+      const raw: string = n.value ?? '';
+      const startOffset: number = n.position?.start?.offset ?? 0;
+      for (let i = 0; i < raw.length; i++) {
+        if (LEAD_IN_COLON_CHARS.has(raw[i]) && !insideStrong) {
+          const followedBySpace = i + 1 >= raw.length || /\s/.test(raw[i + 1]);
+          if (!requireSpaceAfter || followedBySpace) {
+            candidateOffset = startOffset + i;
+            return true;
+          }
+          // A real, non-space character follows — doesn't look like a genuine lead-in delimiter;
+          // fall through and keep scanning rather than giving up on the whole block.
+        }
+        precedingText += raw[i];
+      }
+      return false;
+    }
+    const isStrongNode = n.type === 'strong' || n.type === 'emphasis';
+    for (const child of n.children ?? []) {
+      if (walk(child, insideStrong || isStrongNode)) return true;
+    }
+    return false;
+  };
+  walk(node, false);
+
+  if (candidateOffset === null) return null;
+  const withinCap = lang === 'ja'
+    ? precedingText.length <= MAX_LEAD_IN_CHARS_JA
+    : precedingText.trim().split(/\s+/).filter(Boolean).length <= MAX_LEAD_IN_WORDS;
+  return withinCap ? candidateOffset : null;
+}
+
+/**
+ * Returns the raw text before `findLeadInColonOffset`'s colon, unmodified (bold markers included,
+ * mirroring how a heading's own `title = rawText` keeps its raw line as-is) — the "lead-in term" a
+ * list item or paragraph uses as its title. `null` when no qualifying colon exists (the caller keeps
+ * its existing `blockId` fallback) or the span before it is empty/whitespace once trimmed.
+ */
+function extractLeadInTitle(node: any, markdown: string, lang: DocLang): string | null {
+  const offset = findLeadInColonOffset(node, lang);
+  if (offset === null) return null;
+  const { trimmedStart } = sliceWithOffset(node, markdown);
+  const span = rawSlice(node, markdown).slice(0, offset - trimmedStart).trim();
+  return span.length > 0 ? span : null;
+}
+
+/**
+ * `project.ts`'s own splice point needs the identical colon `astParser.ts` extracted `title` from,
+ * but by projection time there's no original mdast node or file left — only the block's already-
+ * serialized `text`. Re-parsing `text` as its own tiny standalone document (it's already valid
+ * CommonMark, having itself come from `rawSlice` of a real `paragraph` node) reproduces an
+ * equivalent inline tree, offsets rebased to `text`'s own coordinate space — so the exact same
+ * `findLeadInColonOffset` runs unmodified, no separate splice-side heuristic to keep in sync.
+ */
+export function findLeadInSpliceOffset(text: string, lang: DocLang): number | null {
+  const processor = unified().use(remarkParse).use(remarkGfm);
+  const ast = processor.parse(text) as any;
+  const paragraphNode = ast.children?.[0];
+  if (!paragraphNode) return null;
+  return findLeadInColonOffset(paragraphNode, lang);
+}
+
 /**
  * Reserved `Link.predicate` for every `Link` auto-extracted from `[[wikilink]]` syntax
  * (Aperas-interactive-summarization-design.md §7) — distinguishes them from `kg:link`-authored
@@ -149,8 +327,22 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
   const walk = (mdastNode: any): void => {
     if (mdastNode.type === 'inlineCode' || mdastNode.type === 'code') return;
     if (mdastNode.type === 'link') {
-      const match = LINK_URL_RE.exec(mdastNode.url ?? '');
-      if (match) out.push({ code: match[1], position: relativeOffset(containerNode, mdastNode, markdown) });
+      const url: string = mdastNode.url ?? '';
+      const match = LINK_URL_RE.exec(url);
+      const position = () => relativeOffset(containerNode, mdastNode, markdown);
+      if (match) {
+        out.push({ code: match[1], position: position() });
+      } else if (url.startsWith(APERAS_TREE_PREFIX) || url.startsWith(APERAS_ID_PREFIX)) {
+        out.push({ code: url, position: position() });
+      } else if (url.includes('#') && !url.includes('://')) {
+        // A bare `#fragment` (same-document) or `path#fragment` (cross-file) link — excludes any
+        // other `scheme://` (an ordinary external URL that happens to carry a fragment, e.g.
+        // `https://example.com/page#section`) up front, rather than letting every such link reach
+        // the resolver only to fail. See `LinkOccurrence.requiresAnchorMatch`'s own doc comment for
+        // why what's left still can't be trusted as an internal reference until the resolver checks
+        // for a matching anchor.
+        out.push({ code: url, position: position(), requiresAnchorMatch: true });
+      }
       return;
     }
     for (const child of mdastNode.children ?? []) walk(child);
@@ -160,9 +352,9 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
 }
 
 /** Converts every `listItem` of a mdast `list` node into its own BlockNode (recursively). */
-function convertListItems(listNode: any, markdown: string): ParsedBlockNode[] {
+function convertListItems(listNode: any, markdown: string, lang: DocLang): ParsedBlockNode[] {
   return (listNode.children ?? [])
-    .map((item: any) => convertAstNode(item, markdown))
+    .map((item: any) => convertAstNode(item, markdown, lang))
     .filter((b: ParsedBlockNode | null): b is ParsedBlockNode => b !== null);
 }
 
@@ -170,6 +362,10 @@ interface ChildrenResult {
   children: ParsedBlockNode[];
   /** The leading paragraph's raw text, consumed into the caller's own `text` — '' if none. */
   leadingText: string;
+  /** The leading paragraph's own raw mdast node, alongside `leadingText` — `undefined` if none.
+   *  The caller (a `listItem`) needs the real node, not just its text, to run
+   *  `extractLeadInTitle`'s mdast-aware colon scan (`findLeadInColonOffset`) on it. */
+  leadingNode?: any;
   /** Link occurrences found in the consumed leading paragraph — the caller merges these into its
    *  own `linkCodes`, since that paragraph's raw mdast node (and its inline `link` children) never
    *  becomes a `BlockNode` of its own to carry them itself. */
@@ -191,9 +387,10 @@ interface ChildrenResult {
  * Anything else just processed (a list, or an opaque leaf like code/table/blockquote) resets
  * this to `null`, since only paragraph/listItem/heading are ever valid anchors (§8).
  */
-function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListItem: boolean): ChildrenResult {
+function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListItem: boolean, lang: DocLang): ChildrenResult {
   const children: ParsedBlockNode[] = [];
   let leadingText = '';
+  let leadingNode: any;
   let leadingLinkCodes: LinkOccurrence[] = [];
   let parentListProps: { orderedList: boolean; startIndex: number } | undefined;
   let adoptionAnchor: 'parent' | ParsedBlockNode | null = null;
@@ -206,17 +403,17 @@ function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListIt
       const startIndex = typeof raw.start === 'number' ? raw.start : 1;
 
       if (adoptionAnchor === 'parent') {
-        children.push(...convertListItems(raw, markdown));
+        children.push(...convertListItems(raw, markdown, lang));
         parentListProps = { orderedList, startIndex };
       } else if (adoptionAnchor) {
         const anchor = adoptionAnchor;
-        anchor.children.push(...convertListItems(raw, markdown));
+        anchor.children.push(...convertListItems(raw, markdown, lang));
         setProp(anchor, 'orderedList', String(orderedList));
         setProp(anchor, 'startIndex', String(startIndex));
       } else {
         // Orphaned — nothing valid precedes it. Reuse convertAstNode's own `list` handling
         // rather than duplicating the orphan-construction logic here.
-        const orphanBlock = convertAstNode(raw, markdown)!;
+        const orphanBlock = convertAstNode(raw, markdown, lang)!;
         children.push(orphanBlock);
       }
       // A `list` is never itself a valid adoption anchor (§8: only paragraph/listItem/heading
@@ -235,12 +432,13 @@ function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListIt
       // iteration) adopts into the container itself, not into a paragraph node that no longer
       // exists (§8's "interaction with §2's consuming rule").
       leadingText = rawSlice(raw, markdown);
+      leadingNode = raw;
       leadingLinkCodes = collectLinkCodes(raw, markdown);
       adoptionAnchor = 'parent';
       continue;
     }
 
-    const childBlock = convertAstNode(raw, markdown);
+    const childBlock = convertAstNode(raw, markdown, lang);
     if (childBlock) {
       children.push(childBlock);
       // Only paragraph/listItem/heading are valid adoption anchors (§8) — a following list
@@ -252,10 +450,10 @@ function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListIt
     }
   }
 
-  return { children, leadingText, leadingLinkCodes, parentListProps };
+  return { children, leadingText, leadingNode, leadingLinkCodes, parentListProps };
 }
 
-function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
+function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlockNode | null {
   // We only turn structural/block elements into BlockNodes. Inline elements (text, strong, link)
   // are just part of the parent's `text`. `table` is deliberately opaque (text = rawText, same
   // as code/thematicBreak/html) — no per-row/per-cell decomposition (Aperas-markdown-fractal-
@@ -271,12 +469,15 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
   const rawText = rawSlice(node, markdown);
   const blockId = generateNodeId();
 
-  let title = blockId; // fallback title; kg:title (Aperas-interactive-summarization-design.md §3) overrides it interactively
+  let title = blockId; // fallback title when nothing below finds a heading title or a lead-in term
   let text = rawText;
   let linkCodes: LinkOccurrence[] = [];
+  let headingTreeAnchor: string | undefined;
 
   if (node.type === 'heading') {
-    title = rawText;
+    const stripped = stripTrailingHeadingAnchors(rawText);
+    title = stripped.title;
+    headingTreeAnchor = stripped.treeAnchorMarkup;
     text = '';
     // The heading's own title line is deliberately never scanned for links (Aperas-apeironngn-
     // design.md §4 Step 8): a heading functions as an anchor/target in its own right (other
@@ -288,6 +489,9 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
     text = '';
   } else if (node.type === 'listItem') {
     text = '';
+  } else if (node.type === 'paragraph') {
+    const leadIn = extractLeadInTitle(node, markdown, lang);
+    if (leadIn !== null) title = leadIn;
   } else if (node.type === 'list') {
     // Aperas-markdown-fractal-mapping-design.md §8: an orphaned list block gets "no title, no
     // text" — its content lives entirely in its (adopted) listItem children. Previously missing
@@ -309,6 +513,10 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
     children: []
   };
 
+  if (headingTreeAnchor) {
+    setProp(block, HEADING_TREE_ANCHOR_PROP, headingTreeAnchor);
+  }
+
   if (node.type === 'blockquote') {
     // Opaque leaf (§3) — no children at all, regardless of what's nested inside. Still prose,
     // so its own inline links are collected the same as a paragraph's.
@@ -316,7 +524,7 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
   } else if (node.type === 'list') {
     // Reached only for an orphaned list (convertChildren's own adoption branches never call
     // convertAstNode on a `list` node when a valid adoption anchor exists).
-    block.children = convertListItems(node, markdown);
+    block.children = convertListItems(node, markdown, lang);
     setProp(block, 'orderedList', String(Boolean(node.ordered)));
     setProp(block, 'startIndex', String(typeof node.start === 'number' ? node.start : 1));
   } else if (node.type === 'paragraph') {
@@ -332,11 +540,15 @@ function convertAstNode(node: any, markdown: string): ParsedBlockNode | null {
     // root, heading, listItem: structural containers.
     const rawSiblings = node.type === 'heading' ? (node.headingChildren ?? []) : groupByHeadings(node.children ?? []);
     const isHeadingOrListItem = node.type === 'heading' || node.type === 'listItem';
-    const { children, leadingText, leadingLinkCodes, parentListProps } = convertChildren(rawSiblings, markdown, isHeadingOrListItem);
+    const { children, leadingText, leadingNode, leadingLinkCodes, parentListProps } = convertChildren(rawSiblings, markdown, isHeadingOrListItem, lang);
     block.children = children;
     if (isHeadingOrListItem) {
       text = leadingText;
       linkCodes = [...linkCodes, ...leadingLinkCodes];
+      if (node.type === 'listItem' && leadingNode) {
+        const leadIn = extractLeadInTitle(leadingNode, markdown, lang);
+        if (leadIn !== null) block.title = leadIn;
+      }
       if (parentListProps) {
         setProp(block, 'orderedList', String(parentListProps.orderedList));
         setProp(block, 'startIndex', String(parentListProps.startIndex));
@@ -438,7 +650,8 @@ export function parseMarkdownTree(markdown: string): ParsedMarkdown {
 
   const yamlNode: any = (ast.children ?? []).find((c: any) => c.type === 'yaml');
   const frontmatter = typeof yamlNode?.value === 'string' ? (yamlNode.value as string) : undefined;
+  const lang = extractLangFromFrontmatter(frontmatter);
 
-  const rootBlock = convertAstNode(ast, markdown)!;
+  const rootBlock = convertAstNode(ast, markdown, lang)!;
   return { root: rootBlock, ...(frontmatter !== undefined ? { frontmatter } : {}) };
 }

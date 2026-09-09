@@ -8,8 +8,9 @@
  */
 
 import type { Store } from 'oxigraph';
-import { wrap } from './node';
-import type { FolderNode } from './node';
+import { wrap, applyTombstone } from './node';
+import type { FolderNode, BlockNode } from './node';
+import { nodeKindFromId } from './vocab';
 import { allIdsOfKind } from './dehydrate';
 import { buildFolderTree, collectFolderPaths, countFolders, type ParsedFolderNode } from '../folders';
 import { getArtifactsDir } from '../artifacts';
@@ -54,7 +55,16 @@ export function ingestFolderTree(store: Store, force: boolean = false): { folder
   const liveFolderIds = allLiveIdsOfKind(store, 'FolderNode');
   const existingByPath = new Map(liveFolderIds.map((id) => {
     const node = wrap(store, id) as unknown as FolderNode;
-    return [node.path as string, { props: node.props }];
+    // `readmeChildren`: this folder's own current BlockNode-kind children (its README's content —
+    // the only kind of child a FolderNode ever has besides nested FolderNode/ArtifactNode
+    // structural references), in the same reconcile-shape `ArtifactNode.ingestFromDisk` already
+    // uses, so `folders.ts`'s `buildFolderTree` can reconcile a fresh parse against it instead of
+    // re-minting every README content block's id on every ingestion (AperasKG/artifacts/planning/
+    // linking.md's Task 3 made that churn visible via the id-anchor it now embeds).
+    const readmeChildren = node.treeChildren
+      .filter((c) => nodeKindFromId(c.id) === 'BlockNode')
+      .map((c) => (c as unknown as BlockNode).toReconcileShape());
+    return [node.path as string, { props: node.props, readmeChildren }];
   }));
   const folderIdByPath = new Map(liveFolderIds.map((id) => {
     const node = wrap(store, id) as unknown as FolderNode;
@@ -67,7 +77,14 @@ export function ingestFolderTree(store: Store, force: boolean = false): { folder
     return [node.path as string, node.key];
   }));
 
-  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath);
+  const pendingReadmeTombstones: any[] = [];
+  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingReadmeTombstones);
+  // Applied unconditionally, not `force`-gated like the folder/artifact removal sweep below: a
+  // README content block genuinely missing from the fresh parse was already becoming permanently
+  // orphaned (unreferenced, ungoverned) garbage before this reconciliation existed at all — writing
+  // an explicit tombstone for it is strictly safer than that prior silent-orphan status quo, not a
+  // new destructive behavior that needs confirmation the way a whole file/folder disappearing does.
+  for (const tombstone of pendingReadmeTombstones) applyTombstone(store, tombstone);
   const folderCount = countFolders(tree);
 
   const newByPath = new Map<string, ParsedFolderNode>();

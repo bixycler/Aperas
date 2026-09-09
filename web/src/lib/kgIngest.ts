@@ -26,7 +26,7 @@ import { createInterface } from 'node:readline/promises';
 import type { Store } from 'oxigraph';
 import { expandArtifactPaths } from './artifacts';
 import { runTrack, type TrackResult } from './kgTrack';
-import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact } from './apeironNgn/artifacts';
+import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact, retryDanglingRefs } from './apeironNgn/artifacts';
 import { ingestFolderTree } from './apeironNgn/folders';
 import { createLineReader } from './lineReader';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
@@ -55,7 +55,14 @@ export function runIngest(store: Store, paths: string[] = [], track: boolean = f
     ? { ingested: ingestArtifacts(store, paths, force), untracked: [] as string[] }
     : ingestAllArtifacts(store, force);
 
-  return { trackResult, ingested, untracked, folderCount, renamed: sweep.renamed, removed: sweep.removed, pendingFolderRemovals: pendingRemovals };
+  // Cross-artifact dangling-reference retry (AperasKG/artifacts/history/linking.md's Milestones):
+  // an artifact whose own text never changes never gets re-ingested on its own, so a link it
+  // couldn't resolve last time stays stale even after whatever it was looking for comes into
+  // existence elsewhere in this same run. Runs last, once the folder tree and every explicitly-
+  // requested artifact are both already settled, so it sees the fullest possible picture.
+  const retriedDanglingRefs = retryDanglingRefs(store, force);
+
+  return { trackResult, ingested, untracked, folderCount, renamed: sweep.renamed, removed: sweep.removed, pendingFolderRemovals: pendingRemovals, retriedDanglingRefs };
 }
 
 type IngestResponse = Awaited<ReturnType<typeof runIngest>>;
@@ -75,6 +82,9 @@ function printCommitted(ingested: Array<IngestResponse['ingested'][number]>, res
     }
   }
   console.log(`[ApeironNgn kg:ingest] Rebuilt FolderNode structural tree (${result.folderCount} folder(s), ${result.renamed} renamed, ${result.removed} removed).`);
+  if (result.retriedDanglingRefs.length > 0) {
+    console.log(`[ApeironNgn kg:ingest] Re-resolved links in ${result.retriedDanglingRefs.length} artifact(s) whose own text didn't change but a target they reference just did: ${result.retriedDanglingRefs.join(', ')}.`);
+  }
 }
 
 async function main(): Promise<void> {

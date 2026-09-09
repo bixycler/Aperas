@@ -1,6 +1,7 @@
 /**
- * Line-by-line stdin reader for interactive CLI prompts (`kg:title`/`kg:link`, TDB-backed and
- * ApeironNgn alike). Deliberately not `rl.question()`: that API races against readline's
+ * Line-by-line stdin reader for interactive CLI prompts (`kg:link`, TDB-backed and ApeironNgn
+ * alike — `kg:title` used to be a second consumer, retired in favor of the explicit lead-in term).
+ * Deliberately not `rl.question()`: that API races against readline's
  * auto-close-on-stream-'end' whenever real async work happens between calls — confirmed live,
  * two different failure modes depending on timing (an immediate throw, or a silently-abandoned
  * pending call that lets the process exit with no output at all). A live interactive TTY never

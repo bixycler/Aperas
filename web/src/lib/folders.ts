@@ -6,17 +6,30 @@
  * separate ArtifactNode; its top-level parsed blocks become the FolderNode's own children,
  * alongside nested FolderNodes and ArtifactNode references.
  *
- * `apeironNgn/folders.ts` reuses `buildFolderTree`/`collectFolderPaths`/`countFolders` directly,
- * unmodified. The TerminusDB `client`-based commit wrappers (`getFolderRecord`/`ingestFolderTree`)
- * that used to live here moved to `foldersTdb.ts`, headed to `.archive/` with `kgCli.ts`.
+ * `apeironNgn/folders.ts` reuses `buildFolderTree`/`collectFolderPaths`/`countFolders` directly.
+ * The TerminusDB `client`-based commit wrappers (`getFolderRecord`/`ingestFolderTree`) that used to
+ * live here moved to `foldersTdb.ts`, headed to `.archive/` with `kgCli.ts`.
+ *
+ * A README's own content children get the same reconciliation an `ArtifactNode` already gets
+ * (`node.ts`'s `ingestFromDisk`, via `reconcile.ts`'s `reconcileTree`) — matching by content
+ * against `existingByPath`'s own `readmeChildren` (when present) and carrying forward a matched
+ * block's old id, rather than the pre-Task-3 behavior of re-minting every README content block's
+ * id on every single ingestion. That churn was invisible before nothing in the rendered output
+ * depended on those ids; `astParser.ts`/`project.ts`'s id-anchor (AperasKG/artifacts/planning/
+ * linking.md's Task 3) made it visible (`verify.ts`'s FolderNode README stability test caught it).
+ * `reconcileTree` itself needs no `Store` (pure), so it runs right here; only *applying* the
+ * tombstones it returns for genuinely-removed old content needs one, so those bubble up through
+ * `pendingTombstones` (an output array, pushed to like `folderIdByPath`/`existingByPath`/
+ * `artifactIdByPath` below) for the `Store`-aware caller (`apeironNgn/folders.ts`) to apply.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { parseMarkdownTree, extractAbstract } from './astParser';
+import { parseMarkdownTree, extractAbstract, type ParsedBlockNode } from './astParser';
 import { isReadmeFilename } from './artifacts';
 import { generateNodeId } from './snowflake';
 import { carryForwardProp, type PropEntry } from './props';
+import { reconcileTree } from './reconcile';
 
 export interface ParsedFolderNode {
   "@type": "FolderNode";
@@ -33,7 +46,8 @@ export function buildFolderTree(
   artifactsDir: string,
   folderIdByPath: Map<string, string>,
   artifactIdByPath: Map<string, string>,
-  existingByPath: Map<string, any>
+  existingByPath: Map<string, any>,
+  pendingTombstones: any[] = []
 ): ParsedFolderNode {
   const relPath = relative(artifactsDir, absoluteDir);
   const isRoot = relPath === '';
@@ -54,7 +68,7 @@ export function buildFolderTree(
     const stat = statSync(fullPath);
 
     if (stat.isDirectory()) {
-      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath));
+      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingTombstones));
       continue;
     }
     if (!entry.endsWith('.md')) continue;
@@ -70,7 +84,22 @@ export function buildFolderTree(
       // `readmeChildren`, so this deliberately duplicates whatever that text already is among the
       // README's own rendered children.
       readmeText = extractAbstract(parsedRoot);
-      readmeChildren = parsedRoot.children;
+      // Reconcile against the existing FolderNode's own README content (if any), the same
+      // `reconcileTree` an `ArtifactNode` uses (`node.ts`'s `ingestFromDisk`) — matches by content,
+      // carries a matched block's old id forward onto the fresh parse, and reports genuinely
+      // removed old content as tombstones (collected into `pendingTombstones` for the `Store`-aware
+      // caller to apply — this function itself has no `Store`). A folder with no README yet has no
+      // `existingByPath` entry at all — first-time ingest, nothing to reconcile against, same as
+      // `ArtifactNode.ingestFromDisk`'s own `hadContent` gate.
+      const existingReadmeChildren = existingByPath.get(path)?.readmeChildren as ParsedBlockNode[] | undefined;
+      if (existingReadmeChildren) {
+        const oldRoot = { type: 'root', title: 'Document Root', blockId: '', children: existingReadmeChildren };
+        const { finalTree, tombstones } = reconcileTree(oldRoot, parsedRoot);
+        readmeChildren = finalTree.children;
+        pendingTombstones.push(...tombstones);
+      } else {
+        readmeChildren = parsedRoot.children;
+      }
       // Carries the existing `frontmatter` StringProp's id forward when its value hasn't changed
       // (`carryForwardProp`) — same fix as `ArtifactNode.ingestFromDisk`'s, and a no-op for the
       // TerminusDB-backed caller, which doesn't populate `existingByPath`'s `props` (and whose own

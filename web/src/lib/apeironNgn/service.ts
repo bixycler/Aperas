@@ -45,6 +45,7 @@ import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLA
 import { computeFileHash } from '../artifacts';
 import { resolveTreeView, pruneUnreachableTombstones } from './node';
 import { getSocketPath, markReady, clearLock } from './serviceLock';
+import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { runTrack, runReverseTrack } from '../kgTrack';
 import { runIngest } from '../kgIngest';
@@ -90,6 +91,13 @@ function diverged(dir: string, kinds: readonly string[], known: Stamps): string[
 }
 
 function main(): void {
+  // Computed once, at this process's own startup, from whatever source was on disk at that
+  // moment — deliberately never recomputed afterward. `ping`'s response carries it so
+  // `serviceClient.ts` can compare it against the *current* on-disk fingerprint and warn when
+  // they've drifted apart, i.e. when this long-lived process is running code a later edit already
+  // superseded (Node doesn't hot-reload; only a restart picks up a source change).
+  const codeFingerprint = computeCodeFingerprint();
+
   let { store, quadCount } = rehydrateStore();
   console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s).`);
 
@@ -267,7 +275,7 @@ function main(): void {
   async function handle(req: ServiceRequest): Promise<unknown> {
     switch (req.op) {
       case 'ping':
-        return { pong: true };
+        return { pong: true, codeFingerprint };
       case 'reload':
         return reloadStore(req.discard);
       case 'flush':

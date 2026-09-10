@@ -48,7 +48,7 @@ import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIF
 import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
-import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, extractLangFromFrontmatter, type ParsedBlockNode, type DocLang } from '../astParser';
+import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, extractLangFromFrontmatter, extractAnchorNames, HEADING_TREE_ANCHOR_PROP, type ParsedBlockNode, type DocLang } from '../astParser';
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
@@ -781,6 +781,11 @@ export class ArtifactNode extends BlockNode {
     const blockCount = (finalRoot.children ?? []).reduce((sum, c) => sum + countBlocks(c), 0);
     console.log(`[ApeironNgn Artifacts] Ingesting '${artifactPath}' as fractal tree (${blockCount} blocks)...`);
 
+    // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions; planning/
+    // linking.md's Slice 2 Task 2) — must run against this still-unmodified store, before anything
+    // below writes a single block, so a rejected document leaves no partial write behind.
+    rejectSlugPathCollisions(this.store, artifactPath, finalRoot.children ?? []);
+
     const title = basename(artifactPath);
     const text = extractAbstract(newRoot);
 
@@ -869,6 +874,107 @@ export function deriveAbstractFromLiveChildren(node: TreeNode): string {
   }
   const raw = findFirst(node, true) ?? '';
   return raw ? truncateForPreview(raw) : raw;
+}
+
+/** Every name a live `BlockNode` currently answers to: its own current `toPath()`, plus any anchor
+ *  `name` still embedded in its `treeAnchor` prop (heading) or raw `text` (list item/paragraph only
+ *  — design/linking.md's Anchors section places an embedded anchor nowhere else). Anchor-scanning
+ *  is deliberately *not* applied to every other non-heading type's `text` (`code`, `blockquote`,
+ *  `thematicBreak`, `html`, `table`): their raw content can legitimately contain anchor-tag-shaped
+ *  substrings as illustrative prose about the convention itself (confirmed live — design/linking.md's
+ *  own "Anchors" section fenced examples), which would otherwise read as a real embedded anchor and
+ *  produce a false collision. [Anchor-Matching Requirement for Resolution](design/linking.md) already
+ *  treats a genuine embedded anchor as a live resolvable target, so a collision against one is real,
+ *  not just against the block's current title (planning/linking.md's Slice 2 Task 2,
+ *  `rejectSlugPathCollisions` below). */
+function liveBlockNames(node: BlockNode): string[] {
+  const names: string[] = [];
+  const path = node.toPath();
+  if (path) names.push(path);
+  if (node.type === 'heading') {
+    const treeAnchor = getProp(node as unknown as HasProps, HEADING_TREE_ANCHOR_PROP);
+    if (treeAnchor) names.push(...extractAnchorNames(treeAnchor));
+  } else if (node.type === 'paragraph' || node.type === 'listItem') {
+    const text = node.text as unknown as string | undefined;
+    if (text) names.push(...extractAnchorNames(text));
+  }
+  return names;
+}
+
+/** `liveBlockNames`'s counterpart for a freshly-parsed `ParsedBlockNode` — nothing's hydrated yet,
+ *  so there's no `.toPath()` to call; the caller's own recursive walk threads the computed path in
+ *  instead (`path`). */
+function parsedBlockNames(node: ParsedBlockNode, path: string): string[] {
+  const names = [path];
+  if (node.type === 'heading') {
+    const treeAnchor = getProp(node as unknown as HasProps, HEADING_TREE_ANCHOR_PROP);
+    if (treeAnchor) names.push(...extractAnchorNames(treeAnchor));
+  } else if (node.type === 'paragraph' || node.type === 'listItem') {
+    if (node.text) names.push(...extractAnchorNames(node.text));
+  }
+  return names;
+}
+
+/** Every name every still-live `BlockNode` in the store currently answers to, indexed for
+ *  `rejectSlugPathCollisions` below — a fresh full scan (`allIdsOfKind` has no cheaper index to
+ *  offer), acceptable since every caller of this is an occasional CLI-driven write, never a hot
+ *  path. First writer wins per name; a real duplicate among *already-live* blocks would itself be
+ *  a bug this check exists to prevent from happening in the first place. */
+function buildLiveSlugPathIndex(store: Store): Map<string, string> {
+  const liveIndex = new Map<string, string>();
+  for (const id of allIdsOfKind(store, 'BlockNode')) {
+    const node = wrap(store, id) as unknown as BlockNode;
+    if (node.tombstonedAt) continue;
+    for (const name of liveBlockNames(node)) {
+      if (!liveIndex.has(name)) liveIndex.set(name, id);
+    }
+  }
+  return liveIndex;
+}
+
+/**
+ * Full-slug-path collision rejection (design/linking.md's Full-Path Collisions; planning/
+ * linking.md's Slice 2 Task 2) — a writer-facing authoring constraint, not a system-managed
+ * lifecycle concept: this only ever detects a violation and refuses the whole write before
+ * anything is committed, never fixes or tracks anything on the writer's behalf. `children` are the
+ * new (or renamed) top-level `ParsedBlockNode`(s) being introduced, and `ancestorPath` is whatever
+ * sits directly above them today — an artifact's own path (`ingestFromDisk`, a whole fresh parse),
+ * an arbitrary live parent's `toPath()`/`path` (`kg:insert`'s create mode, a new subtree), or a
+ * renamed heading's own *parent's* path (`kg:update`'s heading-replace path, a single node whose
+ * title is what's actually changing — passed as its own one-element `children` array). Throws if
+ * any name a block would answer to — its own computed path, or an embedded anchor name — is already
+ * claimed by a *different* block: either a sibling within this same call's own `children`, or any
+ * other still-live `BlockNode` already in the store. Must run before the caller's own
+ * `hydrateFromParsed`/write — after it, these blocks would already be indistinguishable from
+ * "other live blocks," including (for a rename) from their own prior self, which is exactly why
+ * comparisons below match by id, not by name.
+ */
+export function rejectSlugPathCollisions(store: Store, ancestorPath: string, children: ParsedBlockNode[]): void {
+  const liveIndex = buildLiveSlugPathIndex(store);
+  const seenThisCall = new Map<string, string>(); // name -> blockId, within this one call only
+
+  const walk = (node: ParsedBlockNode, parentPath: string): void => {
+    const path = `${parentPath}/${slugify(node.title)}`;
+    // `node.blockId` is a bare snowflake (`generateNodeId()`'s own return, or `TreeNode.key` for a
+    // renamed live node) — every id in `liveIndex`/`seenThisCall` is the full `BlockNode:<snowflake>`
+    // form, so comparisons need the same prefix or a reconciled/renamed node would spuriously
+    // "collide" with its own prior self.
+    const fullId = `BlockNode:${node.blockId}`;
+    for (const name of parsedBlockNames(node, path)) {
+      const liveOwner = liveIndex.get(name);
+      if (liveOwner && liveOwner !== fullId) {
+        throw new Error(`Full-slug-path collision: '${name}' is already used by another live block (${liveOwner}) — rejected before writing anything. Rename one of the colliding blocks and try again.`);
+      }
+      const docOwner = seenThisCall.get(name);
+      if (docOwner && docOwner !== fullId) {
+        throw new Error(`Full-slug-path collision: '${name}' is used by two different blocks in the same write (${docOwner} and ${fullId}) — rejected before writing anything. Rename one of them and try again.`);
+      }
+      seenThisCall.set(name, fullId);
+    }
+    for (const child of node.children ?? []) walk(child, path);
+  };
+
+  for (const child of children) walk(child, ancestorPath);
 }
 
 /** Walks a real (already-persisted) `BlockNode` tree collecting each block's resolved link target

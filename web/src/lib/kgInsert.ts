@@ -18,7 +18,7 @@
 
 import type { Store } from 'oxigraph';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { wrap } from './apeironNgn/node';
+import { wrap, rejectSlugPathCollisions } from './apeironNgn/node';
 import type { BlockNode, TreeNode } from './apeironNgn/node';
 import { nodeKindFromId } from './apeironNgn/vocab';
 import { displayLabel } from './apeironNgn/tree';
@@ -90,6 +90,14 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[] } {
   if (topLevel.length === 0) {
     throw new Error('Piped markdown produced no content to insert.');
   }
+
+  // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions) — the same
+  // writer-facing hard reject `ingestFromDisk` applies to a whole artifact's fresh parse, applied
+  // here to a new subtree inserted directly into the graph: `parent.toPath()` already returns the
+  // right prefix uniformly whether `parent` is a Block/Artifact/FolderNode (`toPath()`'s own kind
+  // check handles the latter two). Must run before any of `topLevel` is hydrated.
+  const parentPath = parent.toPath();
+  if (parentPath) rejectSlugPathCollisions(store, parentPath, topLevel);
 
   const newIds = topLevel.map((child) => {
     const id = `BlockNode:${child.blockId}`;

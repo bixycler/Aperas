@@ -12,6 +12,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSocketPath, readLock, claimLock, isLockStale, clearLock } from './serviceLock';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
+import { computeCodeFingerprint } from './codeVersion';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PING_TIMEOUT_MS = 300;
@@ -58,9 +59,25 @@ function sendRaw(req: ServiceRequest, timeoutMs: number): Promise<ServiceRespons
   });
 }
 
+/** Warns (this short-lived client process's own stdio — the service's is `stdio: 'ignore'`) when
+ *  the running service's own `codeFingerprint` (stamped once, at *its* startup) no longer matches
+ *  what's on disk right now — i.e. a source edit landed after the service last started, which Node
+ *  never picks up on its own. Never throws or blocks the call itself; a stale service still answers
+ *  requests, just possibly with logic a later fix already replaced. */
+function warnIfCodeStale(res: ServiceResponse): void {
+  if (!res.ok) return;
+  const result = res.result as { codeFingerprint?: string } | undefined;
+  if (!result?.codeFingerprint) return;
+  const current = computeCodeFingerprint();
+  if (result.codeFingerprint !== current) {
+    console.error(`[ApeironNgn service] Running code is stale (fingerprint ${result.codeFingerprint} vs. current ${current} on disk) — a source change since this service started won't take effect until it's restarted. Run: kg:service restart`);
+  }
+}
+
 async function ping(): Promise<boolean> {
   try {
     const res = await sendRaw({ op: 'ping' }, PING_TIMEOUT_MS);
+    warnIfCodeStale(res);
     return res.ok === true;
   } catch {
     return false;

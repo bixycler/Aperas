@@ -24,7 +24,8 @@
     "kg:insert": "tsx src/lib/kgInsert.ts",
     "kg:update": "tsx src/lib/kgUpdate.ts",
     "kg:remove": "tsx src/lib/kgRemove.ts",
-    "kg:profile": "tsx src/lib/kgProfile.ts"
+    "kg:profile": "tsx src/lib/kgProfile.ts",
+    "kg:service": "tsx src/lib/kgService.ts"
   },
   "dependencies": {
     "@rdfjs/data-model": "^2.1.2",

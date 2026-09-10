@@ -135,9 +135,22 @@ const TRAILING_HEADING_ANCHOR_RE = /<a name='([^']*)' class='aperas-anchor(?: ap
  *  the line is deliberately dropped here rather than kept, not stashed: it's always regenerated
  *  fresh from `node.id` at projection time (same id, since ingestion never changes it), and keeping
  *  the old text here too would duplicate it on every re-projection. Kept as raw `<a ...></a>`
- *  markup (one or more, concatenated in original left-to-right order), not decomposed into
- *  `name` values separately — nothing else needs those parsed. */
+ *  markup (one or more, concatenated in original left-to-right order) — decomposed into individual
+ *  `name` values only by `extractAnchorNames` below, when a consumer actually needs them (the
+ *  full-slug-path collision check, `apeironNgn/node.ts`'s `rejectSlugPathCollisions`). */
 export const HEADING_TREE_ANCHOR_PROP = 'treeAnchor';
+
+/** Every anchor `name` embedded anywhere in `text` — a find-all counterpart to
+ *  `TRAILING_HEADING_ANCHOR_RE`'s single, line-end-anchored match. Used for a list item/paragraph's
+ *  own `text` (an anchor sits inline there, after the lead-in colon, not at a line boundary — see
+ *  design/linking.md's Anchors section) and for a heading's `treeAnchor` prop (which can hold more
+ *  than one concatenated tag under the add-only rename model). Read-only: finds every name a block
+ *  currently answers to for the full-slug-path collision check (planning/linking.md's Slice 2 Task
+ *  2) — never strips or rewrites anything, unlike `stripTrailingHeadingAnchors` above. */
+const ANCHOR_NAME_RE = /<a name='([^']*)' class='aperas-anchor(?: aperas-(?:tree|id))?'><\/a>/g;
+export function extractAnchorNames(text: string): string[] {
+  return [...text.matchAll(ANCHOR_NAME_RE)].map((m) => m[1]);
+}
 
 /** Strips every trailing anchor tag from a heading's raw line (working backward from the end, so
  *  any number of concatenated anchors are all found, not just one), returning the clean `title` and

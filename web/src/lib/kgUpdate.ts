@@ -32,7 +32,7 @@
 
 import type { Store } from 'oxigraph';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { wrap, applyTombstone } from './apeironNgn/node';
+import { wrap, applyTombstone, rejectSlugPathCollisions } from './apeironNgn/node';
 import type { BlockNode, TreeNode, ApeironNode } from './apeironNgn/node';
 import { nodeKindFromId } from './apeironNgn/vocab';
 import { parseMarkdownTree, type ParsedBlockNode } from './astParser';
@@ -99,8 +99,14 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     props = firstChild.props;
     overflow = firstChild.children ?? [];
   } else if (firstChild?.type === 'paragraph') {
+    // A list directly following a paragraph adopts into it (astParser.ts's own adoption rule,
+    // §8) *regardless* of whether the paragraph sits under a heading/listItem container — this
+    // module's own top doc comment only checked the *text*-consuming rule (correctly root-exempt),
+    // not this separate one. Confirmed live: piping "paragraph\n\n- item\n- item" produced a
+    // single root child (the paragraph, with the list already adopted as its own `children`) —
+    // silently dropping the whole list on the floor when only `firstChild.text` was read here.
     text = firstChild.text;
-    overflow = parsedChildren.slice(1);
+    overflow = [...(firstChild.children ?? []), ...parsedChildren.slice(1)];
   } else {
     text = undefined;
     overflow = parsedChildren;
@@ -111,6 +117,23 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   // against `target`'s real prior state; mutating `target.props` first would make `oldShape`
   // already reflect the *new* props, quietly defeating that comparison on every heading edit.
   const oldShape = target.toReconcileShape();
+
+  // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions) — only relevant
+  // when the heading-replacement branch above actually supplied a new `title`: an `ArtifactNode`'s
+  // own title never contributes to any `toPath()` (see `toPath()`'s own kind check), and neither
+  // does a plain text/children-only update that never touches `title` at all. `target.parent` is
+  // unchanged by a rename — only `target`'s own final path segment is — so the parent's current
+  // `toPath()` is the right prefix to check the renamed title against. Covers the renamed heading
+  // itself, not the (separately reconciled) `overflow` subtree beneath it — `kg:insert`'s own check
+  // is what covers a freshly-introduced multi-level tree.
+  if (title !== undefined && target.parent) {
+    const parentPath = target.parent.toPath();
+    if (parentPath) {
+      rejectSlugPathCollisions(store, parentPath, [
+        { '@type': 'BlockNode', blockId: target.key, type: target.type, title, children: [] } as ParsedBlockNode,
+      ]);
+    }
+  }
 
   target.text = text;
   // Real content just arrived at `target` regardless of which mode runs below — promoting a holder

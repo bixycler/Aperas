@@ -43,12 +43,12 @@ export function runRemove(store: Store, req: RemoveReq): { id: string } {
   return { id: targetId };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Recursively (soft) tombstone an arbitrary node.',
-      usage: 'kg:remove -- [--base <path>] <path>',
+      usage: 'aperas remove [--base <path>] <path>',
       args: [
         { name: '<path>', description: 'Node to remove, and everything under it.' },
       ],
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const [path] = args.filter((_, i) => !consumed.has(i));
 
   if (!path) {
-    console.error('Usage: kg:remove -- [--base <path>] <path>');
+    console.error('Usage: aperas remove [--base <path>] <path>');
     process.exit(1);
   }
 

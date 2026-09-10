@@ -120,18 +120,18 @@ export function runProfileRemoveView(store: Store, name: string): { removed: boo
   return removeTreeViewByName(store, name);
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Create/list/remove a Profile — lightweight identity (handle/name/kind) plus an open preferences bag — and the TreeViews it owns. Anything beyond these operations is meant to be hand-edited directly in Profile.jsonld.',
       usage: [
-        'kg:profile create <handle> [--name <name>] [--kind <kind>] [--flush] [--reload]',
-        'kg:profile list [<handle>] [--reload]',
-        'kg:profile remove <handle> [--flush] [--reload]',
-        'kg:profile create-view <name> --profile <handle> [--flush] [--reload]',
-        'kg:profile list-view [<name>] [--reload]',
-        'kg:profile remove-view <name> [--flush] [--reload]',
+        'aperas profile create <handle> [--name <name>] [--kind <kind>] [--flush] [--reload]',
+        'aperas profile list [<handle>] [--reload]',
+        'aperas profile remove <handle> [--flush] [--reload]',
+        'aperas profile create-view <name> --profile <handle> [--flush] [--reload]',
+        'aperas profile list-view [<name>] [--reload]',
+        'aperas profile remove-view <name> [--flush] [--reload]',
       ],
       args: [
         { name: '<handle>', description: 'Stable, addressable slug identifying a profile (e.g. "default", "will", "claude-agent-1") — not the same as the profile\'s own opaque node id.' },
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
     case 'create': {
       const [handle] = positional;
       if (!handle) {
-        console.error('Usage: kg:profile create <handle> [--name <name>] [--kind <kind>] [--flush] [--reload]');
+        console.error('Usage: aperas profile create <handle> [--name <name>] [--kind <kind>] [--flush] [--reload]');
         process.exit(1);
       }
       const { id } = await request<ReturnType<typeof runProfileCreate>>({ op: 'profileCreate', handle, name, kind, flush, reload });
@@ -196,7 +196,7 @@ async function main(): Promise<void> {
     case 'remove': {
       const [handle] = positional;
       if (!handle) {
-        console.error('Usage: kg:profile remove <handle> [--flush] [--reload]');
+        console.error('Usage: aperas profile remove <handle> [--flush] [--reload]');
         process.exit(1);
       }
       const { removed, viewsRemoved } = await request<ReturnType<typeof runProfileRemove>>({ op: 'profileRemove', handle, flush, reload });
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
     case 'create-view': {
       const [name] = positional;
       if (!name || !profileHandle) {
-        console.error('Usage: kg:profile create-view <name> --profile <handle> [--flush] [--reload]');
+        console.error('Usage: aperas profile create-view <name> --profile <handle> [--flush] [--reload]');
         process.exit(1);
       }
       const { id } = await request<ReturnType<typeof runProfileCreateView>>({ op: 'profileCreateView', name, profileHandle, flush, reload });
@@ -237,7 +237,7 @@ async function main(): Promise<void> {
     case 'remove-view': {
       const [name] = positional;
       if (!name) {
-        console.error('Usage: kg:profile remove-view <name> [--flush] [--reload]');
+        console.error('Usage: aperas profile remove-view <name> [--flush] [--reload]');
         process.exit(1);
       }
       const { removed } = await request<ReturnType<typeof runProfileRemoveView>>({ op: 'profileRemoveView', name, flush, reload });
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
       return;
     }
     default:
-      console.error('Usage: kg:profile <create|list|remove|create-view|list-view|remove-view> ...  (--help for details)');
+      console.error('Usage: aperas profile <create|list|remove|create-view|list-view|remove-view> ...  (--help for details)');
       process.exit(1);
   }
 }

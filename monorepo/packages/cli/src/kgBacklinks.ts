@@ -40,12 +40,12 @@ export function runBacklinks(store: Store, pathArg: string, includeText: boolean
   return entries;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "List every Link that targets a given node — the reverse of kg:unfold's forward view.",
-      usage: 'kg:backlinks -- <path> [--text] [--reload]',
+      usage: 'aperas backlinks <path> [--text] [--reload]',
       args: [
         { name: '<path>', description: 'Tracked artifact/folder path, deep path, bare node code, or full node id whose backlinks to list.' },
       ],
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const reload = rawArgs.includes('--reload');
   const [pathArg] = rawArgs.filter((p) => p !== '--text' && p !== '--reload');
   if (!pathArg) {
-    console.error('Usage: kg:backlinks -- <path> [--text] [--reload]');
+    console.error('Usage: aperas backlinks <path> [--text] [--reload]');
     process.exit(1);
   }
 

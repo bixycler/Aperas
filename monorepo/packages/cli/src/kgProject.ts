@@ -117,12 +117,12 @@ export function runProject(store: Store, path: string, dryRun: boolean, force: b
   return { markdown, targetFile };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "Serialize a tracked ArtifactNode/FolderNode's tree back to Markdown.",
-      usage: 'kg:project -- <path> [--dry-run] [--force] [--reload]',
+      usage: 'aperas project <path> [--dry-run] [--force] [--reload]',
       args: [
         { name: '<path>', description: 'Tracked artifact or folder path to serialize. An artifact writes back to the same path; a folder writes to its README.' },
       ],
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
   const force = rawArgs.includes('--force');
   const [path] = rawArgs.filter((p) => p !== '--dry-run' && p !== '--flush' && p !== '--reload' && p !== '--force');
   if (!path) {
-    console.error('Usage: kg:project -- <path> [--dry-run] [--force] [--flush] [--reload]');
+    console.error('Usage: aperas project <path> [--dry-run] [--force] [--flush] [--reload]');
     process.exit(1);
   }
 

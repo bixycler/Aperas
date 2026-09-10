@@ -60,12 +60,12 @@ export function runRemoveBlockLink(store: Store, blockRef: string, targetRef: st
   return { removed };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Interactively prompt for cross-links on BlockNodes in scope: candidates are listed in one round trip, then each attempted answer resolves against the live store, re-promptable if it fails to resolve.',
-      usage: 'kg:link -- <path> [--recursive] [--all] [--reload]',
+      usage: 'aperas link <path> [--recursive] [--all] [--reload]',
       args: [
         { name: '<path>', description: 'Tracked artifact/folder path, deep path, bare node code, or full node id to scope the prompt to.' },
       ],
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   const reload = rawArgs.includes('--reload');
   const [pathArg] = rawArgs.filter((p) => p !== '--recursive' && p !== '--all' && p !== '--reload');
   if (!pathArg) {
-    console.error('Usage: kg:link -- <path> [--recursive] [--all] [--reload]');
+    console.error('Usage: aperas link <path> [--recursive] [--all] [--reload]');
     process.exit(1);
   }
 

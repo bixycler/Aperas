@@ -7,6 +7,8 @@
     "packages/*"
   ],
   "scripts": {
+    "aperas": "tsx packages/cli/src/aperas.ts",
+    "build:aperas": "node packages/cli/build.mjs",
     "verify": "tsx packages/cli/src/verify.ts",
     "kg:reload": "tsx packages/cli/src/kgReload.ts",
     "kg:flush": "tsx packages/cli/src/kgFlush.ts",
@@ -25,10 +27,12 @@
     "kg:update": "tsx packages/cli/src/kgUpdate.ts",
     "kg:remove": "tsx packages/cli/src/kgRemove.ts",
     "kg:profile": "tsx packages/cli/src/kgProfile.ts",
-    "kg:service": "tsx packages/cli/src/kgService.ts"
+    "kg:service": "tsx packages/cli/src/kgService.ts",
+    "kg:identity": "tsx packages/cli/src/kgIdentity.ts"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.13",
     "typescript": "~6.0.2"
   }

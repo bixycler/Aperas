@@ -10,12 +10,12 @@ import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { runRemoveBlockLink } from './kgLink';
 import { wantsHelp, printHelp } from './kgHelp';
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "Remove a manually-added kg:link between two nodes. Scoped to manual (references) links only — a wikilink is self-managing and would just reappear on the next ingestion if force-removed here.",
-      usage: 'kg:unlink -- <block> <target> [--flush]',
+      usage: 'aperas unlink <block> <target> [--flush]',
       args: [
         { name: '<block>', description: 'Block the manual link is on (path, deep path, bare node code, or full id).' },
         { name: '<target>', description: 'Link target to remove (same addressing as <block>).' },
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const flush = rawArgs.includes('--flush');
   const [blockRef, targetRef] = rawArgs.filter((p) => p !== '--flush');
   if (!blockRef || !targetRef) {
-    console.error('Usage: kg:unlink -- <block> <target> [--flush]');
+    console.error('Usage: aperas unlink <block> <target> [--flush]');
     process.exit(1);
   }
 

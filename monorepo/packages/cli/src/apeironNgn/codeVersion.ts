@@ -13,7 +13,7 @@
  * printing a notice.
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -24,10 +24,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  *  its own package (`packages/cli/src`) and the engine it depends on (`packages/core/src`) — split
  *  into two packages since this file was first written (when one `web/src/lib` covered both), so a
  *  single "one hop up" root no longer sees the whole picture; missing `core` here would mean an
- *  engine-only edit goes silently undetected as stale. */
+ *  engine-only edit goes silently undetected as stale.
+ *
+ *  Only meaningful in dev, running from real `.ts` source — a published, `esbuild`-bundled `aperas`
+ *  has no such tree on disk at all (everything's inlined into one file), so this returns `[]` there
+ *  rather than `readdirSync`-throwing on a path that doesn't exist. There's nothing to detect as
+ *  "stale" in that world anyway: a published build's code *is* whatever version was installed,
+ *  never edited out from under a running process the way dev source can be. */
 function getSourceDirs(): string[] {
   const packagesDir = resolve(__dirname, '..', '..', '..');
-  return [resolve(packagesDir, 'cli', 'src'), resolve(packagesDir, 'core', 'src')];
+  const dirs = [resolve(packagesDir, 'cli', 'src'), resolve(packagesDir, 'core', 'src')];
+  return dirs.filter(existsSync);
 }
 
 function collectTsFiles(dir: string, out: string[]): void {
@@ -39,9 +46,15 @@ function collectTsFiles(dir: string, out: string[]): void {
   }
 }
 
+/** `'built'` when no dev source tree was found (see `getSourceDirs()`) — a fixed, never-stale
+ *  fingerprint, since every process (service and client alike) reading a nonexistent source tree
+ *  computes the same constant. */
 export function computeCodeFingerprint(): string {
+  const sourceDirs = getSourceDirs();
+  if (sourceDirs.length === 0) return 'built';
+
   const files: string[] = [];
-  for (const dir of getSourceDirs()) collectTsFiles(dir, files);
+  for (const dir of sourceDirs) collectTsFiles(dir, files);
   files.sort();
   const hash = createHash('sha1');
   for (const file of files) {

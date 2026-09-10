@@ -13,9 +13,13 @@
  * `FLUSH_INTERVAL_MS` cadence like `BlockNode`/`ArtifactNode`/`FolderNode`. Exits after 30 idle
  * minutes or on SIGTERM/SIGINT, flushing both if dirty either way.
  *
- * Started on demand by `serviceClient.ts#ensureServiceRunning` — not meant to be run directly,
- * though doing so still works (it just skips the lock-claim race that only matters when multiple
- * clients might be starting a service at once).
+ * Started explicitly by `aperas service start`/`restart` (`kgService.ts`) — not meant to be run
+ * directly, though doing so still works: `getApeironExportDir()`/`getArtifactsDir()` below are
+ * called with no argument, so their own default resolution applies — `APERAS_APEIRON_ROOT`/
+ * `APERAS_ARTIFACTS_ROOT` (set by `serviceClient.ts#spawnService` in the env of the process it
+ * spawns) if present, else the same cwd-or-fallback default a direct run would get anyway (see
+ * `graphConfig.ts`'s own doc comment). A direct run just skips the lock-claim race and the graph
+ * resolution that only matter when going through the real `start`/`restart` path.
  *
  * Staleness: the `Store` held here is a snapshot from whenever it was last (re)hydrated — nothing
  * notices `AperasKG/Apeiron/` changing on disk underneath it (e.g. a `git pull` merging someone
@@ -42,7 +46,7 @@ import { unlinkSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
-import { computeFileHash } from '@aperas/core/artifacts';
+import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
 import { resolveTreeView, pruneUnreachableTombstones } from '@aperas/core/apeironNgn/node';
 import { getSocketPath, markReady, clearLock } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
@@ -90,7 +94,7 @@ function diverged(dir: string, kinds: readonly string[], known: Stamps): string[
   return kinds.filter((kind) => fileHash(dir, kind) !== known[kind]);
 }
 
-function main(): void {
+export function main(): void {
   // Computed once, at this process's own startup, from whatever source was on disk at that
   // moment — deliberately never recomputed afterward. `ping`'s response carries it so
   // `serviceClient.ts` can compare it against the *current* on-disk fingerprint and warn when
@@ -98,10 +102,15 @@ function main(): void {
   // superseded (Node doesn't hot-reload; only a restart picks up a source change).
   const codeFingerprint = computeCodeFingerprint();
 
-  let { store, quadCount } = rehydrateStore();
-  console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s).`);
-
+  // The one binding for this process's whole lifetime — see this file's own doc comment above.
+  // Both resolve via their own default (env var, then config discovery, then fallback); nothing
+  // here re-derives cwd itself.
   const contentDir = getApeironExportDir();
+  const artifactsDir = getArtifactsDir();
+
+  let { store, quadCount } = rehydrateStore(contentDir);
+  console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s) from ${contentDir}.`);
+
   const stateDir = join(contentDir, '.state');
   let contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
   let stateStamps = stampAll(stateDir, STATE_CLASSES);
@@ -141,7 +150,7 @@ function main(): void {
         `process (another git pull, a hand-edit) wrote to the mirror while this service held unflushed local changes.`;
       throw new Error(`Refusing to flush: ${contentConflict} ${CONFLICT_RESOLUTION_HINT}`);
     }
-    dehydrateToJsonLd(store);
+    dehydrateToJsonLd(store, contentDir);
     contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
     dirty = false;
     contentConflict = null;
@@ -155,7 +164,7 @@ function main(): void {
         `.state/${bad.map((k) => `${k}.jsonld`).join(', ')} changed on disk since this service last read it.`;
       throw new Error(`Refusing to flush: ${stateConflict} ${CONFLICT_RESOLUTION_HINT}`);
     }
-    dehydrateStateToJsonLd(store);
+    dehydrateStateToJsonLd(store, stateDir);
     stateStamps = stampAll(stateDir, STATE_CLASSES);
     stateDirty = false;
     stateConflict = null;
@@ -210,11 +219,11 @@ function main(): void {
    *  applies to any `--flag`, not just recognized npm options). */
   function clobberFlush(): void {
     pruneUnreachableTombstones(store); // same GC pass `reloadStore` runs — see its own comment
-    dehydrateToJsonLd(store);
+    dehydrateToJsonLd(store, contentDir);
     contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
     dirty = false;
     contentConflict = null;
-    dehydrateStateToJsonLd(store);
+    dehydrateStateToJsonLd(store, stateDir);
     stateStamps = stampAll(stateDir, STATE_CLASSES);
     stateDirty = false;
     stateConflict = null;
@@ -468,9 +477,9 @@ function main(): void {
     if (err.code !== 'ENOENT') throw err;
   }
   server.listen(socketPath, () => {
-    markReady();
+    markReady(contentDir, artifactsDir);
     resetIdleTimer();
   });
 }
 
-main();
+if (process.argv[1]?.endsWith('service.ts')) main();

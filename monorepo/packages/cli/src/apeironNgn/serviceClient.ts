@@ -1,16 +1,21 @@
 /**
  * ApeironNgn shared service client (Aperas-apeironngn-design.md §4 rollout step 5) — every
  * `kg:xxx` script uses this instead of calling `rehydrateStore`/`dehydrateToJsonLd` itself.
- * `ensureServiceRunning` auto-starts the service on a cold invocation, racing safely against other
- * concurrent invocations via `serviceLock.ts`'s atomic claim; `request` sends one op and returns
- * its result.
+ * `ensureServiceRunning` errors with instructions rather than auto-starting one (AperasKG/
+ * artifacts/discussion/packaging.md's "Settled: no concurrency..." note: an implicit auto-spawn
+ * meant whichever command happened to run first silently decided which graph the service bound to
+ * for its whole lifetime — `aperas service start`/`restart` (`kgService.ts`) is now the only place
+ * that resolves and claims that binding, deliberately a human-driven action); `request` sends one
+ * op and returns its result. `ping`/`spawnService`/`waitForReady` are exported for `kgService.ts`'s
+ * own `start`/`restart` to reuse directly.
  */
 
 import { spawn } from 'node:child_process';
 import { connect } from 'node:net';
+import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getSocketPath, readLock, claimLock, isLockStale, clearLock } from './serviceLock';
+import { getSocketPath } from './serviceLock';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { computeCodeFingerprint } from './codeVersion';
 
@@ -74,7 +79,7 @@ function warnIfCodeStale(res: ServiceResponse): void {
   }
 }
 
-async function ping(): Promise<boolean> {
+export async function ping(): Promise<boolean> {
   try {
     const res = await sendRaw({ op: 'ping' }, PING_TIMEOUT_MS);
     warnIfCodeStale(res);
@@ -84,7 +89,7 @@ async function ping(): Promise<boolean> {
   }
 }
 
-async function waitForReady(): Promise<void> {
+export async function waitForReady(): Promise<void> {
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (await ping()) return;
@@ -93,27 +98,51 @@ async function waitForReady(): Promise<void> {
   throw new Error('ApeironNgn service did not become ready in time');
 }
 
-function spawnService(): void {
+/** Spawns the actual long-lived service process, bound to `apeironRoot`/`artifactsRoot` for its
+ *  whole lifetime — passed as `APERAS_APEIRON_ROOT`/`APERAS_ARTIFACTS_ROOT` in its environment
+ *  rather than relying on the child's own `process.cwd()`. Every function that calls
+ *  `getApeironExportDir()`/`getArtifactsDir()` with no argument, anywhere in this process (however
+ *  deep — `apeironNgn/service.ts`'s own `main()`, but also `runTrack`/`runIngest`/`runProject` and
+ *  the shared `apeironNgn/artifacts.ts`/`folders.ts`/`node.ts` helpers underneath them), sees these
+ *  env vars via `resolveEffectiveApeironRoot`/`resolveEffectiveArtifactsRoot`'s own default
+ *  resolution (`graphConfig.ts`) — no signature threading needed anywhere else. Two shapes,
+ *  distinguished by whether `service.ts` still exists as its own file next to this one:
+ *  - **Dev** (running from real source, `service.ts` present): spawn `tsx service.ts` directly.
+ *  - **Built** (a single bundled `aperas.js`, `esbuild`-inlined — `service.ts` has no file of its
+ *    own anymore): re-invoke *this same running script* (`process.argv[1]`, guaranteed to be the
+ *    bundle itself — it's the only entrypoint that exists once built) with plain `node` and the
+ *    hidden `--__service` flag `aperas.ts`'s own `main()` checks for first, before normal verb
+ *    dispatch. */
+export function spawnService(apeironRoot: string, artifactsRoot: string): void {
+  const env = { ...process.env, APERAS_APEIRON_ROOT: apeironRoot, APERAS_ARTIFACTS_ROOT: artifactsRoot };
   const serviceEntry = resolve(__dirname, 'service.ts');
   // apeironNgn -> src -> cli -> packages -> monorepo root, where `tsx` (a root devDependency,
   // hoisted by the workspace) actually lives.
   const rootDir = resolve(__dirname, '..', '..', '..', '..');
-  const tsxBin = resolve(rootDir, 'node_modules', '.bin', 'tsx');
-  const child = spawn(tsxBin, [serviceEntry], { cwd: rootDir, detached: true, stdio: 'ignore' });
+
+  if (existsSync(serviceEntry)) {
+    const tsxBin = resolve(rootDir, 'node_modules', '.bin', 'tsx');
+    const child = spawn(tsxBin, [serviceEntry], { cwd: rootDir, detached: true, stdio: 'ignore', env });
+    child.unref();
+    return;
+  }
+
+  const bundlePath = process.argv[1]!;
+  const child = spawn(process.execPath, [bundlePath, '--__service'], {
+    cwd: dirname(bundlePath),
+    detached: true,
+    stdio: 'ignore',
+    env,
+  });
   child.unref();
 }
 
-/** Ensures a service is listening, auto-starting one if not. Safe to call from many concurrent
- *  CLI invocations at once — at most one of them spawns a new service (see serviceLock.ts). */
+/** Checks whether a service is already listening — never starts one. `aperas service start` is
+ *  now the only place that does that (AperasKG/artifacts/discussion/packaging.md's "Settled: no
+ *  concurrency..." note); every ordinary `kg:xxx` command just needs to know it can proceed. */
 export async function ensureServiceRunning(): Promise<void> {
   if (await ping()) return;
-
-  const lock = readLock();
-  if (lock && isLockStale(lock)) clearLock();
-
-  if (claimLock() === 'claimed') spawnService();
-
-  await waitForReady();
+  throw new Error('No ApeironNgn service running. Start one with: aperas service start');
 }
 
 /** An unresolved flush conflict (`ServiceResponse`'s own doc comment) rides on *every* response

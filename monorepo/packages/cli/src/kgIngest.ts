@@ -87,12 +87,12 @@ function printCommitted(ingested: Array<IngestResponse['ingested'][number]>, res
   }
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "AST-parse and commit changed tracked artifacts' fractal trees, then rebuild the FolderNode structural tree.",
-      usage: 'kg:ingest -- [<path>...] [--track] [--force] [--flush] [--reload]',
+      usage: 'aperas ingest [<path>...] [--track] [--force] [--flush] [--reload]',
       args: [
         { name: '<path>...', description: "Files or directories to ingest, tracking each one first if it isn't tracked yet. Omit to sweep every already-tracked artifact." },
       ],

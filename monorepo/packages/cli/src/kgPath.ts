@@ -19,12 +19,12 @@ export function runPath(store: Store, idArg: string): string {
   return path;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Resolve a node to its walkable path.',
-      usage: 'kg:path -- <ref> [--reload]',
+      usage: 'aperas path <ref> [--reload]',
       args: [
         { name: '<ref>', description: 'Tracked artifact/folder path, deep path, bare node code, or full node id to resolve.' },
       ],
@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   const reload = rawArgs.includes('--reload');
   const [idArg] = rawArgs.filter((p) => p !== '--reload');
   if (!idArg) {
-    console.error('Usage: kg:path -- <ref> [--reload]');
+    console.error('Usage: aperas path <ref> [--reload]');
     process.exit(1);
   }
 

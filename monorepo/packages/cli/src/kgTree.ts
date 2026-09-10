@@ -23,12 +23,12 @@ export function runTree(store: Store, req: { pathArg: string; maxDepth?: number;
   return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, view });
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const paths = process.argv.slice(2);
   if (wantsHelp(paths)) {
     printHelp({
       description: 'Render the fractal tree from a resolved node.',
-      usage: 'kg:tree -- [<path>] [--depth <n>] [--view <viewRef>] [--no-holders] [--reload]',
+      usage: 'aperas tree [<path>] [--depth <n>] [--view <viewRef>] [--no-holders] [--reload]',
       args: [
         { name: '<path>', description: "Tracked artifact/folder path, deep path, bare node code, or full node id to render from. Defaults to '.', the artifacts root." },
       ],

@@ -231,17 +231,17 @@ async function readStdin(): Promise<string> {
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const content = Buffer.concat(chunks).toString('utf-8');
   if (content.length === 0) {
-    throw new Error('No markdown was piped to stdin — did you forget to pipe content? (e.g. `cat file.md | npm run kg:update -- ...`)');
+    throw new Error('No markdown was piped to stdin — did you forget to pipe content? (e.g. `cat file.md | npm run aperas update ...`)');
   }
   return content;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "Replace an existing node's text/children (and, for a heading target, its title) from piped markdown.",
-      usage: 'cat content.md | kg:update -- [--base <path>] <path> [--text-only]',
+      usage: 'cat content.md | aperas update [--base <path>] <path> [--text-only]',
       args: [
         { name: '<path>', description: "Existing Block/Artifact node to update. If it's a heading, piping a leading heading line (e.g. '## New Title') also renames it — '#' depth must match; a plain paragraph leaves the title untouched." },
       ],
@@ -266,7 +266,7 @@ async function main(): Promise<void> {
   const [path] = args.filter((_, i) => !consumed.has(i));
 
   if (!path) {
-    console.error('Usage: cat content.md | kg:update -- [--base <path>] <path> [--text-only]');
+    console.error('Usage: cat content.md | aperas update [--base <path>] <path> [--text-only]');
     process.exit(1);
   }
 

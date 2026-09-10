@@ -15,12 +15,12 @@
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Discard the in-memory ApeironNgn store and rehydrate it from the AperasKG/Apeiron/ mirror on disk (pick up an external change, e.g. a git pull).',
-      usage: 'kg:reload -- [--discard]',
+      usage: 'aperas reload [--discard]',
       flags: [
         { name: '--discard', description: "Resolve a flush conflict (disk diverged since this service last read it) by dropping the pending local mutation and taking disk's content as-is, instead of leaving the reload stuck." },
       ],
@@ -33,7 +33,9 @@ async function main(): Promise<void> {
   console.log(`[ApeironNgn kg:reload] Reloaded ${quadCount} quad(s), ${nodeCount} node(s).`);
 }
 
-main().catch((err) => {
-  console.error('[ApeironNgn kg:reload] Failed:', err.message || err);
-  process.exit(1);
-});
+if (process.argv[1]?.endsWith('kgReload.ts')) {
+  main().catch((err) => {
+    console.error('[ApeironNgn kg:reload] Failed:', err.message || err);
+    process.exit(1);
+  });
+}

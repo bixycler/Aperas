@@ -8,16 +8,20 @@
  */
 
 import { readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ParsedBlockNode, LinkOccurrence } from './astParser';
+import { resolveEffectiveArtifactsRoot } from './graphConfig';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-export function getArtifactsDir(): string {
-  // packages/core/src -> core -> packages -> monorepo root -> repo root -> AperasKG/artifacts
-  return resolve(__dirname, '..', '..', '..', '..', 'AperasKG', 'artifacts');
+/** Defaults to `resolveEffectiveArtifactsRoot()` — which itself checks `APERAS_ARTIFACTS_ROOT`
+ *  before `aperas.config.json` discovery/the fixed fallback (`graphConfig.ts`'s own doc comment
+ *  has the full reasoning). That env-var check is what makes every call site below correct with no
+ *  argument at all when running inside a service process `aperas service start` bound — including
+ *  `apeironNgn/artifacts.ts`/`folders.ts`/`node.ts`'s own bare `getArtifactsDir()` calls, several
+ *  layers removed from here. A standalone tool with no such process (`verify.ts`,
+ *  `apeironNgn/smokeTest.ts`) falls through to the same cwd-or-fallback resolution as before. */
+export function getArtifactsDir(dir: string = resolveEffectiveArtifactsRoot()): string {
+  return dir;
 }
 
 /** A directory's own `README.md` is absorbed directly into its `FolderNode` (`folders.ts`'s

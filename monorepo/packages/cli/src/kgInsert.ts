@@ -150,14 +150,14 @@ async function readStdinIfPiped(): Promise<string | undefined> {
   return content.length > 0 ? content : undefined;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Position, promote, or (with piped markdown) create a Block node.',
       usage: [
-        'kg:insert -- [--base <path>] <path> [--after <anchor>|--before <anchor>]',
-        'cat new-node.md | kg:insert -- [--base <path>] <parent-path> [--after <anchor>|--before <anchor>]',
+        'aperas insert [--base <path>] <path> [--after <anchor>|--before <anchor>]',
+        'cat new-node.md | aperas insert [--base <path>] <parent-path> [--after <anchor>|--before <anchor>]',
       ],
       args: [
         { name: '<path>', description: 'No stdin: the existing node to move/promote. With piped markdown: the parent to create under.' },
@@ -191,7 +191,7 @@ async function main(): Promise<void> {
 
   const [path] = rest;
   if (!path) {
-    console.error('Usage: kg:insert -- [--base <path>] <path> [--after <anchor>|--before <anchor>]');
+    console.error('Usage: aperas insert [--base <path>] <path> [--after <anchor>|--before <anchor>]');
     process.exit(1);
   }
 

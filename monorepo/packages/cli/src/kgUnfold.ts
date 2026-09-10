@@ -125,12 +125,12 @@ export function runUnfold(store: Store, pathArg: string, view: TreeView) {
   return { id, label: displayLabel(id, node), title: previewText(node, { full: true }), children: previewChildren(store, node) };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "Add one TreeNode/Link ref to a TreeView's unfolds set — only that one ref; the view's own rendering decides what becomes visible as a result. Prints the target's title plus each immediate child's/link's abstract as a preview of what just got revealed.",
-      usage: 'kg:unfold -- <ref> [--view <viewRef>] [--flush] [--reload]',
+      usage: 'aperas unfold <ref> [--view <viewRef>] [--flush] [--reload]',
       args: [
         { name: '<ref>', description: 'TreeNode (deep path, bare node code, or full id) or Link (bare id only — a Link has no path of its own) to reveal.' },
       ],
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
     : withoutFlush;
   const [pathArg] = withoutFlags;
   if (!pathArg) {
-    console.error('Usage: kg:unfold -- <ref> [--view <viewRef>] [--flush] [--reload]');
+    console.error('Usage: aperas unfold <ref> [--view <viewRef>] [--flush] [--reload]');
     process.exit(1);
   }
 

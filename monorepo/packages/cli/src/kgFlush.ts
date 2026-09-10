@@ -22,12 +22,12 @@
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Force an immediate sync of the ApeironNgn store out to the AperasKG/Apeiron/ mirror on disk.',
-      usage: 'kg:flush -- [--clobber]',
+      usage: 'aperas flush [--clobber]',
       flags: [
         { name: '--clobber', description: "Write the current in-memory state over disk unconditionally, discarding any external change that diverged since the last read — the counterpart to `kg:reload --discard`, which keeps disk's change and discards the local mutation instead." },
       ],
@@ -40,7 +40,9 @@ async function main(): Promise<void> {
   console.log(`[ApeironNgn kg:flush] Flushed${clobbered ? ' (clobbered — any on-disk divergence was overwritten)' : ''}.`);
 }
 
-main().catch((err) => {
-  console.error('[ApeironNgn kg:flush] Failed:', err.message || err);
-  process.exit(1);
-});
+if (process.argv[1]?.endsWith('kgFlush.ts')) {
+  main().catch((err) => {
+    console.error('[ApeironNgn kg:flush] Failed:', err.message || err);
+    process.exit(1);
+  });
+}

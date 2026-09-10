@@ -7,10 +7,8 @@
  */
 
 import { existsSync, mkdirSync, openSync, writeSync, closeSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 const STARTING_GRACE_MS = 10_000;
 
@@ -19,11 +17,26 @@ export interface LockInfo {
   socketPath: string;
   startedAt: string;
   status: 'starting' | 'ready';
+  /** The Apeiron (JSON-LD mirror) and artifacts (markdown tree) roots this service instance is
+   *  bound to for its whole lifetime — resolved once, at `aperas service start`/`restart` time,
+   *  from *that* invocation's own `process.cwd()` (AperasKG/artifacts/discussion/packaging.md's
+   *  "Settled: no concurrency..." note). Carried here mainly for `aperas service start`'s own
+   *  "already running, bound to X" status line — nothing reads it back to re-derive a path. */
+  apeironRoot: string;
+  artifactsRoot: string;
 }
 
+/** Fixed, well-known location for the lock file and socket — independent of both `process.cwd()`
+ *  (so it doesn't matter which directory a CLI command happens to run from) and of where the code
+ *  itself is installed (so it doesn't need the dev-vs-built hop-counting every other path in this
+ *  codebase has needed — see `graphConfig.ts#resolveFallbackGraphRoot`'s own doc comment for that
+ *  bug class). `$XDG_RUNTIME_DIR` is exactly what this kind of ephemeral, per-login-session state
+ *  (sockets, pid files) is for; a `tmpdir()`-based fallback, namespaced by uid, covers a platform
+ *  or session where it isn't set. */
 export function getRunDir(): string {
-  // packages/cli/src/apeironNgn -> src -> cli -> packages -> monorepo root -> monorepo/.run
-  return resolve(__dirname, '..', '..', '..', '..', '.run');
+  if (process.env.XDG_RUNTIME_DIR) return resolve(process.env.XDG_RUNTIME_DIR, 'aperas');
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+  return resolve(tmpdir(), `aperas-${uid}`);
 }
 
 export function getLockPath(): string {
@@ -48,8 +61,10 @@ export function readLock(): LockInfo | null {
 }
 
 /** Atomically claims the lock (exclusive create) — the only safe way to decide who starts the
- *  service when multiple CLI invocations race on a cold start. */
-export function claimLock(): 'claimed' | 'exists' {
+ *  service when multiple `aperas service start`/`restart` invocations race. `apeironRoot`/
+ *  `artifactsRoot` are whatever the claiming invocation just resolved from its own
+ *  `process.cwd()`, recorded here so they survive into `markReady()`'s own rewrite below. */
+export function claimLock(apeironRoot: string, artifactsRoot: string): 'claimed' | 'exists' {
   ensureRunDir();
   let fd: number;
   try {
@@ -58,17 +73,19 @@ export function claimLock(): 'claimed' | 'exists' {
     if (err.code === 'EEXIST') return 'exists';
     throw err;
   }
-  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'starting' };
+  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'starting', apeironRoot, artifactsRoot };
   writeSync(fd, JSON.stringify(info));
   closeSync(fd);
   return 'claimed';
 }
 
 /** Called by the service itself once its socket is actually listening — overwrites the lock with
- *  its own real pid (the claimer may have been a short-lived CLI process, not the service). */
-export function markReady(): void {
+ *  its own real pid (the claimer may have been a short-lived CLI process, not the service) and the
+ *  same roots it was actually bound to (`apeironNgn/service.ts`'s own `main()`, not re-resolved
+ *  here). */
+export function markReady(apeironRoot: string, artifactsRoot: string): void {
   ensureRunDir();
-  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'ready' };
+  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'ready', apeironRoot, artifactsRoot };
   writeFileSync(getLockPath(), JSON.stringify(info));
 }
 

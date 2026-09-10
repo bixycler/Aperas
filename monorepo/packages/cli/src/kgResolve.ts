@@ -45,14 +45,14 @@ export function runResolve(store: Store, req: { paths: string[]; base?: string; 
   return resolvePlain(store, req.paths, req.base);
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Resolve one or more deep paths to node ids.',
       usage: [
-        'kg:resolve -- [--base <path>] <path> [<path>...]',
-        'kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]',
+        'aperas resolve [--base <path>] <path> [<path>...]',
+        'aperas resolve [--base <path>] --create-holder <path> --titles <title> [<title>...]',
       ],
       args: [
         { name: '<path>', description: 'Deep path(s) to resolve. With --create-holder, exactly one.' },
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   const rest = paths.filter((_, i) => !consumed.has(i));
 
   if (rest.length === 0) {
-    console.error('Usage: kg:resolve -- [--base <path>] <path> [<path>...]');
+    console.error('Usage: aperas resolve [--base <path>] <path> [<path>...]');
     console.error('       kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]');
     process.exit(1);
   }

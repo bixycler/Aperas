@@ -110,14 +110,14 @@ export function runReverseTrack(store: Store): ReverseTrackResult {
   return { neverProjected, changed, staleOnDisk };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Register/refresh ArtifactNodes for tracked files.',
       usage: [
-        'kg:track -- [<path>...] [--force] [--flush] [--reload]',
-        'kg:track -- --reverse [--reload]',
+        'aperas track [<path>...] [--force] [--flush] [--reload]',
+        'aperas track --reverse [--reload]',
       ],
       args: [
         { name: '<path>...', description: 'Files or directories under AperasKG/artifacts/ to track (a directory tracks everything under it recursively). Omit to sweep every file under AperasKG/artifacts/.' },

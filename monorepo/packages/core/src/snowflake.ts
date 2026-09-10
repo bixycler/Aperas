@@ -25,6 +25,8 @@
  * one active generator process per machine number at a time.
  */
 
+import { readIdentity } from './identity';
+
 const CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 const MACHINE_BITS = 10n;
@@ -47,18 +49,32 @@ const EPOCH_MS = BigInt(Date.UTC(2025, 0, 1));
 // to the spare machine identity instead of being silently absorbed.
 const LARGE_JUMP_THRESHOLD_MS = 2000n;
 
+/** `APERAS_MACHINE_NUMBER` (an explicit override, e.g. for CI/ephemeral environments) wins if set;
+ *  otherwise falls back to `identity.json`'s `machineNumber` (`identity.ts`) — the machine-local,
+ *  never-committed config meant to replace setting this env var by hand every session. Warns and
+ *  defaults to 0 only when neither is configured. */
 function readMachineNumber(): bigint {
-  const raw = process.env.APERAS_MACHINE_NUMBER;
-  if (raw === undefined) {
-    console.warn('[Aperas Snowflake] APERAS_MACHINE_NUMBER not set — defaulting to 0. ' +
-      'Set a unique value (0-511) per machine to avoid id collisions across machines.');
-    return 0n;
+  const envRaw = process.env.APERAS_MACHINE_NUMBER;
+  if (envRaw !== undefined) {
+    const n = BigInt(envRaw);
+    if (n < 0n || n > MAX_MACHINE_NUMBER) {
+      throw new Error(`APERAS_MACHINE_NUMBER must be between 0 and ${MAX_MACHINE_NUMBER}, got ${envRaw}`);
+    }
+    return n;
   }
-  const n = BigInt(raw);
-  if (n < 0n || n > MAX_MACHINE_NUMBER) {
-    throw new Error(`APERAS_MACHINE_NUMBER must be between 0 and ${MAX_MACHINE_NUMBER}, got ${raw}`);
+
+  const identityNumber = readIdentity()?.machineNumber;
+  if (identityNumber !== undefined) {
+    const n = BigInt(identityNumber);
+    if (n < 0n || n > MAX_MACHINE_NUMBER) {
+      throw new Error(`identity.json's machineNumber must be between 0 and ${MAX_MACHINE_NUMBER}, got ${identityNumber}`);
+    }
+    return n;
   }
-  return n;
+
+  console.warn('[Aperas Snowflake] No machine number configured — defaulting to 0. ' +
+    'Run `aperas identity set <n>` once per machine (0-511) to avoid id collisions across machines.');
+  return 0n;
 }
 
 const machineNumber = readMachineNumber();

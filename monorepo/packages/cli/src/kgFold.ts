@@ -21,12 +21,12 @@ export function runFold(store: Store, pathArg: string, view: TreeView) {
   return { id };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "Remove one TreeNode/Link ref's own unfolds entry from a TreeView, cascading to anything reached from it that's also separately unfolded.",
-      usage: 'kg:fold -- <ref> [--view <viewRef>] [--flush] [--reload]',
+      usage: 'aperas fold <ref> [--view <viewRef>] [--flush] [--reload]',
       args: [
         { name: '<ref>', description: 'TreeNode (deep path, bare node code, or full id) or Link (bare id only) to fold back up.' },
       ],
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     : withoutFlush;
   const [pathArg] = withoutFlags;
   if (!pathArg) {
-    console.error('Usage: kg:fold -- <ref> [--view <viewRef>] [--flush] [--reload]');
+    console.error('Usage: aperas fold <ref> [--view <viewRef>] [--flush] [--reload]');
     process.exit(1);
   }
 

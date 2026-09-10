@@ -5,8 +5,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { Store, quad } from 'oxigraph';
 import {
   NODE_BASE,
@@ -18,8 +17,7 @@ import {
   PARENT_PRED,
   SIBLING_INDEX_PRED,
 } from './vocab';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { resolveEffectiveApeironRoot } from '../graphConfig';
 
 // The top-level-addressable content kinds (Aperas-apeironngn-design.md §4 rollout step 3's
 // hierarchy refactor), plus `Profile` (Aperas-treeview-design.md §8/§11 — stable identity, tracked
@@ -39,9 +37,11 @@ const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Profile'] as
 // `INSTANCE_FILES` above.
 const STATE_FILES = ['TreeView'] as const;
 
-export function getApeironExportDir(): string {
-  // packages/core/src/apeironNgn -> src -> core -> packages -> monorepo root -> repo root -> AperasKG/Apeiron
-  return resolve(__dirname, '..', '..', '..', '..', '..', 'AperasKG', 'Apeiron');
+/** Defaults to `resolveEffectiveApeironRoot()` — see `artifacts.ts#getArtifactsDir`'s own doc
+ *  comment for the full reasoning (this is its Apeiron-root counterpart, `APERAS_APEIRON_ROOT`
+ *  instead of `APERAS_ARTIFACTS_ROOT`). */
+export function getApeironExportDir(dir: string = resolveEffectiveApeironRoot()): string {
+  return dir;
 }
 
 export interface RehydrateResult {

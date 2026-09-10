@@ -644,7 +644,14 @@ export class ArtifactNode extends BlockNode {
   trackFromDisk(artifactPath: string): { tracked: boolean } {
     const content = readFileSync(join(getArtifactsDir(), artifactPath), 'utf-8');
     const fileHash = computeFileHash(content);
-    if (this.fileHash === fileHash) {
+    // Both must hold for a real no-op: a pure rename (matched by trackAllArtifacts/
+    // trackArtifactsScoped's own Gestalt/exact-key matching) is the common case where content is
+    // byte-identical across the move — `fileHash` alone would wrongly call that "unchanged" and
+    // skip the `this.path` write below, silently leaving this node stuck at its old, now-missing
+    // path while the caller believes the rename succeeded (confirmed live: this is why a
+    // content-preserving rename previously reported success while actually leaving the old node
+    // untouched and creating a fresh duplicate at the new path instead).
+    if (this.fileHash === fileHash && this.path === artifactPath) {
       console.log(`[ApeironNgn Artifacts] Skipping '${artifactPath}' — content unchanged (hash: ${fileHash.slice(0, 12)}...)`);
       return { tracked: false };
     }

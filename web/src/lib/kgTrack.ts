@@ -14,7 +14,7 @@
 
 import { createInterface } from 'node:readline/promises';
 import type { Store } from 'oxigraph';
-import { trackArtifact, trackAllArtifacts } from './apeironNgn/artifacts';
+import { trackAllArtifacts, trackArtifactsScoped } from './apeironNgn/artifacts';
 import { isReadmeFilename, expandArtifactPaths, listArtifactFiles, computeFileHash } from './artifacts';
 import { wrap, type ArtifactNode, type FolderNode } from './apeironNgn/node';
 import { allIdsOfKind } from './apeironNgn/dehydrate';
@@ -32,16 +32,19 @@ export interface TrackResult {
 }
 
 /** `force` (Aperas-crud-design.md §14): only meaningful for the no-`paths` sweep — an explicit
- *  `<path>...` list only ever tracks/refreshes, it never runs the whole-corpus rename/removal sweep
- *  `trackAllArtifacts` owns, so there's nothing for `force` to gate in that branch. */
+ *  `<path>...` list never runs the whole-corpus *removal* sweep `trackAllArtifacts` owns (nothing
+ *  for `force` to gate), though it does now run its own scoped *rename* detection
+ *  (`trackArtifactsScoped`) — deliberately the one piece of `trackAllArtifacts`'s job that's safe
+ *  to do without a directory-wide sweep, since it never needs to discover a path it wasn't already
+ *  either given or already tracking. */
 export function runTrack(store: Store, paths: string[], force: boolean = false): TrackResult {
   if (paths.length > 0) {
     const expandedPaths = expandArtifactPaths(paths);
     const readmeArgs = expandedPaths.filter((p) => isReadmeFilename(p.split('/').pop() ?? p));
     const trackablePaths = expandedPaths.filter((p) => !readmeArgs.includes(p));
-    const results = trackablePaths.map((p) => trackArtifact(store, p));
+    const { results, sweep } = trackArtifactsScoped(store, trackablePaths);
     const trackedCount = results.filter((r) => r.tracked).length;
-    return { trackedCount, skippedCount: results.length - trackedCount, skippedReadmes: readmeArgs };
+    return { trackedCount, skippedCount: results.length - trackedCount, skippedReadmes: readmeArgs, renamed: sweep.renamed, removed: sweep.removed };
   }
   const { results, sweep, pendingRemovals } = trackAllArtifacts(store, force);
   const trackedCount = results.filter((r) => r.tracked).length;

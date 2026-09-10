@@ -22,6 +22,8 @@
  * artifacts.ts/folders.ts) — a separate mechanism from this one, not the same counter.
  */
 
+import { stripInlineAnchors } from './astParser';
+
 const LEAF_TYPES = new Set(['heading', 'paragraph', 'code', 'thematicBreak', 'html', 'table', 'blockquote']);
 const CONTAINER_TYPES = new Set(['list', 'listItem']);
 
@@ -98,8 +100,15 @@ function matchKeyed<T>(aKeys: T[], bKeys: T[]): MatchingBlock[] {
   return dropAmbiguousSingletons(gestaltMatchingBlocks(aKeys, bKeys), aKeys, bKeys);
 }
 
+/** Stripped of inline anchors before comparison (`stripInlineAnchors`'s own doc comment): a
+ *  heading's `title` is already anchor-free by construction (astParser strips a heading's own
+ *  trailing anchor before it ever becomes `title`), but a list item/paragraph's `text` carries its
+ *  anchor inline once the block's been through even one `kg:project` cycle — without stripping
+ *  here, re-parsing an already-projected file's *unchanged* content off disk would key-mismatch
+ *  against its own stored (still anchor-less) node and reconcile as removed+added instead of
+ *  matched. */
 function leafKey(node: any): string {
-  return node.type === 'heading' ? node.title : (node.text ?? '');
+  return node.type === 'heading' ? node.title : stripInlineAnchors(node.text ?? '');
 }
 
 /**

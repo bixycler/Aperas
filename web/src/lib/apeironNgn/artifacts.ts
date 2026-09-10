@@ -7,7 +7,7 @@
  * (a multi-block sweep, run once per artifact after its own tree write completes).
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
 import { wrap, tombstoneLiveSubtree } from './node';
@@ -17,7 +17,7 @@ import { allIdsOfKind } from './dehydrate';
 import { resolveDeepPathDetail } from './resolveCreate';
 import { generateNodeId } from '../snowflake';
 import { listArtifactFiles, getArtifactsDir, expandArtifactPaths, type PendingLinkCodes } from '../artifacts';
-import { parseMarkdownTree, extractAbstract, WIKILINK_PREDICATE, HEADING_TREE_ANCHOR_PROP } from '../astParser';
+import { parseMarkdownTree, extractAbstract, stripInlineAnchors, WIKILINK_PREDICATE, HEADING_TREE_ANCHOR_PROP } from '../astParser';
 import { getProp, getProps, type PropEntry } from '../props';
 import { matchLeftoverByAbstract } from '../reconcile';
 import { relativeToCanonicalArtifactPath } from '../leadingPart';
@@ -254,6 +254,89 @@ export function trackAllArtifacts(store: Store, force: boolean = false): { resul
   }
 
   return { results, sweep, pendingRemovals };
+}
+
+/** Order-independent match by exact key equality, no positional requirement — see
+ *  `trackArtifactsScoped`'s own doc comment for why this exists instead of reusing
+ *  `matchLeftoverByAbstract`. A key occurring more than once in either list is left unmatched
+ *  (nothing anchors which occurrence is "the" one), same "decline rather than guess" spirit as
+ *  `dropAmbiguousSingletons`, just without the recursion that makes that algorithm sensitive to
+ *  where in each array a value happens to sit. */
+function matchByExactKey<T>(
+  removed: Array<{ key: string; item: T }>,
+  added: Array<{ key: string; item: T }>
+): { matched: Array<{ old: T; new: T }> } {
+  const countOf = (list: Array<{ key: string }>, key: string) => list.filter((x) => x.key === key).length;
+  const matched: Array<{ old: T; new: T }> = [];
+  for (const r of removed) {
+    if (countOf(removed, r.key) !== 1) continue;
+    const onlyAdded = added.filter((a) => a.key === r.key);
+    if (onlyAdded.length === 1) matched.push({ old: r.item, new: onlyAdded[0].item });
+  }
+  return { matched };
+}
+
+/** Scoped counterpart to `trackAllArtifacts`'s rename detection, for `kg:track`/`kg:ingest`'s
+ *  explicit-`<path>...` branch (`runTrack`, kgTrack.ts): the "old docs migrate one at a time"
+ *  plan (AperasKG/artifacts/discussion/cli.md) means a real corpus-wide sweep can't be the answer
+ *  here — `trackAllArtifacts`'s own `listArtifactFiles()` walks *everything* under `artifacts/`,
+ *  `archive/` included, which is exactly what turned an ordinary rename attempt into a hard,
+ *  unrelated failure (a pre-existing slug-path collision inside `archive/Aperas-dev-status.md`).
+ *
+ *  This never lists a directory at all. The "added" side is only ever the paths the caller
+ *  actually gave (already known — no reason to discover more), filtered to ones with no live
+ *  ArtifactNode yet; the "removed" side is only already-*tracked* ArtifactNodes whose own recorded
+ *  `path` no longer exists on disk (a cheap `existsSync` per already-known path, not a directory
+ *  listing) — so untouched, never-yet-tracked territory like `archive/` can never enter either
+ *  side of the match, no matter how large it is.
+ *
+ *  Deliberately does *not* reuse `trackAllArtifacts`'s `matchLeftoverByAbstract` (the Gestalt/
+ *  Ratcliff-Obershelp recursion `reconcile.ts` uses everywhere else): that algorithm is
+ *  position-sensitive by construction — great for reconciling siblings that share a rough common
+ *  order across an edit, wrong for an unordered bag of whole-artifact identities scattered across
+ *  different concern folders with no such order at all. Confirmed live: batch-renaming 5 concern
+ *  docs at once (their "removed" order being store-iteration order, their "added" order being
+ *  argv order) matched only 2 of the 4 pairs that were genuinely exact-content matches — the other
+ *  2 sat in a recursive quadrant one of the position-sensitive splits had already discarded, not
+ *  because they were ambiguous. `matchByExactKey` below keeps the same "decline rather than guess"
+ *  principle (a key occurring more than once on either side is left unmatched) but has no
+ *  positional requirement at all — every occurrence of a key is found regardless of where it sits
+ *  in either array, so this can't strand a real match the way the recursion can.
+ *
+ *  Deliberately does not tombstone anything: unlike `trackAllArtifacts`, an unmatched "removed"
+ *  candidate here just stays exactly as before (still live, still pointing at its old, now-missing
+ *  path) rather than being tombstoned — a scoped call only ever knows about the path(s) it was
+ *  given, never enough context to be sure nothing else refers to what's now missing. Removal stays
+ *  the full sweep's own decision to make, once that path is safe to run again. */
+export function trackArtifactsScoped(store: Store, paths: string[]): { results: TrackResult[]; sweep: ArtifactSweepStats } {
+  const artifactsDir = getArtifactsDir();
+  const newPaths = paths.filter((p) => !findLiveArtifactByPath(store, p));
+
+  const addedCandidates = newPaths.map((path) => {
+    const content = readFileSync(join(artifactsDir, path), 'utf-8');
+    return { key: extractAbstract(parseMarkdownTree(content).root), item: path };
+  });
+  const removedCandidates = allLiveIdsOfKind(store, 'ArtifactNode')
+    .filter((id) => {
+      const node = wrap(store, id) as unknown as ArtifactNode;
+      return !node.holder && !existsSync(join(artifactsDir, node.path as string));
+    })
+    .map((id) => ({ key: stripInlineAnchors(((wrap(store, id) as unknown as ArtifactNode).text as string) ?? ''), item: id }));
+
+  const { matched } = matchByExactKey(removedCandidates, addedCandidates);
+
+  const sweep: ArtifactSweepStats = { renamed: 0, removed: 0 };
+  const renamedIntoPaths = new Set<string>();
+  for (const { old: oldId, new: newPath } of matched as Array<{ old: string; new: string }>) {
+    const node = wrap(store, oldId) as unknown as ArtifactNode;
+    console.log(`[ApeironNgn Artifacts] Detected rename '${node.path}' -> '${newPath}' (scoped)`);
+    node.trackFromDisk(newPath);
+    sweep.renamed++;
+    renamedIntoPaths.add(newPath);
+  }
+
+  const results = paths.map((p) => (renamedIntoPaths.has(p) ? { tracked: true } : trackArtifact(store, p)));
+  return { results, sweep };
 }
 
 /** Whether a block's resolved link outcome actually differs — this is *not* the same question as

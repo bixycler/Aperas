@@ -152,6 +152,25 @@ export function extractAnchorNames(text: string): string[] {
   return [...text.matchAll(ANCHOR_NAME_RE)].map((m) => m[1]);
 }
 
+/** The write-side counterpart to `extractAnchorNames`: removes every inline anchor tag from
+ *  `text`, consuming one run of trailing whitespace along with each tag rather than leaving it
+ *  behind — an inline anchor is always spliced in as `<original space> <tag> <rest>` (design/
+ *  linking.md's Anchors section: right after a list item/paragraph's lead-in colon), so eating the
+ *  tag's own trailing whitespace reconstructs the pre-anchor text exactly, not a double space.
+ *
+ *  Needed because a block's stored abstract/`text` and the same content freshly re-parsed off disk
+ *  can otherwise disagree by exactly this anchor even when nothing meaningful changed: `kg:project`
+ *  splices an anchor into a list item/paragraph's *rendered* markdown without ever writing that
+ *  change back into the block's own stored `text` (Aperas-apeironngn-design.md's rollout notes;
+ *  confirmed live — AperasKG/artifacts/discussion/cli.md's own "Resolved: scoped rename detection"
+ *  entry), so any comparison that requires exact string equality between "what the graph
+ *  remembers" and "what's on disk right now" needs to normalize this away first. Applied at every
+ *  site that makes that comparison: `extractAbstract` below (artifact/folder abstracts) and
+ *  `reconcile.ts`'s `leafKey` (block-level Gestalt matching). */
+export function stripInlineAnchors(text: string): string {
+  return text.replace(new RegExp(ANCHOR_NAME_RE.source + '\\s*', 'g'), '');
+}
+
 /** Strips every trailing anchor tag from a heading's raw line (working backward from the end, so
  *  any number of concatenated anchors are all found, not just one), returning the clean `title` and
  *  the concatenated markup of whichever were tagged `aperas-tree` — an `aperas-id` anchor (or a
@@ -637,7 +656,13 @@ export function extractAbstract(root: ParsedBlockNode): string {
     return null;
   }
   const raw = findFirst(root, true) ?? '';
-  return raw ? truncateForPreview(raw) : raw;
+  if (!raw) return raw;
+  // Stripped before truncating, not after: an anchor tag falling inside the truncation window
+  // would otherwise survive as a mangled fragment, and it shouldn't count toward the length
+  // budget anyway (see `stripInlineAnchors`'s own doc comment for why this needs to happen at
+  // all — a fresh parse of already-projected content carries an anchor the stored abstract never
+  // did).
+  return truncateForPreview(stripInlineAnchors(raw));
 }
 
 export interface ParsedMarkdown {

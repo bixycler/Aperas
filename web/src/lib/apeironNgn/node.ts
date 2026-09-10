@@ -989,8 +989,13 @@ export function rejectSlugPathCollisions(store: Store, ancestorPath: string, chi
  *  already key by) — `ingestFromDisk`'s own doc comment has the full reasoning for why this has to
  *  be captured *before* this ingestion runs, from the real tree rather than `toReconcileShape()`'s
  *  plain-object copy (whose own `links` is just an array of `Link` subdocument ids, not target
- *  ids — real `TreeNode.links` accessors resolve `target` for free instead). */
-function collectLinkTargetsByBlock(node: TreeNode, out: Map<string, Set<string>>): void {
+ *  ids — real `TreeNode.links` accessors resolve `target` for free instead).
+ *
+ *  Exported (not just `ingestFromDisk`-private) because `kgUpdate.ts`/`kgInsert.ts` need the same
+ *  pre-mutation snapshot for whatever subtree they're about to reconcile/hydrate — see their own
+ *  doc comments for why `kg:update`/`kg:insert` skipping link resolution entirely was a real,
+ *  previously-hidden gap (only `ingestArtifact` ever called `resolveBlockLinks`). */
+export function collectLinkTargetsByBlock(node: TreeNode, out: Map<string, Set<string>>): void {
   const links = (node.links as unknown as Link[] | undefined) ?? [];
   if (links.length > 0) {
     const targets = new Set<string>();
@@ -1012,8 +1017,8 @@ function collectLinkTargetsByBlock(node: TreeNode, out: Map<string, Set<string>>
  *  to drop them all unconditionally before this could ever be checked). Must run at the same point
  *  `collectLinkTargetsByBlock` does — before `hydrateFromParsed` touches anything — since this is
  *  the only moment a matched block's *old* wikilink `Link`s are both still live and known to be
- *  old. */
-function collectOldWikilinksByBlock(
+ *  old. Exported for the same reason as `collectLinkTargetsByBlock` above. */
+export function collectOldWikilinksByBlock(
   node: TreeNode,
   out: Map<string, Array<{ id: string; target: string; positions: number[] }>>
 ): void {
@@ -1032,6 +1037,23 @@ function collectOldWikilinksByBlock(
   for (const child of node.treeChildren) {
     if (nodeKindFromId(child.id) === 'BlockNode') collectOldWikilinksByBlock(child, out);
   }
+}
+
+/** Walks `.parent` up from `node` (inclusive — `node` itself counts if it's already the
+ *  `ArtifactNode`) to find the enclosing artifact's id, for `resolveBlockLinks`'s `artifactId`
+ *  parameter (the `danglingRef`-prop bookkeeping it does on that node). `artifacts.ts`'s own
+ *  `artifactPathOfBlock` does the identical walk but returns the artifact's `path` — this returns
+ *  the id instead, since `kgUpdate.ts`/`kgInsert.ts` (unlike `ingestArtifact`, which already has
+ *  its artifact's id in hand from `findLiveArtifactByPath`) only start with an arbitrary
+ *  Block/ArtifactNode target and need to find their way up to it. */
+export function findEnclosingArtifactId(node: TreeNode): string | null {
+  let current: TreeNode | undefined = node;
+  while (current) {
+    if (nodeKindFromId(current.id) === 'ArtifactNode') return current.id;
+    if (nodeKindFromId(current.id) !== 'BlockNode') return null;
+    current = current.parent;
+  }
+  return null;
 }
 
 /** Deliberately `extends TreeNode` directly, not `BlockNode` — unlike `ArtifactNode`, a folder was

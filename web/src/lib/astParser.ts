@@ -171,6 +171,16 @@ export function stripInlineAnchors(text: string): string {
   return text.replace(new RegExp(ANCHOR_NAME_RE.source + '\\s*', 'g'), '');
 }
 
+/** A heading's markdown depth — its `title`'s leading run of `#` characters, counted (`1` for
+ *  `# Foo`, `2` for `## Foo`, ...) — `0` for anything else (no leading `#` at all, or no title).
+ *  The one shared reading of "how deep is this heading," used wherever depth has to agree across
+ *  two separately-parsed nodes: `kg:update`'s direct-heading-retitle guard (refuses a depth
+ *  change rather than silently reinterpreting one) and `reconcile.ts`'s heading positional-
+ *  fallback match (buckets candidates by depth first, so a `##` can never fool-match a `#`). */
+export function headingDepth(title: string | undefined): number {
+  return /^#+/.exec(title ?? '')?.[0].length ?? 0;
+}
+
 /** Strips every trailing anchor tag from a heading's raw line (working backward from the end, so
  *  any number of concatenated anchors are all found, not just one), returning the clean `title` and
  *  the concatenated markup of whichever were tagged `aperas-tree` — an `aperas-id` anchor (or a

@@ -14,7 +14,7 @@
  * the intended "decline rather than guess" behavior (§2), not a gap. A heading is the one
  * exception: its key is `title` alone, but its adopted leading-paragraph `text` (`astParser.ts`)
  * isn't part of that key, so a matched pair of headings can still differ in `text` — checked
- * explicitly (`headingTextChanged`) rather than assumed away, and counted as `changed` rather than
+ * explicitly (`headingChanged`) rather than assumed away, and counted as `changed` rather than
  * folded into `matched` (named for "matched, not moved, not changed" — not "unchanged", which
  * reads as a claim the `changed` bucket next to it would contradict). "Changed" also applies one
  * level up, at ArtifactNode/FolderNode scope, where matching is by path/abstract rather than
@@ -22,7 +22,7 @@
  * artifacts.ts/folders.ts) — a separate mechanism from this one, not the same counter.
  */
 
-import { stripInlineAnchors } from './astParser';
+import { stripInlineAnchors, headingDepth } from './astParser';
 
 const LEAF_TYPES = new Set(['heading', 'paragraph', 'code', 'thematicBreak', 'html', 'table', 'blockquote']);
 const CONTAINER_TYPES = new Set(['list', 'listItem']);
@@ -202,6 +202,47 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
       matchedNew.add(newIndex);
     }
   }
+
+  // Stage A2: headings still unmatched after Stage A's exact-title match get one more chance —
+  // retitled in place, not moved/restructured. `leafKey` keys a heading on `title` alone (its own
+  // doc comment), so an edited title is an exact-key miss with nothing else to fall back on; left
+  // there, a whole subtree under a retitled section heading reconciles as wholesale removed+added
+  // (discussion/cli-packaging.md's "Resolved (partially): retitling a heading..." incident — the
+  // *targeted* retitle-in-place `kg:update` offers has no equivalent when the change arrives via a
+  // whole-document/whole-tree push instead). Bucketed by depth (title's own leading `#` run) so a
+  // `##` can never fool-match a `#`, then paired in original relative order within each bucket —
+  // the same "position is the anchor" trade-off Stage B below already accepts for containers.
+  // Unlike Stage A's key match, this doesn't decline on ambiguity (`dropAmbiguousSingletons`): once
+  // title itself is out as a key, position is the only signal left, so there's nothing to be
+  // ambiguous *about* — same reasoning Stage B's own container alignment already relies on.
+  const oldHeadingByDepth = new Map<number, number[]>();
+  for (const i of oldLeafIdx) {
+    if (oldChildren[i].type !== 'heading' || matchedOld.has(i)) continue;
+    const depth = headingDepth(oldChildren[i].title);
+    const bucket = oldHeadingByDepth.get(depth);
+    if (bucket) bucket.push(i); else oldHeadingByDepth.set(depth, [i]);
+  }
+  const newHeadingByDepth = new Map<number, number[]>();
+  for (const i of newLeafIdx) {
+    if (newChildren[i].type !== 'heading' || matchedNew.has(i)) continue;
+    const depth = headingDepth(newChildren[i].title);
+    const bucket = newHeadingByDepth.get(depth);
+    if (bucket) bucket.push(i); else newHeadingByDepth.set(depth, [i]);
+  }
+  for (const [depth, oldIdxs] of oldHeadingByDepth) {
+    const newIdxs = newHeadingByDepth.get(depth);
+    if (!newIdxs) continue;
+    const n = Math.min(oldIdxs.length, newIdxs.length);
+    for (let k = 0; k < n; k++) {
+      const oldIndex = oldIdxs[k];
+      const newIndex = newIdxs[k];
+      matched.push({ oldIndex, newIndex });
+      anchors.push({ oldIndex, newIndex });
+      matchedOld.add(oldIndex);
+      matchedNew.add(newIndex);
+    }
+  }
+
   anchors.sort((x, y) => x.newIndex - y.newIndex);
 
   // Stage B: partition both index ranges into segments delimited by the anchors (in new-tree
@@ -266,7 +307,7 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
 
 export interface ReconciliationStats {
   /** Matched, same position, same content — the ordinary case. Named `matched`, not `unchanged`,
-   *  since a matched-but-different-content heading falls into `changed` instead (`headingTextChanged`
+   *  since a matched-but-different-content heading falls into `changed` instead (`headingChanged`
    *  below); calling this bucket `unchanged` would read as a claim `changed` next to it contradicts. */
   matched: number;
   moved: number;
@@ -311,15 +352,18 @@ interface ReconcileContext {
 }
 
 /**
- * `leafKey`'s one exception to "matched implies content-identical" (its own doc comment above):
- * a heading matches by `title` alone, but its adopted leading-paragraph `text`
+ * `leafKey`'s exceptions to "matched implies content-identical" (its own doc comment above): a
+ * heading matches Stage A by `title` alone, but its adopted leading-paragraph `text`
  * (`astParser.ts`'s "leading paragraph" — real, independently-editable content, not derived from
- * `title`) isn't part of that key, so a matched pair of headings can still differ in `text`. Every
- * other leaf type's key *is* its own `text`, so a changed leaf there can never end up "matched" in
- * the first place (`leafKey`'s doc comment). Checked, not assumed, so `matched`/`changed` stay a
- * true statement about what the reconciler actually saw. */
-function headingTextChanged(oldNode: any, newNode: any): boolean {
-  return oldNode.type === 'heading' && (oldNode.text ?? '') !== (newNode.text ?? '');
+ * `title`) isn't part of that key, so a matched pair can still differ in `text`. Stage A2 (this
+ * file's own heading positional fallback, above) adds a second way: a pair matched there can
+ * differ in `title` itself — that's the whole point of it, catching a retitle Stage A's exact-key
+ * match would otherwise treat as a wholesale removal. Every other leaf type's key *is* its own
+ * `text`, so a changed leaf there can never end up "matched" in the first place (`leafKey`'s doc
+ * comment). Checked, not assumed, so `matched`/`changed` stay a true statement about what the
+ * reconciler actually saw. */
+function headingChanged(oldNode: any, newNode: any): boolean {
+  return oldNode.type === 'heading' && ((oldNode.text ?? '') !== (newNode.text ?? '') || oldNode.title !== newNode.title);
 }
 
 /**
@@ -355,7 +399,7 @@ function reconcileNode(oldNode: any, newNode: any, ctx: ReconcileContext): void 
     reconcileNode(oldChild, newChild, ctx);
     if (movedPairs.has(oldIndex)) {
       ctx.stats.moved++;
-    } else if (headingTextChanged(oldChild, newChild)) {
+    } else if (headingChanged(oldChild, newChild)) {
       ctx.stats.changed++;
     } else {
       ctx.stats.matched++;
@@ -432,7 +476,7 @@ function detectCrossParentMoves(ctx: ReconcileContext, now: string): any[] {
           const oldChild = oldNode.children[oldIndex];
           const newChild = newNode.children[newIndex];
           reconcileNode(oldChild, newChild, ctx);
-          if (headingTextChanged(oldChild, newChild)) ctx.stats.changed++;
+          if (headingChanged(oldChild, newChild)) ctx.stats.changed++;
           else ctx.stats.matched++;
         }
         for (const ni of subDiff.addedNew) ctx.addedCandidates.push(newNode.children[ni]);

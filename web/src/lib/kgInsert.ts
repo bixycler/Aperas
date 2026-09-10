@@ -18,11 +18,13 @@
 
 import type { Store } from 'oxigraph';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { wrap, rejectSlugPathCollisions } from './apeironNgn/node';
+import { wrap, rejectSlugPathCollisions, findEnclosingArtifactId } from './apeironNgn/node';
 import type { BlockNode, TreeNode } from './apeironNgn/node';
 import { nodeKindFromId } from './apeironNgn/vocab';
 import { displayLabel } from './apeironNgn/tree';
 import { parseMarkdownTree } from './astParser';
+import { extractLinkCodes, type PendingLinkCodes } from './artifacts';
+import { resolveBlockLinks, type LinkResolutionStats } from './apeironNgn/artifacts';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -49,7 +51,7 @@ function resolveOne(store: Store, ref: string, base: string | undefined, label: 
   return id;
 }
 
-export function runInsert(store: Store, req: InsertReq): { lines: string[] } {
+export function runInsert(store: Store, req: InsertReq): { lines: string[]; linkResolution?: LinkResolutionStats } {
   if (req.after !== undefined && req.before !== undefined) {
     throw new Error('--after and --before are mutually exclusive.');
   }
@@ -99,11 +101,20 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[] } {
   const parentPath = parent.toPath();
   if (parentPath) rejectSlugPathCollisions(store, parentPath, topLevel);
 
+  // Extracted *before* any of `topLevel` is hydrated below — `extractLinkCodes` strips the
+  // (schema-unknown) `linkCodes` field off each node as it walks, in place, the same order
+  // `ingestFromDisk`/`kg:update` use (extract first, hydrate after). Every node here is brand new
+  // (create mode), so there's no "old" resolved state to diff against — `resolveBlockLinks`'s
+  // `oldLinkTargets`/`oldWikilinksByBlock` are left at their empty defaults.
+  const pendingLinks: PendingLinkCodes[] = [];
+  for (const child of topLevel) extractLinkCodes(child, pendingLinks);
+
   const newIds = topLevel.map((child) => {
     const id = `BlockNode:${child.blockId}`;
     (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(child);
     return id;
   });
+  const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
 
   if (anchorRef !== undefined) {
     const anchorId = resolveOne(store, anchorRef, req.base, 'Anchor');
@@ -123,7 +134,7 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[] } {
     const node = wrap(store, id) as unknown as BlockNode;
     return `aperas://id/${id}  [${displayLabel(id, node)}]  ${node.title}  (created)`;
   });
-  return { lines };
+  return { lines, linkResolution };
 }
 
 /** `isTTY` alone isn't reliable — confirmed live: a non-interactive harness (no controlling
@@ -189,6 +200,10 @@ async function main(): Promise<void> {
   await ensureServiceRunning();
   const result = await request<ReturnType<typeof runInsert>>({ op: 'insert', path, base, markdown, after, before, flush, reload });
   for (const line of result.lines) console.log(line);
+  const links = result.linkResolution;
+  if (links && links.resolved + links.dangling > 0) {
+    console.log(`[ApeironNgn kg:insert]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
+  }
 }
 
 if (process.argv[1]?.endsWith('kgInsert.ts')) {

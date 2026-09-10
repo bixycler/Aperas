@@ -32,15 +32,18 @@
 
 import type { Store } from 'oxigraph';
 import { resolveDeepPath } from './apeironNgn/resolve';
-import { wrap, applyTombstone, rejectSlugPathCollisions } from './apeironNgn/node';
+import {
+  wrap, applyTombstone, rejectSlugPathCollisions,
+  collectLinkTargetsByBlock, collectOldWikilinksByBlock, findEnclosingArtifactId,
+} from './apeironNgn/node';
 import type { BlockNode, TreeNode, ApeironNode } from './apeironNgn/node';
 import { nodeKindFromId } from './apeironNgn/vocab';
-import { parseMarkdownTree, type ParsedBlockNode } from './astParser';
+import { parseMarkdownTree, headingDepth, type ParsedBlockNode, type LinkOccurrence } from './astParser';
+import { extractLinkCodes } from './artifacts';
 import { reconcileTree } from './reconcile';
+import { resolveBlockLinks, type LinkResolutionStats } from './apeironNgn/artifacts';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
-
-const HEADING_DEPTH_RE = /^#+/;
 
 export interface UpdateReq {
   path: string;
@@ -56,6 +59,7 @@ export interface UpdateResult {
   changed?: number;
   added?: number;
   removed?: number;
+  linkResolution: LinkResolutionStats;
 }
 
 export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
@@ -82,12 +86,18 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   let title: string | undefined;
   let props: ParsedBlockNode['props'];
   let overflow: ParsedBlockNode[];
+  // Whichever branch below supplies `text`/`title` does so from a real parsed node (`firstChild`)
+  // that may itself carry `linkCodes` for wikilinks inside that very text — captured separately
+  // here since `text`/`title` themselves are plain strings once destructured out, with nowhere
+  // left to hang the codes off of. Stays `undefined` in the plain-overflow (`else`) branch, where
+  // `target`'s own text isn't changing at all.
+  let rootLinkCodes: LinkOccurrence[] | undefined;
   if (target.type === 'heading' && firstChild?.type === 'heading') {
     // The piped input's own leading heading is `target`'s new state in full, title included —
     // already a fully-formed node (anchor-stripped, tree-anchor stashed) via the same
     // `groupByHeadings`/`convertAstNode` machinery a real document parse uses.
-    const oldDepth = HEADING_DEPTH_RE.exec(target.title ?? '')?.[0].length ?? 0;
-    const newDepth = HEADING_DEPTH_RE.exec(firstChild.title)?.[0].length ?? 0;
+    const oldDepth = headingDepth(target.title);
+    const newDepth = headingDepth(firstChild.title);
     if (oldDepth !== newDepth) {
       throw new Error(
         `'${req.path}' is a depth-${oldDepth} heading — the piped input's own heading is depth-${newDepth}. ` +
@@ -98,6 +108,7 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     text = firstChild.text;
     props = firstChild.props;
     overflow = firstChild.children ?? [];
+    rootLinkCodes = firstChild.linkCodes;
   } else if (firstChild?.type === 'paragraph') {
     // A list directly following a paragraph adopts into it (astParser.ts's own adoption rule,
     // §8) *regardless* of whether the paragraph sits under a heading/listItem container — this
@@ -107,6 +118,7 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     // silently dropping the whole list on the floor when only `firstChild.text` was read here.
     text = firstChild.text;
     overflow = [...(firstChild.children ?? []), ...parsedChildren.slice(1)];
+    rootLinkCodes = firstChild.linkCodes;
   } else {
     text = undefined;
     overflow = parsedChildren;
@@ -117,6 +129,19 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   // against `target`'s real prior state; mutating `target.props` first would make `oldShape`
   // already reflect the *new* props, quietly defeating that comparison on every heading edit.
   const oldShape = target.toReconcileShape();
+
+  // Snapshot of `target`'s own current live tree, taken before any of the mutations below —
+  // `resolveBlockLinks` (`apeironNgn/artifacts.ts`) needs each touched block's *previous* resolved
+  // targets/wikilinks to decide what changed and which `Link` ids can be reused, the same snapshot
+  // `ingestArtifact` takes of a whole artifact before its own tree write. `kg:update`/`kg:insert`
+  // never called `resolveBlockLinks` at all until this fix (`discussion/cli-packaging.md`,
+  // "Resolved (partially): retitling a heading, and a deeper wikilink gap it exposed") — a block
+  // reconciled as changed/added here would otherwise get no wikilink resolution whatsoever.
+  const oldLinkTargets = new Map<string, Set<string>>();
+  const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
+  collectLinkTargetsByBlock(target, oldLinkTargets);
+  collectOldWikilinksByBlock(target, oldWikilinksByBlock);
+  const artifactId = findEnclosingArtifactId(target) ?? undefined;
 
   // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions) — only relevant
   // when the heading-replacement branch above actually supplied a new `title`: an `ArtifactNode`'s
@@ -150,6 +175,15 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
       target.title = title;
       target.props = props?.length ? (props as unknown as ApeironNode[]) : undefined;
     }
+    // Extracted *before* `hydrateFromParsed` runs on any of `overflow` below — `extractLinkCodes`
+    // strips the (schema-unknown) `linkCodes` field off each node as it walks, in place, the same
+    // order `ingestFromDisk` uses (extract first, hydrate after).
+    const pendingLinks = extractLinkCodes({
+      blockId: target.key,
+      type: target.type,
+      children: overflow,
+      linkCodes: rootLinkCodes,
+    } as unknown as ParsedBlockNode);
     const overflowIds = overflow.map((c) => {
       const id = `BlockNode:${c.blockId}`;
       (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(c);
@@ -157,7 +191,8 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     });
     const existing = (target.children as TreeNode[] | undefined) ?? [];
     target.children = [...overflowIds, ...existing];
-    return { reconciled: false };
+    const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, artifactId);
+    return { reconciled: false, linkResolution };
   }
 
   // `props` defaults to `oldShape`'s own (preserving whatever `target` already had, e.g. a
@@ -172,12 +207,18 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     text,
     children: overflow,
     props: title !== undefined ? props : oldShape.props,
+    linkCodes: rootLinkCodes,
   };
   const { finalTree, tombstones, stats } = reconcileTree(oldShape, newShape);
   for (const tombstone of tombstones) applyTombstone(store, tombstone);
+  // Same extract-before-hydrate ordering as the --text-only branch above — `finalTree` is
+  // `newShape`, mutated in place by `reconcileTree` (carried-forward `blockId`s etc.), so it still
+  // carries every node's own `linkCodes` from the fresh parse, root included.
+  const pendingLinks = extractLinkCodes(finalTree as unknown as ParsedBlockNode);
   target.hydrateFromParsed(finalTree);
+  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, artifactId);
 
-  return { reconciled: true, ...stats };
+  return { reconciled: true, ...stats, linkResolution };
 }
 
 /** Refuses on empty input rather than silently proceeding — confirmed live this matters: unlike
@@ -238,6 +279,10 @@ async function main(): Promise<void> {
     console.log(`[ApeironNgn kg:update] Reconciled '${path}': ${result.matched} matched, ${result.moved} moved, ${result.changed} changed, ${result.added} added, ${result.removed} removed.`);
   } else {
     console.log(`[ApeironNgn kg:update] Updated '${path}' (--text-only: overflow prepended, no reconciliation).`);
+  }
+  const links = result.linkResolution;
+  if (links.resolved + links.dangling > 0) {
+    console.log(`[ApeironNgn kg:update]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
   }
 }
 

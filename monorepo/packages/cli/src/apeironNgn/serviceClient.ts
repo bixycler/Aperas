@@ -1,0 +1,137 @@
+/**
+ * ApeironNgn shared service client (Aperas-apeironngn-design.md §4 rollout step 5) — every
+ * `kg:xxx` script uses this instead of calling `rehydrateStore`/`dehydrateToJsonLd` itself.
+ * `ensureServiceRunning` auto-starts the service on a cold invocation, racing safely against other
+ * concurrent invocations via `serviceLock.ts`'s atomic claim; `request` sends one op and returns
+ * its result.
+ */
+
+import { spawn } from 'node:child_process';
+import { connect } from 'node:net';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { getSocketPath, readLock, claimLock, isLockStale, clearLock } from './serviceLock';
+import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
+import { computeCodeFingerprint } from './codeVersion';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PING_TIMEOUT_MS = 300;
+const READY_TIMEOUT_MS = 5_000;
+const READY_POLL_MS = 100;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function sendRaw(req: ServiceRequest, timeoutMs: number): Promise<ServiceResponse> {
+  return new Promise((resolvePromise, reject) => {
+    const socket = connect(getSocketPath());
+    let buffer = '';
+    let settled = false;
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error('ApeironNgn service request timed out'));
+    }, timeoutMs) : null;
+    socket.on('connect', () => socket.write(encodeMessage(req)));
+    socket.on('data', (chunk) => {
+      if (settled) return;
+      buffer += chunk.toString('utf-8');
+      const idx = buffer.indexOf('\n');
+      if (idx === -1) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      const line = buffer.slice(0, idx);
+      socket.end();
+      try {
+        resolvePromise(decodeMessage<ServiceResponse>(line));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    socket.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+/** Warns (this short-lived client process's own stdio — the service's is `stdio: 'ignore'`) when
+ *  the running service's own `codeFingerprint` (stamped once, at *its* startup) no longer matches
+ *  what's on disk right now — i.e. a source edit landed after the service last started, which Node
+ *  never picks up on its own. Never throws or blocks the call itself; a stale service still answers
+ *  requests, just possibly with logic a later fix already replaced. */
+function warnIfCodeStale(res: ServiceResponse): void {
+  if (!res.ok) return;
+  const result = res.result as { codeFingerprint?: string } | undefined;
+  if (!result?.codeFingerprint) return;
+  const current = computeCodeFingerprint();
+  if (result.codeFingerprint !== current) {
+    console.error(`[ApeironNgn service] Running code is stale (fingerprint ${result.codeFingerprint} vs. current ${current} on disk) — a source change since this service started won't take effect until it's restarted. Run: kg:service restart`);
+  }
+}
+
+async function ping(): Promise<boolean> {
+  try {
+    const res = await sendRaw({ op: 'ping' }, PING_TIMEOUT_MS);
+    warnIfCodeStale(res);
+    return res.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForReady(): Promise<void> {
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await ping()) return;
+    await sleep(READY_POLL_MS);
+  }
+  throw new Error('ApeironNgn service did not become ready in time');
+}
+
+function spawnService(): void {
+  const serviceEntry = resolve(__dirname, 'service.ts');
+  // apeironNgn -> src -> cli -> packages -> monorepo root, where `tsx` (a root devDependency,
+  // hoisted by the workspace) actually lives.
+  const rootDir = resolve(__dirname, '..', '..', '..', '..');
+  const tsxBin = resolve(rootDir, 'node_modules', '.bin', 'tsx');
+  const child = spawn(tsxBin, [serviceEntry], { cwd: rootDir, detached: true, stdio: 'ignore' });
+  child.unref();
+}
+
+/** Ensures a service is listening, auto-starting one if not. Safe to call from many concurrent
+ *  CLI invocations at once — at most one of them spawns a new service (see serviceLock.ts). */
+export async function ensureServiceRunning(): Promise<void> {
+  if (await ping()) return;
+
+  const lock = readLock();
+  if (lock && isLockStale(lock)) clearLock();
+
+  if (claimLock() === 'claimed') spawnService();
+
+  await waitForReady();
+}
+
+/** An unresolved flush conflict (`ServiceResponse`'s own doc comment) rides on *every* response
+ *  until resolved, regardless of the op that response is for — printed here, on this short-lived
+ *  client process's own stdio, since the long-running service is normally spawned with
+ *  `stdio: 'ignore'` and can't make itself heard any other way. This is what makes the conflict
+ *  "emerge" on the very next `kg:xxx` call of any kind rather than sitting silently `dirty`
+ *  forever, only ever visible to whichever explicit `flush`/`reload` happens to hit it. */
+function reportConflict(res: Extract<ServiceResponse, { ok: true }>): void {
+  if (!res.conflict) return;
+  if (res.conflict.content) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (content mirror): ${res.conflict.content}`);
+  if (res.conflict.state) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (.state mirror): ${res.conflict.state}`);
+  console.error(`[ApeironNgn service] ${CONFLICT_RESOLUTION_HINT}`);
+}
+
+export async function request<T>(req: ServiceRequest): Promise<T> {
+  const res = await sendRaw(req, 0);
+  if (!res.ok) throw new Error(res.error);
+  reportConflict(res);
+  return res.result as T;
+}

@@ -1,0 +1,35 @@
+{
+  "name": "aperas-monorepo",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "verify": "tsx packages/cli/src/verify.ts",
+    "kg:reload": "tsx packages/cli/src/kgReload.ts",
+    "kg:flush": "tsx packages/cli/src/kgFlush.ts",
+    "kg:track": "tsx packages/cli/src/kgTrack.ts",
+    "kg:ingest": "tsx packages/cli/src/kgIngest.ts",
+    "kg:project": "tsx packages/cli/src/kgProject.ts",
+    "kg:tree": "tsx packages/cli/src/kgTree.ts",
+    "kg:unfold": "tsx packages/cli/src/kgUnfold.ts",
+    "kg:fold": "tsx packages/cli/src/kgFold.ts",
+    "kg:link": "tsx packages/cli/src/kgLink.ts",
+    "kg:unlink": "tsx packages/cli/src/kgUnlink.ts",
+    "kg:path": "tsx packages/cli/src/kgPath.ts",
+    "kg:backlinks": "tsx packages/cli/src/kgBacklinks.ts",
+    "kg:resolve": "tsx packages/cli/src/kgResolve.ts",
+    "kg:insert": "tsx packages/cli/src/kgInsert.ts",
+    "kg:update": "tsx packages/cli/src/kgUpdate.ts",
+    "kg:remove": "tsx packages/cli/src/kgRemove.ts",
+    "kg:profile": "tsx packages/cli/src/kgProfile.ts",
+    "kg:service": "tsx packages/cli/src/kgService.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "^4.23.13",
+    "typescript": "~6.0.2"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@aperas/core",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@rdfjs/data-model": "^2.1.2",
+    "oxigraph": "^0.5.11",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0"
+  }
+}

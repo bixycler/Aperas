@@ -1,0 +1,134 @@
+/**
+ * `kg:link` — interactively prompts for cross-links on BlockNodes in scope, via the shared
+ * ApeironNgn service (Aperas-apeironngn-design.md §4 rollout step 5): candidates are listed in one
+ * round trip, then each attempted answer is its own `addBlockLink` round trip (resolved server-side
+ * against the live store, so an unresolvable answer can be re-prompted without a wasted mutation).
+ * Persistence follows the service's normal 10s flush timer, same as every other mutator.
+ */
+
+import { createInterface } from 'node:readline/promises';
+import type { Store } from 'oxigraph';
+import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
+import { wrap, type TreeNode, type BlockNode, type Link, type ApeironNode } from '@aperas/core/apeironNgn/node';
+import { createLineReader } from '@aperas/core/lineReader';
+import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
+
+export function runLinkCandidates(store: Store, pathArg: string, recursive: boolean, all: boolean) {
+  const id = resolveDeepPath(store, pathArg);
+  if (!id) throw new Error(`'${pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
+  const blocks = (wrap(store, id) as unknown as TreeNode).collectDescendants(recursive);
+  const candidates = all ? blocks : blocks.filter(({ node }) => !(node as unknown as BlockNode).links?.length);
+  return candidates.map(({ id: blockId, node }) => ({
+    blockId,
+    type: (node as unknown as BlockNode).type,
+    text: (node as unknown as BlockNode).text || '(no text)',
+  }));
+}
+
+export function runAddBlockLink(store: Store, blockId: string, targetRef: string): { resolved: boolean } {
+  const target = resolveDeepPath(store, targetRef);
+  if (!target) return { resolved: false };
+  (wrap(store, blockId) as unknown as BlockNode).addLink('references', target);
+  return { resolved: true };
+}
+
+/** `kg:unlink` — `runAddBlockLink`'s missing opposite (Aperas-apeironngn-design.md §5): a manual
+ *  `kg:link` could only ever be added, never taken back, short of tombstoning its whole owning
+ *  block. Resolves *both* `blockRef` and `targetRef` via deep-path resolution — unlike
+ *  `runAddBlockLink`, whose `blockId` only ever arrives pre-resolved from `linkCandidates`'
+ *  interactive flow, `kg:unlink` has no candidate list to resolve it for you, so both endpoints
+ *  need to accept a path/deep-path/bare id here (a full id still resolves as-is either way, via
+ *  `resolveDeepPath`'s own direct-id check). Removes any manual (`predicate === 'references'`) link
+ *  on the resolved block whose target matches — reassigning `.links` without it, the same "read
+ *  current, filter, write once" shape used throughout `node.ts`, so `writeField`'s embed-diff
+ *  (`hardDeleteNode`) cleans it up correctly, `unfolds` included. Deliberately scoped to manual
+ *  links only: a wikilink is self-managing (Step 9's reuse-or-remint logic) and would just reappear
+ *  on the next ingestion if force-removed here, a confusing "it didn't work" result for no
+ *  benefit. */
+export function runRemoveBlockLink(store: Store, blockRef: string, targetRef: string): { removed: boolean } {
+  const blockId = resolveDeepPath(store, blockRef);
+  const target = resolveDeepPath(store, targetRef);
+  if (!blockId || !target) return { removed: false };
+  const block = wrap(store, blockId) as unknown as BlockNode;
+  const currentLinks = (block.links as unknown as Link[] | undefined) ?? [];
+  const survivingIds = currentLinks
+    .filter((l) => !(l.predicate === 'references' && (l.target as unknown as { id: string } | undefined)?.id === target))
+    .map((l) => (l as unknown as { id: string }).id);
+  const removed = survivingIds.length !== currentLinks.length;
+  block.links = survivingIds.length ? (survivingIds as unknown as ApeironNode[]) : undefined;
+  return { removed };
+}
+
+async function main(): Promise<void> {
+  const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: 'Interactively prompt for cross-links on BlockNodes in scope: candidates are listed in one round trip, then each attempted answer resolves against the live store, re-promptable if it fails to resolve.',
+      usage: 'kg:link -- <path> [--recursive] [--all] [--reload]',
+      args: [
+        { name: '<path>', description: 'Tracked artifact/folder path, deep path, bare node code, or full node id to scope the prompt to.' },
+      ],
+      flags: [
+        { name: '--recursive', description: "Scope includes all of <path>'s descendants, not just its immediate children." },
+        { name: '--all', description: 'Prompt for every block in scope, not just the ones with no links yet.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
+  const recursive = rawArgs.includes('--recursive');
+  const all = rawArgs.includes('--all');
+  const reload = rawArgs.includes('--reload');
+  const [pathArg] = rawArgs.filter((p) => p !== '--recursive' && p !== '--all' && p !== '--reload');
+  if (!pathArg) {
+    console.error('Usage: kg:link -- <path> [--recursive] [--all] [--reload]');
+    process.exit(1);
+  }
+
+  await ensureServiceRunning();
+  const candidates = await request<ReturnType<typeof runLinkCandidates>>({ op: 'linkCandidates', pathArg, recursive, all, reload });
+  if (candidates.length === 0) {
+    console.log('[ApeironNgn kg:link] No blocks to prompt for links in scope.');
+    return;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const lines = createLineReader(rl);
+  let linkedBlocks = 0;
+  let addedLinks = 0;
+  let stdinClosed = false;
+  for (const { blockId, type, text } of candidates) {
+    if (stdinClosed) break;
+    console.log(`\n${blockId}  [${type}]`);
+    console.log(text);
+    let addedForBlock = 0;
+    for (;;) {
+      const prompt = addedForBlock === 0 ? 'Link target (blank to skip block): ' : 'Another link target (blank to move on): ';
+      process.stdout.write(prompt);
+      const raw = await lines.next();
+      if (raw === null) { stdinClosed = true; break; }
+      const answer = raw.trim();
+      if (!answer) break;
+      const { resolved } = await request<ReturnType<typeof runAddBlockLink>>({ op: 'addBlockLink', blockId, targetRef: answer, flush: false });
+      if (!resolved) {
+        console.log(`  '${answer}' didn't resolve to any node — try again or leave blank.`);
+        continue;
+      }
+      addedForBlock++;
+    }
+    if (addedForBlock > 0) {
+      linkedBlocks++;
+      addedLinks += addedForBlock;
+    }
+  }
+  rl.close();
+  console.log(`[ApeironNgn kg:link] Added ${addedLinks} link(s) across ${linkedBlocks} block(s).`);
+}
+
+if (process.argv[1]?.endsWith('kgLink.ts')) {
+  main().catch((err) => {
+    console.error('[ApeironNgn kg:link] Failed:', err.message || err);
+    process.exit(1);
+  });
+}

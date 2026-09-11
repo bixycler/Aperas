@@ -249,7 +249,7 @@ export async function main(): Promise<void> {
       return;
     }
     default:
-      console.error('Usage: aperas profile <create|list|remove|create-view|list-view|remove-view> ...  (--help for details)');
+      console.error('Usage: aperas profile {create|list|remove|create-view|list-view|remove-view} ...  (--help for details)');
       process.exit(1);
   }
 }

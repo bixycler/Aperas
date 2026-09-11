@@ -91,7 +91,7 @@ export async function main(): Promise<void> {
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Direct control over the shared ApeironNgn service process.',
-      usage: 'aperas service <start|stop|restart>',
+      usage: 'aperas service {start|stop|restart}',
       args: [
         { name: 'start', description: "Start the service if none is already running, binding it to the graph resolved from the current directory (aperas.config.json discovery, or the dev fallback) for its whole lifetime. A no-op (with a status line naming the bound graph) if one's already running." },
         { name: 'stop', description: "Gracefully stop the running service (flushes if dirty, same as SIGTERM/Ctrl-C) — the explicit counterpart to finding its pid and killing it by hand. A no-op if none is running." },
@@ -105,7 +105,7 @@ export async function main(): Promise<void> {
   if (subcommand === 'start') return runStart();
   if (subcommand === 'stop') return runStop();
   if (subcommand === 'restart') return runRestart();
-  console.error('Usage: aperas service <start|stop|restart>');
+  console.error('Usage: aperas service {start|stop|restart}');
   process.exit(1);
 }
 

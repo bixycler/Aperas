@@ -54,10 +54,13 @@ export interface LinkOccurrence {
   requiresAnchorMatch?: boolean;
 }
 
-// `list` is never converted as its own node except when orphaned (nothing precedes it to adopt
-// into) — see convertChildren's adoption logic below. `listItem` gets the same "consume my
-// leading paragraph" abstract a heading gets; `blockquote` is a true opaque leaf (its full raw
-// content projected, no children) — see design doc §3.
+// `list` never survives as its own node, in any case — see convertChildren's adoption logic
+// below. Its items always end up as flat/nested `listItem` children of whatever the list attaches
+// to (a real preceding node it adopts into, the enclosing container itself, or — when nothing at
+// all precedes it — the true structural parent it dissolves into), with `orderedList`/`startIndex`
+// living uniformly on the run's own first item, never on a container. `listItem` gets the same
+// "consume my leading paragraph" abstract a heading gets; `blockquote` is a true opaque leaf (its
+// full raw content projected, no children) — see design doc §3.
 
 /**
  * Nests a flat mdast sibling array by heading depth, in one linear pass: each `heading` node
@@ -412,9 +415,6 @@ interface ChildrenResult {
    *  own `linkCodes`, since that paragraph's raw mdast node (and its inline `link` children) never
    *  becomes a `BlockNode` of its own to carry them itself. */
   leadingLinkCodes: LinkOccurrence[];
-  /** Set only when a list adopted directly into the *caller* (the `adoptionAnchor === 'parent'`
-   *  case) — the caller applies these as its own `orderedList`/`startIndex` props. */
-  parentListProps?: { orderedList: boolean; startIndex: number };
 }
 
 /**
@@ -422,48 +422,49 @@ interface ChildrenResult {
  * consuming rule (§2, only when `isHeadingOrListItem`) and list adoption (§8) in a single pass.
  *
  * Adoption target tracking: `adoptionAnchor` is either `'parent'` (the leading paragraph was
- * just consumed away — a following list adopts into the container being built, i.e. into the
- * caller), a `ParsedBlockNode` of type paragraph/listItem/heading (the most recently emitted
- * valid-anchor child — a following list adopts into it directly, becoming its `children`), or
- * `null` (nothing valid immediately precedes — a following list stays its own orphaned node).
- * Anything else just processed (a list, or an opaque leaf like code/table/blockquote) resets
- * this to `null`, since only paragraph/listItem/heading are ever valid anchors (§8).
+ * just consumed away — a following list's items become the container being built's *own*
+ * children, i.e. the caller's), a `ParsedBlockNode` of type paragraph/listItem/heading (the most
+ * recently emitted valid-anchor child — a following list's items become its `children` directly),
+ * or `null` (nothing valid immediately precedes — a following list's items dissolve into *this*
+ * `children` array directly, flat, at the position the list itself occupied). In every case,
+ * `orderedList`/`startIndex` are set once, uniformly, on the list's own first converted item —
+ * never on whichever of the three targets above absorbs the rest. Anything else just processed (a
+ * list, or an opaque leaf like code/table/blockquote) resets `adoptionAnchor` to `null`, since
+ * only paragraph/listItem/heading are ever valid anchors (§8).
  */
 function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListItem: boolean, lang: DocLang): ChildrenResult {
   const children: ParsedBlockNode[] = [];
   let leadingText = '';
   let leadingNode: any;
   let leadingLinkCodes: LinkOccurrence[] = [];
-  let parentListProps: { orderedList: boolean; startIndex: number } | undefined;
   let adoptionAnchor: 'parent' | ParsedBlockNode | null = null;
 
   for (let i = 0; i < rawSiblings.length; i++) {
     const raw = rawSiblings[i];
 
     if (raw.type === 'list') {
-      const orderedList = Boolean(raw.ordered);
-      const startIndex = typeof raw.start === 'number' ? raw.start : 1;
+      const items = convertListItems(raw, markdown, lang);
+      if (items.length > 0) {
+        setProp(items[0], 'orderedList', String(Boolean(raw.ordered)));
+        setProp(items[0], 'startIndex', String(typeof raw.start === 'number' ? raw.start : 1));
+      }
 
-      if (adoptionAnchor === 'parent') {
-        children.push(...convertListItems(raw, markdown, lang));
-        parentListProps = { orderedList, startIndex };
-      } else if (adoptionAnchor) {
-        const anchor = adoptionAnchor;
-        anchor.children.push(...convertListItems(raw, markdown, lang));
-        setProp(anchor, 'orderedList', String(orderedList));
-        setProp(anchor, 'startIndex', String(startIndex));
+      if (adoptionAnchor && adoptionAnchor !== 'parent') {
+        adoptionAnchor.children.push(...items);
       } else {
-        // Orphaned — nothing valid precedes it. Reuse convertAstNode's own `list` handling
-        // rather than duplicating the orphan-construction logic here.
-        const orphanBlock = convertAstNode(raw, markdown, lang)!;
-        children.push(orphanBlock);
+        // Either `adoptionAnchor === 'parent'` (dissolution via merged self — the container's
+        // own leading paragraph already absorbed this list's identity) or `null` (dissolution
+        // when orphaned — nothing precedes it at all). Both land the same way: flat into this
+        // container's own `children`, at the position the list itself occupied.
+        children.push(...items);
       }
       // A `list` is never itself a valid adoption anchor (§8: only paragraph/listItem/heading
       // are) — so whatever a *following* list would adopt into resets here, regardless of
-      // whether this one just adopted or was orphaned. Without this, two lists directly
-      // adjacent to each other (e.g. a bullet list immediately followed by an ordered list)
-      // would incorrectly merge into a single adoption target, corrupting whichever
-      // orderedList/startIndex was set first.
+      // whether this one just adopted or dissolved. Without this, two lists directly adjacent
+      // to each other (e.g. a bullet list immediately followed by an ordered list) would
+      // incorrectly merge into a single run with no way to tell their two starts apart — guarded
+      // against instead by project.ts's render-side boundary check reading each run-leader's own
+      // explicit props (see design/list-consumption.md).
       adoptionAnchor = null;
       continue;
     }
@@ -492,7 +493,7 @@ function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListIt
     }
   }
 
-  return { children, leadingText, leadingNode, leadingLinkCodes, parentListProps };
+  return { children, leadingText, leadingNode, leadingLinkCodes };
 }
 
 function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlockNode | null {
@@ -502,7 +503,7 @@ function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlock
   // mapping-design.md §4). `yaml` (frontmatter, when remark-frontmatter is active) is
   // deliberately absent from this list — it's extracted separately by parseMarkdownTree, never
   // part of the BlockNode tree at all (§5).
-  const isStructural = ['root', 'paragraph', 'heading', 'listItem', 'code', 'blockquote', 'list', 'thematicBreak', 'html', 'table'].includes(node.type);
+  const isStructural = ['root', 'paragraph', 'heading', 'listItem', 'code', 'blockquote', 'thematicBreak', 'html', 'table'].includes(node.type);
 
   if (!isStructural) {
     return null;
@@ -534,15 +535,6 @@ function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlock
   } else if (node.type === 'paragraph') {
     const leadIn = extractLeadInTitle(node, markdown, lang);
     if (leadIn !== null) title = leadIn;
-  } else if (node.type === 'list') {
-    // Aperas-markdown-fractal-mapping-design.md §8: an orphaned list block gets "no title, no
-    // text" — its content lives entirely in its (adopted) listItem children. Previously missing
-    // from this chain, so it silently fell through to the leaf default below (`text = rawText`,
-    // the entire raw markdown span of the list) — a real coding gap, not a design ambiguity: it
-    // both stored unbounded text on any document built mostly of nested lists, and made
-    // `extractAbstract`'s pre-order search stop on a list's own bogus text before ever reaching
-    // the genuine first paragraph underneath (`reports/bugs/list-block-text.md`).
-    text = '';
   }
   // paragraph/code/thematicBreak/html/table fall through to the leaf default (text = rawText).
   // blockquote also falls through — its full content is projected, not summarized (§3).
@@ -563,12 +555,6 @@ function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlock
     // Opaque leaf (§3) — no children at all, regardless of what's nested inside. Still prose,
     // so its own inline links are collected the same as a paragraph's.
     linkCodes = collectLinkCodes(node, markdown);
-  } else if (node.type === 'list') {
-    // Reached only for an orphaned list (convertChildren's own adoption branches never call
-    // convertAstNode on a `list` node when a valid adoption anchor exists).
-    block.children = convertListItems(node, markdown, lang);
-    setProp(block, 'orderedList', String(Boolean(node.ordered)));
-    setProp(block, 'startIndex', String(typeof node.start === 'number' ? node.start : 1));
   } else if (node.type === 'paragraph') {
     // Opaque leaf — `children` stays empty here. A paragraph *may* still end up with adopted
     // listItem children (§8), but that's applied by the *caller's* convertChildren after this
@@ -582,7 +568,7 @@ function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlock
     // root, heading, listItem: structural containers.
     const rawSiblings = node.type === 'heading' ? (node.headingChildren ?? []) : groupByHeadings(node.children ?? []);
     const isHeadingOrListItem = node.type === 'heading' || node.type === 'listItem';
-    const { children, leadingText, leadingNode, leadingLinkCodes, parentListProps } = convertChildren(rawSiblings, markdown, isHeadingOrListItem, lang);
+    const { children, leadingText, leadingNode, leadingLinkCodes } = convertChildren(rawSiblings, markdown, isHeadingOrListItem, lang);
     block.children = children;
     if (isHeadingOrListItem) {
       text = leadingText;
@@ -590,10 +576,6 @@ function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlock
       if (node.type === 'listItem' && leadingNode) {
         const leadIn = extractLeadInTitle(leadingNode, markdown, lang);
         if (leadIn !== null) block.title = leadIn;
-      }
-      if (parentListProps) {
-        setProp(block, 'orderedList', String(parentListProps.orderedList));
-        setProp(block, 'startIndex', String(parentListProps.startIndex));
       }
     }
   }

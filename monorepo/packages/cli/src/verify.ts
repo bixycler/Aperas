@@ -162,8 +162,22 @@ const example = 1;
 
 An introductory sentence.
 
+A second paragraph the list actually nests into.
+
 - consumed item one
-- consumed item two`;
+- consumed item two
+
+## Two Runs Separated By An Opaque Leaf
+
+- separated bullet one
+- separated bullet two
+
+\`\`\`ts
+const separatorBetweenRuns = true;
+\`\`\`
+
+1. separated ordinal one
+2. separated ordinal two`;
 
   console.log("1. Testing AST Transducer (Fractal BlockNode Tree)...");
   const { root: rootBlock, frontmatter } = parseMarkdownTree(sampleMarkdown);
@@ -184,40 +198,70 @@ An introductory sentence.
   }
   console.log("   [✓] AST Transduction verified successfully.\n");
 
-  console.log("1c. Testing heading consume + list adoption (§2/§8)...");
+  console.log("1c. Testing consumption (list nests into a real preceding node, not the container itself)...");
   const consumingHeading = findHeadingByTitle(rootBlock, 'A Consuming Example');
   if (!consumingHeading) throw new Error('Expected to find the "A Consuming Example" heading.');
   if (consumingHeading.text !== 'An introductory sentence.') {
-    throw new Error(`Expected the heading to consume its leading paragraph as its own text, got: ${JSON.stringify(consumingHeading.text)}`);
+    throw new Error(`Expected the heading to consume its own leading paragraph as text, got: ${JSON.stringify(consumingHeading.text)}`);
   }
   const consumingChildren = consumingHeading.children ?? [];
-  if (consumingChildren.some((c: any) => c.type === 'paragraph')) {
-    throw new Error('Expected the consumed leading paragraph to NOT also survive as a separate child (that would be the old copy bug).');
+  if (consumingChildren.length !== 1 || consumingChildren[0].type !== 'paragraph') {
+    throw new Error(`Expected the heading's only child to be the second (non-leading) paragraph, surviving as a real node — got: ${JSON.stringify(consumingChildren.map((c: any) => c.type))}`);
   }
-  if (consumingChildren.length !== 2 || !consumingChildren.every((c: any) => c.type === 'listItem')) {
-    throw new Error(`Expected the list right after the leading paragraph to adopt directly into the heading (2 listItem children), got: ${JSON.stringify(consumingChildren.map((c: any) => c.type))}`);
+  const consumingParagraph = consumingChildren[0];
+  const nestedItems = consumingParagraph.children ?? [];
+  if (nestedItems.length !== 2 || !nestedItems.every((c: any) => c.type === 'listItem')) {
+    throw new Error(`Expected the list to nest one level *inside* the second paragraph (true consumption, §1 of the unified law), got: ${JSON.stringify(nestedItems.map((c: any) => c.type))}`);
   }
-  if (getProp(consumingHeading, 'orderedList') !== 'false' || getProp(consumingHeading, 'startIndex') !== '1') {
-    throw new Error(`Expected the heading itself to carry the adopted list's orderedList/startIndex props, got orderedList=${getProp(consumingHeading, 'orderedList')} startIndex=${getProp(consumingHeading, 'startIndex')}`);
+  if (getProp(consumingParagraph, 'orderedList') !== undefined || getProp(consumingParagraph, 'startIndex') !== undefined) {
+    throw new Error(`Expected the consuming paragraph itself to carry no orderedList/startIndex — those live on the run's own first item now, not the anchor.`);
   }
-  console.log("   [✓] Heading consume + list adoption verified successfully.\n");
+  if (getProp(nestedItems[0], 'orderedList') !== 'false' || getProp(nestedItems[0], 'startIndex') !== '1') {
+    throw new Error(`Expected the nested list's own first item to carry orderedList/startIndex, got orderedList=${getProp(nestedItems[0], 'orderedList')} startIndex=${getProp(nestedItems[0], 'startIndex')}`);
+  }
+  console.log("   [✓] Consumption verified successfully.\n");
 
-  console.log("1d. Testing two directly-adjacent lists (second one must be orphaned, not merged into the first's adoption)...");
+  console.log("1d. Testing dissolution when orphaned, zero-separator variant (two type-contiguous listItem runs, back-to-back, distinguished only by each run-leader's own explicit props)...");
   const metaphysicsHeading = findHeadingByTitle(rootBlock, 'Metaphysics of Aperas');
   if (!metaphysicsHeading) throw new Error('Expected to find the "Metaphysics of Aperas" heading.');
-  const metaChildren = metaphysicsHeading.children ?? [];
-  const adoptedBulletItems = metaChildren.filter((c: any) => c.type === 'listItem');
-  const orphanOrderedList = metaChildren.find((c: any) => c.type === 'list');
-  if (adoptedBulletItems.length !== 5) {
-    throw new Error(`Expected the bullet list's 5 items to adopt directly into the heading, got ${adoptedBulletItems.length}.`);
+  const metaChildren = (metaphysicsHeading.children ?? []).filter((c: any) => c.type === 'listItem');
+  if (metaChildren.some((c: any) => c.type === 'list') || (metaphysicsHeading.children ?? []).some((c: any) => c.type === 'list')) {
+    throw new Error('Expected no child to ever be type "list" — every list dissolves into flat listItem children now.');
   }
-  if (getProp(metaphysicsHeading, 'orderedList') !== 'false') {
-    throw new Error(`Expected the heading's own props to reflect the (unordered) bullet list it adopted, got orderedList=${getProp(metaphysicsHeading, 'orderedList')}.`);
+  if (metaChildren.length !== 7) {
+    throw new Error(`Expected 7 flat listItem children total (5 bullet + 2 ordinal, back-to-back), got ${metaChildren.length}.`);
   }
-  if (!orphanOrderedList || getProp(orphanOrderedList, 'orderedList') !== 'true' || (orphanOrderedList.children ?? []).length !== 2) {
-    throw new Error(`Expected the immediately-following ordered list to be its own orphaned node (its preceding sibling is a list, not a valid anchor), got: ${JSON.stringify(orphanOrderedList)}`);
+  const [bulletLeader, , , , bulletLast, ordinalLeader, ordinalLast] = metaChildren;
+  if (getProp(bulletLeader, 'orderedList') !== 'false' || getProp(bulletLeader, 'startIndex') !== '1') {
+    throw new Error(`Expected the bullet run's own first item to carry orderedList=false/startIndex=1, got orderedList=${getProp(bulletLeader, 'orderedList')} startIndex=${getProp(bulletLeader, 'startIndex')}`);
   }
-  console.log("   [✓] Adjacent-lists orphaning verified successfully.\n");
+  if (getProp(bulletLast, 'orderedList') !== undefined) {
+    throw new Error(`Expected a non-leader bullet item to carry no orderedList of its own, got '${getProp(bulletLast, 'orderedList')}'.`);
+  }
+  if (getProp(ordinalLeader, 'orderedList') !== 'true' || getProp(ordinalLeader, 'startIndex') !== '1') {
+    throw new Error(`Expected the second run's own leader (type-contiguous with the first, no structural separator) to still carry its own orderedList=true/startIndex=1, got orderedList=${getProp(ordinalLeader, 'orderedList')} startIndex=${getProp(ordinalLeader, 'startIndex')}`);
+  }
+  if (getProp(ordinalLast, 'orderedList') !== undefined) {
+    throw new Error(`Expected the ordinal run's non-leader item to carry no orderedList of its own, got '${getProp(ordinalLast, 'orderedList')}'.`);
+  }
+  const metaProjected = serializeBlock(metaphysicsHeading);
+  if (!metaProjected.includes('- Unbounded: Apeiron macrocosm') || !metaProjected.includes('1. First ordered step\n2. Second ordered step')) {
+    throw new Error(`Expected the two dissolved runs to render as two distinct, correctly-numbered lists despite having no structural separator between them, got:\n${metaProjected}`);
+  }
+  console.log("   [✓] Zero-separator dissolution verified successfully.\n");
+
+  console.log("1e. Testing dissolution when orphaned, separated variant (two runs split by an intervening opaque leaf under one parent)...");
+  const separatedHeading = findHeadingByTitle(rootBlock, 'Two Runs Separated By An Opaque Leaf');
+  if (!separatedHeading) throw new Error('Expected to find the "Two Runs Separated By An Opaque Leaf" heading.');
+  const separatedChildren = separatedHeading.children ?? [];
+  const separatedTypes = separatedChildren.map((c: any) => c.type);
+  if (JSON.stringify(separatedTypes) !== JSON.stringify(['listItem', 'listItem', 'code', 'listItem', 'listItem'])) {
+    throw new Error(`Expected [listItem, listItem, code, listItem, listItem] (both runs dissolved flat, the code block a real sibling between them), got: ${JSON.stringify(separatedTypes)}`);
+  }
+  if (getProp(separatedChildren[0], 'orderedList') !== 'false' || getProp(separatedChildren[3], 'orderedList') !== 'true') {
+    throw new Error(`Expected each run's own leader to carry its own props, got first=${getProp(separatedChildren[0], 'orderedList')} second=${getProp(separatedChildren[3], 'orderedList')}`);
+  }
+  console.log("   [✓] Separated-runs dissolution verified successfully.\n");
 
   console.log("1b. Testing Artifact Projection (serialize -> re-parse -> reconcile round-trip)...");
   const projectedSample = serializeBlock(rootBlock);

@@ -1,0 +1,4 @@
+# Eval workspaces hold a full throwaway clone of the graph (~20M) plus run
+# outputs — reproducible from graph-sandbox.sh, so not worth versioning.
+skills/*-workspace/kg-clone/
+skills/*-workspace/iteration-*/

@@ -106,10 +106,15 @@ function indentContinuationLines(text: string, prefixWidth: number): string {
 
 /**
  * Renders a node's children, joined by a blank line — but a contiguous run of `listItem`
- * children (anywhere among `children`, not just at the end — §8) is rendered as one list using
- * *this* node's own `orderedList`/`startIndex` props, since a list-hosting node (an orphaned
- * `list` block, or whatever adopted the list per §8) is the sole owner of that list's numbering.
- * Everything else renders one block at a time via the ordinary per-type dispatch.
+ * children (anywhere among `children`, not just at the end) is rendered as one list, using *that
+ * run's own first item's* `orderedList`/`startIndex` props — never the enclosing node's, since one
+ * node can host more than one run (two authored lists separated by an intervening leaf, or two
+ * dissolved orphan lists landing directly adjacent with no separator at all — see design/
+ * list-consumption.md). A run therefore ends not just where the `listItem` type run stops, but
+ * also wherever the *next* item carries its own explicit `orderedList` prop — a run-leader signal
+ * every list's first converted item carries uniformly (astParser.ts), marking the start of a new,
+ * adjacent run even though the type hasn't changed. Everything else renders one block at a time
+ * via the ordinary per-type dispatch.
  *
  * Tombstoned children are filtered out first: a tombstone is never spliced out of `children`
  * (Aperas-crud-design.md §6) so GC/referrer-tracking can still see it, so every renderer — this one
@@ -121,10 +126,10 @@ export function renderChildren(node: any, lang: DocLang = 'en'): string {
   let i = 0;
   while (i < children.length) {
     if (children[i].type === 'listItem') {
-      let j = i;
-      while (j < children.length && children[j].type === 'listItem') j++;
-      const orderedList = getProp(node, 'orderedList') === 'true';
-      const startIndex = Number(getProp(node, 'startIndex') ?? '1');
+      let j = i + 1;
+      while (j < children.length && children[j].type === 'listItem' && getProp(children[j], 'orderedList') === undefined) j++;
+      const orderedList = getProp(children[i], 'orderedList') === 'true';
+      const startIndex = Number(getProp(children[i], 'startIndex') ?? '1');
       const run = children.slice(i, j);
       // Dense/tight list — items joined by a single newline, not a blank line, regardless of the
       // source's own original tight/loose style (canonical regeneration, per this module's own
@@ -142,8 +147,9 @@ export function renderChildren(node: any, lang: DocLang = 'en'): string {
 
 /**
  * Recursively serializes one BlockNode (and its subtree) back into Markdown. Dispatches on the
- * node's `type`. `list` has no case of its own — an orphaned list block's entire `children` is
- * one contiguous `listItem` run, already handled generically by `renderChildren`'s default case.
+ * node's `type`. There is no `list` case: no `BlockNode` is ever typed `list` (astParser.ts never
+ * produces one — a list's items always land as flat/nested `listItem` children of whatever it
+ * attaches to), so every `listItem` run is handled generically by `renderChildren`.
  */
 export function serializeBlock(node: any, lang: DocLang = 'en'): string {
   switch (node.type) {

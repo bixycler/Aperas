@@ -224,6 +224,12 @@ This is a staging area, not the fix: the real gap is tracked in `issues/treeview
 
 Specifically, **`unfold` does not mark tombstoned children** while `tree --view` appends `(tombstoned)`, so a tombstoned leftover can read as live data under `unfold`. Tracked in `issues/treeview.md`.
 
+### Full-text search — grep the raw store directly
+
+[current] `show_node.py --grep` works, but a plain `grep -n -C3 '<pattern>' AperasKG/Apeiron/BlockNode.jsonld` is faster and shows more: one command, the complete untruncated `text` (the script's own preview caps at 90 chars), and it also works over `ArtifactNode.jsonld` for an artifact's own title/abstract — which `--grep` never scans, since it only iterates blocks. This is not the shadow-grepping mistake the Philosophy example warns about: `Apeiron/*.jsonld` is the on-disk mirror of the graph itself, not the rendered `artifacts/*.md` projection, so grepping it is reading the source, not the shadow.
+
+A hit is a candidate id, not proof of anything. Confirmed live: a node's field order is `@id, @type, [props], [tombstonedAt], title, text, parent, type, children`, and `props` is variable-length — so `tombstonedAt`'s distance from a `text` match shifts per node, and no fixed `-C<n>` window can be trusted to surface it. Treat every match as an id to hand to `aperas` (`unfold`/`tree`/`backlinks --text`) for the actual live/tombstoned status, parent, and links: grep finds the nodes, `aperas` deals with them.
+
 ---
 
 ## Reference

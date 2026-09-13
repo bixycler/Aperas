@@ -101,6 +101,12 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
   const parentPath = parent.toPath();
   if (parentPath) rejectSlugPathCollisions(store, parentPath, topLevel);
 
+  // Resolved before any of `topLevel` is hydrated below, alongside the collision check just above —
+  // a bad anchor must be rejected before anything is written, not after (issues/cli.md's
+  // non-transactional-`kg:insert` gap: hydration used to run before anchor resolution, so a bad
+  // anchor left the freshly-hydrated nodes live in the store with no rollback).
+  const anchorId = anchorRef !== undefined ? resolveOne(store, anchorRef, req.base, 'Anchor') : undefined;
+
   // Extracted *before* any of `topLevel` is hydrated below — `extractLinkCodes` strips the
   // (schema-unknown) `linkCodes` field off each node as it walks, in place, the same order
   // `ingestFromDisk`/`kg:update` use (extract first, hydrate after). Every node here is brand new
@@ -116,8 +122,7 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
   });
   const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
 
-  if (anchorRef !== undefined) {
-    const anchorId = resolveOne(store, anchorRef, req.base, 'Anchor');
+  if (anchorId !== undefined) {
     let insertRef = anchorId;
     for (const newId of newIds) {
       parent.insertChild(newId, insertRef, side!);

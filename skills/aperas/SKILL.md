@@ -5,7 +5,7 @@ description: Working directly with the Apeiron knowledge graph via the `aperas` 
 
 # aperas
 
-Status: **v1.1** — v1 restructured a flat, incident-ordered list of eighteen items into four levels, abstract to concrete; the arrangement was the defect. v1.1 repairs the vertical thread between those levels: crystallization stated at Philosophy and Orientation rather than only as a Discipline rule, and dense linking realized below Orientation rather than only asserted there. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v1.2** — v1 restructured a flat, incident-ordered list of eighteen items into four levels, abstract to concrete; the arrangement was the defect. v1.1 repaired the vertical thread between those levels: crystallization stated at Philosophy and Orientation rather than only as a Discipline rule, and dense linking realized below Orientation rather than only asserted there. v1.2 grounds the recall machinery — snapshot, delta, drift check — in the Philosophy statement that makes it non-optional. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` isn't published yet. Every command below (`aperas <verb> ...`) actually runs today as `npm run aperas -- <verb> ...` from `Aperas/monorepo/`. **Delete this note once `aperas` ships as a real installed binary** (see `AperasKG/artifacts/issues/packaging.md`'s Pending Tasks — the `bin` build).
 
@@ -41,6 +41,10 @@ The graph's substance is nodes *and the links between them*. A node's meaning is
 Every rule below is downstream of this. "Graph-first, always" is its first consequence, not an independent instruction.
 
 **That substance matures; it does not merely accumulate.** [current] Both axes run the same direction — Apeiron toward Peras, unbounded toward bounded. On the **content** axis, prose hardens from formless discussion into typed design, issues, planning, history. On the **topology** axis, a relationship first exists *indirectly*, mediated by a discussion node that cites both ends and carries the judgment in its own text; once it proves load-bearing it crystallizes into a *direct* citation, and the mediating node's job is done. Link density is the residue of that lifecycle, which is why it reads as maturity from outside rather than as tidiness — and why `discussion` is where the cost of it gets paid.
+
+**Nobody working this graph will remember.** [current] Not the human across weeks, not the agent across a context window. So the graph is not only where things are kept — it is what *notices*: the structural gaps and the emergent alignments between nodes, neither of which anyone will spot by holding the corpus in their head. A record that has to be consulted to be useful protects nothing, because being asked is the part that fails: the moment you would know to check is the moment you have already forgotten. What earns its place is what interrupts unbidden — a check reporting an omission, a backlink appearing where none was expected, a query coming back zero. Storage is the easy half and the projections already do it; recall is the half that costs something to build and the half that works.
+
+This is why a rule of the form "look it up instead of trusting your memory" is only half a discipline here. It can tell you what the graph says; it can never tell you the graph is *missing* something, because doing the work and recording the work are two separate acts and only the second one is visible from inside. Catching an omission takes a comparison against the world outside the graph. Confirmed live, three times in one session: each unrecorded edit was invisible from every side that could be consulted, and was caught by a reader noticing or by a check diffing the file against the record — never by looking something up.
 
 **Worked example — the same task, both ways.** Asked whether two docs cross-referenced each other, one session reached for `grep` over the projected `.md` files plus a raw `BlockNode.jsonld` read. It took several steps, produced an answer, and still had to be redone — because the question was about link structure, which exists in the source and only *appears* in the shadow. Redone properly it was one command:
 
@@ -258,7 +262,9 @@ scripts/skill_drift.py --added      # written into the file, never recorded
 scripts/skill_drift.py --dropped    # recorded, no longer in the file
 ```
 
-Run it after editing this file, before considering the edit done. *Added* is the check that matters most — an edit made and not recorded is invisible from the file's own side, which is how three separate additions in one session went unrecorded until a reader noticed. *Dropped* catches the opposite: v1 silently lost one of v0 item 18's three triggers, and nothing flagged it. Both are heuristics over normalized text, so a reworded sentence inside an otherwise-matching paragraph can still slip past.
+A delta entry that replaces rather than adds carries a `Supersedes: [title](#id/BlockNode:...)` line naming the item it retires, which is what lets the check tell a deliberate rewrite from a silent loss.
+
+Run it after editing this file, before considering the edit done. *Added* is the check that matters most — an edit made and not recorded is invisible from the file's own side, which is how three separate additions in one session went unrecorded until a reader noticed. *Dropped* catches the opposite: v1 silently lost one of v0 item 18's three triggers, and nothing flagged it. The *added* side compares each unit in full — one unit per list item, since a list containing even one superseded item no longer appears contiguously in any single record — so a rewording anywhere in a unit is caught. The *dropped* side still matches on a prefix and is correspondingly weaker.
 
 This is a staging area, not the fix: the real gap is tracked in `issues/treeview.md` ("No raw single-node inspection command"), whose proposed resolution is an `aperas show <ref>` verb. `--children` marking tombstones is likewise standing in for `unfold`'s missing marker.
 

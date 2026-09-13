@@ -40,7 +40,9 @@ from pathlib import Path
 
 SNAPSHOT_RE = re.compile(r"^##\s+v[\d.]+\s+SKILL\.md\s+\(verbatim", re.I)
 DELTA_RE = re.compile(r"^##\s+v[\d.]+\s+additions", re.I)
-FINGERPRINT_CHARS = 120
+FINGERPRINT_CHARS = 120  # dropped-side only; the added side compares in full
+SUPERSEDES_RE = re.compile(r"^\s*Supersedes:\s*(.+)$", re.M)
+ID_RE = re.compile(r"#id/(BlockNode:[0-9A-Z]+)")
 
 
 def find_graph_dir() -> Path:
@@ -84,12 +86,40 @@ def subtree_texts(root_id: str, blocks: dict[str, dict]) -> list[tuple[str, str]
         # A fenced block stores its own ``` markers; the file's frontmatter
         # carries none, so strip them before comparing.
         body = re.sub(r"^```\w*\s*|\s*```$", "", body)
+        # A Supersedes: marker is delta bookkeeping, not skill text — it is
+        # never expected to appear in the file, so it must not read as dropped.
+        body = norm(SUPERSEDES_RE.sub("", body))
         if body:
             out.append((nid, body))
         for kid in node.get("children") or []:
             walk(kid)
 
     walk(root_id)
+    return out
+
+
+def superseded_ids(blocks: dict[str, dict], roots: list[tuple[str, str]]) -> dict[str, str]:
+    """Snapshot ids a delta entry explicitly claims to replace.
+
+    The delta format records additions; without a marker, an item that a minor
+    version deliberately rewrote is indistinguishable from one silently lost —
+    which is the exact judgement this check exists to make, so the convention is
+    a `Supersedes: [title](#id/BlockNode:...)` line in the superseding entry.
+    """
+    out: dict[str, str] = {}
+    for rid, label in roots:
+        if not label.startswith("delta"):
+            continue
+        stack = [rid]
+        while stack:
+            nid = stack.pop()
+            node = blocks.get(nid)
+            if not node or node.get("tombstonedAt"):
+                continue
+            for claim in SUPERSEDES_RE.findall(node.get("text") or ""):
+                for target in ID_RE.findall(claim):
+                    out[target] = nid
+            stack.extend(node.get("children") or [])
     return out
 
 
@@ -132,6 +162,11 @@ def file_units(path: Path) -> list[tuple[str, str]]:
     units = []
     for heading, body in _sections(path):
         for para in re.split(r"\n\s*\n", body):
+          # One unit per list item, not per paragraph block. Once any single
+          # item has been superseded, the list as a whole no longer appears
+          # contiguously in any one record, so comparing a whole list must
+          # fail — and would fail as a false positive, not a real finding.
+          for para in re.split(r"\n(?=\s*(?:[-*+]|\d+\.)\s)", para):
             para = re.sub(r"^\s*(?:[-*+]|\d+\.)\s+", "", para, flags=re.M)
             para = norm(re.sub(r"```\w*", "", para))  # fences match the stripped graph side
             if len(para) > 40:  # skip stubs: headings-only, one-liners, fence edges
@@ -185,7 +220,7 @@ def main() -> None:
         haystack = " ".join(b for _, b, _ in recorded)
         missing = [
             (h, b) for h, b in file_units(skill)
-            if b[:FINGERPRINT_CHARS] not in haystack
+            if b not in haystack
         ]
         print(f"ADDED but unrecorded — {len(missing)}")
         for h, b in missing:
@@ -200,12 +235,22 @@ def main() -> None:
             (nid, b, label) for nid, b, label in recorded
             if b[:FINGERPRINT_CHARS] not in filetext
         ]
-        print(f"DROPPED or superseded — {len(gone)}  (needs a human read: the delta")
-        print("  format records additions, not which item each one replaces)")
-        for nid, b, label in gone:
-            print(f"  - {nid}  [{label}]\n      {b[:100]}…")
-        if not gone:
+        sup = superseded_ids(blocks, roots)
+        accounted = [(n, b, l) for n, b, l in gone if n in sup]
+        unaccounted = [(n, b, l) for n, b, l in gone if n not in sup]
+
+        print(f"DROPPED, unaccounted — {len(unaccounted)}  (in the graph's record, gone from")
+        print("  the file, and no delta entry claims to supersede them)")
+        for nid, b, _ in unaccounted:
+            print(f"  - {nid}\n      {b[:100]}…")
+        if not unaccounted:
             print("  (none)")
+
+        if accounted:
+            print()
+            print(f"superseded, accounted for — {len(accounted)}")
+            for nid, b, _ in accounted:
+                print(f"  - {nid}  ← superseded by {sup[nid]}\n      {b[:80]}…")
 
 
 if __name__ == "__main__":

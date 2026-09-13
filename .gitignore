@@ -2,3 +2,7 @@
 # outputs — reproducible from graph-sandbox.sh, so not worth versioning.
 skills/*-workspace/kg-clone/
 skills/*-workspace/iteration-*/
+
+# Personal, per-machine hook/permission overrides — opt-in, never a project
+# default (see discussion/aperas-skill.md's read-side trigger-gap entry).
+.claude/settings.local.json

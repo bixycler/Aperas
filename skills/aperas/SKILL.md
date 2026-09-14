@@ -5,7 +5,7 @@ description: Before anything else in this project — first turn, every session,
 
 # aperas
 
-Status: **v1.3** — v1 restructured a flat, incident-ordered list of eighteen items into four levels, abstract to concrete; the arrangement was the defect. v1.1 repaired the vertical thread between those levels: crystallization stated at Philosophy and Orientation rather than only as a Discipline rule, and dense linking realized below Orientation rather than only asserted there. v1.2 grounds the recall machinery — snapshot, delta, drift check — in the Philosophy statement that makes it non-optional. v1.3 replaces a mechanical read-side gate, found fragile in three ways during testing, with a one-time consent question the skill asks and remembers instead of enforces, and rewrites the description in plain terms, scoped to the whole session rather than to graph edits alone. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v1.4** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Version-by-version rationale lives in `discussion/aperas-skill.md`'s snapshot and deltas, not here. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` isn't published yet. Every command below (`aperas <verb> ...`) actually runs today as `npm run aperas -- <verb> ...` from `Aperas/monorepo/`. **Delete this note once `aperas` ships as a real installed binary** (see `AperasKG/artifacts/issues/packaging.md`'s Pending Tasks — the `bin` build).
 
@@ -40,6 +40,10 @@ The graph's substance is nodes *and the links between them*. A node's meaning is
 
 Every rule below is downstream of this. "Graph-first, always" is its first consequence, not an independent instruction.
 
+**Aperas is an evidence-based documentation system: a claim and its provenance are one object.** [current] This follows directly from the sentence above. If a node's meaning is constituted by what it links to and what links back, then a claim whose source is not reachable from it is not a weaker entry — it is a different kind of thing, an assertion wearing the costume of a record. It reads as complete from its own side, passes every mechanical check the tooling can run, and fails the only question the graph exists to answer: *how do you know?*
+
+`archive/Aperas-design.md` builds its whole read side on this, defining deep read as provenance projection — "every rendered element retains provenance anchors and backlinks, allowing readers to drill down into the supporting evidence subgraph." The link may sit at either end: a forward citation where *Citation direction* (Discipline) permits one, a backlink from the source where it does not. One of the two must exist before the claim is left in place, not after.
+
 **That substance matures; it does not merely accumulate.** [current] Both axes run the same direction — Apeiron toward Peras, unbounded toward bounded. On the **content** axis, prose hardens from formless discussion into typed design, issues, planning, history. On the **topology** axis, a relationship first exists *indirectly*, mediated by a discussion node that cites both ends and carries the judgment in its own text; once it proves load-bearing it crystallizes into a *direct* citation, and the mediating node's job is done. Link density is the residue of that lifecycle, which is why it reads as maturity from outside rather than as tidiness — and why `discussion` is where the cost of it gets paid.
 
 **Nobody working this graph will remember.** [current] Not the human across weeks, not the agent across a context window. So the graph is not only where things are kept — it is what *notices*: the structural gaps and the emergent alignments between nodes, neither of which anyone will spot by holding the corpus in their head. A record that has to be consulted to be useful protects nothing, because being asked is the part that fails: the moment you would know to check is the moment you have already forgotten. What earns its place is what interrupts unbidden — a check reporting an omission, a backlink appearing where none was expected, a query coming back zero. Storage is the easy half and the projections already do it; recall is the half that costs something to build and the half that works.
@@ -55,6 +59,8 @@ aperas backlinks BlockNode:00CE1GW638007 --text
 
 That is the whole answer, from the source, in one call. Searching projections for structure that only exists in the graph is the same category error as editing them — one level down.
 
+**And the content case is not the safe half.** [current] "I was only reading the text, and the text is identical in both" is true, and still misses what was dropped: a projection carries a block's words and none of its place — not what cites it, not what it rests on, not whether it is still live. The loss is invisible precisely because the words really are the same, so nothing signals what came off with them. Read a concern through `aperas unfold`, not through the file that renders it.
+
 ---
 
 ## 2. Orientation
@@ -63,12 +69,15 @@ That is the whole answer, from the source, in one call. Searching projections fo
 
 `archive/Aperas-design.md`'s Multi-Agent Projection Pattern names these as the architecture's own capabilities. They are crystallized practice rather than theory — but the practice predates this system, coming from years of real knowledge-graph work in Logseq and carried in as design instead of being rediscovered here. That this system has barely exercised them yet is a fact about its infancy, not their standing.
 
+**An `artifacts/**.md` path in your hand is a node reference, not a file path.** [current] This is the one mechanical test the skill has: if a path under `artifacts/` is about to become an argument to `Read`, `grep`, `find` or `cat`, the call is already wrong, and `aperas unfold <ref>` is what it meant. It holds for *reading*, not only for writing, and most of all when you are "just checking one thing" — which is how an entire investigation goes through the shadows without any single step feeling like a decision. Two things are deliberately not over the line: `Apeiron/*.jsonld` is the graph's own on-disk mirror, so grepping it is reading the source (see *Full-text search*, Mechanics), and source code is not in the graph at all.
+
 ### Deep read runs in two directions
 
 They answer different questions, and the tool surface already carves them apart:
 
 - **Forward and downward — deeper *content*.** A block's children and its outgoing links: what it is made of and what it refers to. This is what an ordinary read wants, and it is why `aperas unfold <ref>` previews children *and* forward links together — both are content, in the same sense.
 - **Backward — deeper *context*.** Who depends on this block, who cites it, what surrounds it. `aperas backlinks <id> --text` stands alone as a command because it is the other axis. Reach for it when the decision is harder than reading: editing, or an investigation whose scope has widened.
+  - **Two different relationships arrive through that one call, and only one of them was ever named here.** [current] *Dependents* — what relies on this block, what breaks if it changes — is what deep write needs, and is all the line above used to describe. *Sources* — what the block rests on — is what makes a claim checkable, and it shows up among backlinks rather than forward links whenever citation direction forbids the forward form. Provenance sits inside context, not against it; it needs saying because it is the half that was missing, which is why a node with no sources reads as merely under-linked instead of unsupported. `archive/Aperas-design.md` keeps the two apart by operation instead, giving provenance to deep read and impact traversal to deep write.
 
 **Deep write is inherently backward.** [current] What a change breaks is only answerable from the citing side. Updating a block means checking its backlinks and forward links and updating what the change has made stale — not leaving them to rot.
 
@@ -103,9 +112,15 @@ Two commands, each one hop. The content axis, followed until it arrives.
 
 ## 3. Discipline
 
-### The edit loop
+### The loop
 
-The shape of nearly every real task:
+[current] Not "the edit loop". It is the shape of nearly every real task, and naming it for editing is what kept it from firing on tasks that never reach an edit — a reader correctly concludes the section is for later, and a whole investigation runs outside it. **Three things put you in the loop, not one:**
+
+- **About to read a concern.** Traversal, not `Read`.
+- **About to read or change source code this graph carries a concern about.** See *Source the graph already has a concern about*, below.
+- **About to change the graph.** The steps below, in full.
+
+The opening is the same in all three cases; only the tail differs. A traversal-only task ends after step 1, a source change ends by recording what it found, and a graph change runs the whole thing.
 
 1. **Orient before touching anything — content first, context when the decision is hard.** Start with `aperas unfold <ref>` for children and forward links. Escalate to `aperas backlinks <id> --text` for context. Editing always qualifies, because step 5 cannot work without it.
 2. **Locate the smallest block that actually changed.** [current] Not the artifact, not the enclosing heading: the leaf whose content is wrong. `aperas update`/`aperas insert` work at any level, and targeting something larger means hand-reconstructing every unchanged sibling exactly — where one transcription slip silently tombstones that block and mints a fresh id in its place. **Never reconstruct by copying from an already-*projected* file**: it has anchor tags spliced in that are a projection artifact, not content, and piping them back bakes them into the block's stored text as prose.
@@ -113,6 +128,23 @@ The shape of nearly every real task:
 4. **Verify by traversal, not by the summary line.** [current] A reconcile count reports what the command *believes* it did. Proof is a backlink that actually resolves, or `aperas project <path> --dry-run` where the content is actually visible. A push can silently match new content onto an already-tombstoned node's id without reviving it, so it stays invisible while the summary reports it as added — caught live when a Resolved section rendered one fewer bullet than was pushed.
 5. **Deep write — follow what the change made stale, and link what was never linked.** Check backlinks and forward links; update what now disagrees — and add the citation where the change has just made a relationship real. Closing an issue that a design or a fix resolves means linking the two to each other before moving on, in both directions, not only the one that happened to get written first. This is the per-edit instance of dense linking, and the only moment it is cheap: you are already standing where the missing link is visible.
 6. **Project, then stage.** `aperas project <path> --flush`, then `git add` immediately.
+
+### Source the graph already has a concern about
+
+[current] A task framed as "fix this bug in `reconcile.ts`" is not outside this skill. The graph very likely already holds issues, design, planning and history for that exact file, written by someone who will not be there to tell you. The obligation runs at **both** ends, not just the front.
+
+**Before**, and before reading the source rather than after forming a theory about it:
+
+```bash
+grep -n 'reconcile.ts' AperasKG/Apeiron/BlockNode.jsonld   # candidate ids
+aperas unfold <id> --view <task>                           # then work them in the graph
+```
+
+What turns up changes the work: a root cause already identified, a fix already ordered, an approach already tried and rejected for a reason nobody is going to repeat to you.
+
+**After**, record what the work found. A fix that lands with nothing written is invisible from every side that can be consulted, because doing the work and recording it are two separate acts and only the second is visible from inside (Philosophy, above).
+
+Confirmed live three times: two sessions investigated `reconcile.ts`/`node.ts` by plain file reads with no traversal and no skill load at all; a third loaded the skill on turn one, consented to it, and still read the entire task out of the projections before editing code. The first two were a trigger failure and are fixed; the third is why this section exists.
 
 ### Stage each verified step
 
@@ -126,11 +158,19 @@ This is not bookkeeping. Recovering a live incident that tombstoned real content
 
 Treat the discussion doc as a scratchpad, not something to write only once resolved. Freeflow raw investigation notes into it as you go — inventory findings, open questions, a "not yet decided" list. That is what protects the work if context is lost mid-*investigation*, not just mid-plan.
 
-### Move a node; don't remove and recreate it
+### Preserve identity — against any operation that can tombstone a node you meant to keep
 
-[current] `aperas insert <node-id> --after/--before <anchor>` with **no stdin piped** repositions that exact node — the anchor's current parent becomes its new parent, cross-parent moves included. It preserves the id, every backlink to it, and its place in history.
+[current] Stated by outcome, not by verb, because three different calls reach the same destruction and only one of them looks like a delete:
 
-Reach for remove+insert only when the wording is changing enough that it is genuinely not the same item any more — and even then, a move followed by a separate `--text-only` edit keeps the id while changing only what actually changed. Caught live getting this backwards: promoting two findings into a new section via `remove` + `insert` left two needlessly tombstoned orphans behind, for a relocation a plain move would have handled with zero churn.
+- `remove` + `insert` — the obvious one.
+- `aperas update` on a **parent heading** — reconciliation tombstones and remints the subtree as a *side effect*; nothing in the intent resembles deleting, and the word `remove` is never typed.
+- a full-list push whose items **change depth** — matching is defeated entirely, so every id is recreated.
+
+`aperas insert <node-id> --after/--before <anchor>` with **no stdin piped** repositions that exact node — the anchor's current parent becomes its new parent, cross-parent moves included. It preserves the id, every backlink to it, and its place in history. Reach for anything else only when the wording is changing enough that it is genuinely not the same item any more — and even then, a move followed by a separate `--text-only` edit keeps the id while changing only what actually changed.
+
+Zero backlinks is not a licence. The rule also protects a node's place in history, which backlink count has no bearing on.
+
+Caught live twice: promoting two findings into a new section via `remove` + `insert` left two needlessly tombstoned orphans for a relocation a plain move would have handled with zero churn; and regrouping a flat 17-item list under three new sub-headings as a single parent-heading `update` returned `0 matched, 20 added, 17 removed`. Redone as create-headings-with-anchors, then move each item, then set the run-leader props per batch — all 17 ids survived. See *Adding an item to an existing list* (Mechanics) for the matching promise this rule constrains.
 
 ### Citation direction
 
@@ -140,11 +180,15 @@ The sanctioned exception is a **normative, singular** pointer — one whose targ
 
 The test is whether removing the link leaves the block **incomplete**. A milestone whose content is "this snapshot was taken" no longer says what it exists to say once its pointer is gone; "here is a discussion that also touched on this" loses only enrichment, and stays forbidden. What the rule is actually against is a *list of children* — unbounded, discretionary, accumulating — so cardinality is the real criterion and direction is only its usual symptom. [current] Generalized after a milestone needed exactly such a pointer and the rule, stated as "designated index," named an instance where it meant a property.
 
-### Promotion links at the origin
+### Every claim carries its source
 
-[current] The rule above has a corollary that has to be acted on in the same breath as a promotion. When a finding crystallizes *up* out of `discussion` into `issues`/`design`/`planning`/`history`, the new entry cannot cite the discussion entry it came from — that is a down-citation. So the link is added at the **origin** instead: the discussion entry gains "promoted to `issues/<concern>.md`" with a real wikilink, pointing up. The provenance then surfaces from the new entry's side for free, as a backlink.
+[current] Philosophy's evidence rule, as something to do. Before leaving any text in a formal doc — `issues`, `design`, `planning`, `history` — check that each claim in it can be traced: provenance first, and every other relationship the text carries alongside it, each reified as a real link rather than described in prose. Then run `aperas backlinks <id> --text` on **what you just wrote**, not only on what you are about to read. A node whose claims rest on nothing returns nothing, and that silence is the entire signal.
 
-Do it at the moment of promotion, not as a later tidying pass. A formal doc whose entries paraphrase confirmed findings without linking them reads as complete from its own side — nothing about it looks unfinished — while `aperas backlinks` on every one of its entries returns nothing, and the provenance survives only in the head of whoever filed it. Caught live: seven issues compiled into a new concern doc from findings recorded across four different discussion docs, every origin left unlinked, noticed only by direct user callout.
+Direction decides which end the link lives at, never whether it exists. When a finding crystallizes *up* out of `discussion` into `issues`/`design`/`planning`/`history`, the new entry cannot cite the discussion entry it came from — that is a down-citation. So the link is added at the **origin** instead: the discussion entry gains "promoted to `issues/<concern>.md`" with a real wikilink, pointing up. The provenance then surfaces from the new entry's side for free, as a backlink.
+
+**This is a property of the claim, not a step in the promotion ritual**, and reading it as the latter is a live failure mode. An edit that adds supporting evidence to an entry already sitting in the doc is not a promotion, so a version of this rule scoped to promotions never reaches it. Caught live: a planning entry was edited to cite three recorded observations and came out with `links: 0` — complete-looking from its own side, caught only when a reader ran `backlinks` on it. The same unguarded gap passed an inferred version number written as recorded fact, and a paraphrase set in quotation marks as though it were a logged prompt. Every mechanical check in this file passed on that edit; all of them ask whether the write landed, none asks whether what was written is true.
+
+A formal doc whose entries paraphrase confirmed findings without linking them reads as complete from its own side — nothing about it looks unfinished — while `aperas backlinks` on every one of its entries returns nothing, and the provenance survives only in the head of whoever filed it. Caught live: seven issues compiled into a new concern doc from findings recorded across four different discussion docs, every origin left unlinked, noticed only by direct user callout.
 
 This is the topology half of crystallization, stated at Philosophy above: a relationship first mediated by a discussion node becomes a direct citation once it proves load-bearing.
 
@@ -208,6 +252,8 @@ Be aware this failure is not clean: the new nodes are hydrated into the store *b
 
 [current] Target the list's **parent heading** — `aperas update <heading-id>` — and pipe the heading line plus the *complete* corrected list, every existing item verbatim plus the new one. Exact-key matching reuses every unchanged item's id (`N matched`, only the new one `added`).
 
+**That promise holds only while every item keeps its parent and its depth** — a precondition this section used to state unconditionally, which is exactly how it got read as licence for a restructure. A push that moves items to a new depth, regrouping a flat list under fresh sub-headings say, matches nothing and recreates everything; use moves for that instead (see *Preserve identity*, Discipline).
+
 **This only works if the piped content is genuinely complete.** Piping the heading plus *only* the new item reconciles the existing ones away as removed. Hit live on a 4-link Dashboard expecting a one-line addition: the actual summary was `0 matched, 0 added, 5 removed`.
 
 For an **ordered** list this is the only safe route, because a freshly inserted item becomes its own run-leader and can restart the numbering rather than continuing it.
@@ -249,6 +295,8 @@ scripts/show_node.py --artifact <ref>      # which artifact a block lives in
 ```
 
 Refs take a bare snowflake or a full id. It is read-only, and it locates `AperasKG/Apeiron/` itself.
+
+It reads the **on-disk mirror**, so after an unflushed mutation it reports pre-flush state while `aperas unfold`/`tree` report the live service's. Flush first, or ask the CLI, when checking something you just changed. Caught live: a move and a tombstone were both invisible to it, producing a confident and wrong conclusion that the move had gone backwards.
 
 `--text` is the one that matters before an edit: redirect it to a file, change only what needs changing, and `cat` that back into `aperas update`. That keeps the untouched part of a block byte-identical instead of retyped from a preview — which is what step 2 of the edit loop warns about, since a transcription slip silently tombstones the block and mints a new id.
 

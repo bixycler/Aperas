@@ -36,8 +36,28 @@ export async function main(): Promise<void> {
   }
   const clobber = rawArgs.includes('--clobber');
   await ensureServiceRunning();
-  const { clobbered } = await request<{ clobbered: boolean }>({ op: 'flush', clobber });
-  console.log(`[ApeironNgn kg:flush] Flushed${clobbered ? ' (clobbered — any on-disk divergence was overwritten)' : ''}.`);
+  const { clobbered, prunedTombstones, tombstonedContainers, prunedUnfolds } = await request<{
+    clobbered: boolean;
+    prunedTombstones?: number;
+    tombstonedContainers?: number;
+    prunedUnfolds?: number;
+  }>({ op: 'flush', clobber });
+
+  const gcParts: string[] = [];
+  if (prunedTombstones) gcParts.push(`${prunedTombstones} unreachable tombstone(s) pruned`);
+  if (tombstonedContainers) gcParts.push(`${tombstonedContainers} vacuous container(s) tombstoned`);
+  if (prunedUnfolds) gcParts.push(`${prunedUnfolds} stale unfold(s) cleared`);
+
+  let note = '';
+  if (clobbered) {
+    note = gcParts.length > 0
+      ? ` (clobbered — ${gcParts.join(', ')})`
+      : ' (clobbered — any on-disk divergence was overwritten)';
+  } else if (gcParts.length > 0) {
+    note = ` (${gcParts.join(', ')})`;
+  }
+
+  console.log(`[ApeironNgn kg:flush] Flushed${note}.`);
 }
 
 if (process.argv[1]?.endsWith('kgFlush.ts')) {

@@ -112,6 +112,16 @@ export function main(): void {
   let { store, quadCount } = rehydrateStore(contentDir);
   console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s) from ${contentDir}.`);
 
+  // Run startup GC companion passes to clean up any unreachable tombstones or vacuous containers on boot
+  const { tombstoned: initTombstoned } = tombstoneVacuousContainers(store);
+  const { pruned: initPruned } = pruneUnreachableTombstones(store);
+  const { pruned: initStaleUnfolds } = pruneStaleUnfolds(store);
+  if (initTombstoned > 0 || initPruned > 0 || initStaleUnfolds > 0) {
+    console.error(
+      `[ApeironNgn service] Startup GC: cleaned ${initPruned} unreachable tombstone(s), ${initTombstoned} vacuous container(s), ${initStaleUnfolds} stale unfold(s).`
+    );
+  }
+
   const stateDir = join(contentDir, '.state');
   let contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
   let stateStamps = stampAll(stateDir, STATE_CLASSES);
@@ -223,10 +233,10 @@ export function main(): void {
    *  `clobber`, not `force` — see `kgFlush.ts`'s doc comment for why the name alone doesn't route
    *  around `npm run kg:flush --force`'s original footgun (npm's own `--` separator requirement
    *  applies to any `--flag`, not just recognized npm options). */
-  function clobberFlush(): void {
-    tombstoneVacuousContainers(store); // same companion sweep `reloadStore` runs — see its own comment
-    pruneUnreachableTombstones(store); // same GC pass `reloadStore` runs — see its own comment
-    pruneStaleUnfolds(store); // same `unfolds` audit `reloadStore` runs — see its own comment
+  function clobberFlush(): { clobbered: true; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number } {
+    const { tombstoned } = tombstoneVacuousContainers(store); // same companion sweep `reloadStore` runs — see its own comment
+    const { pruned } = pruneUnreachableTombstones(store); // same GC pass `reloadStore` runs — see its own comment
+    const { pruned: staleUnfolds } = pruneStaleUnfolds(store); // same `unfolds` audit `reloadStore` runs — see its own comment
     dehydrateToJsonLd(store, contentDir);
     contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
     dirty = false;
@@ -235,6 +245,7 @@ export function main(): void {
     stateStamps = stampAll(stateDir, STATE_CLASSES);
     stateDirty = false;
     stateConflict = null;
+    return { clobbered: true, prunedTombstones: pruned, tombstonedContainers: tombstoned, prunedUnfolds: staleUnfolds };
   }
 
   let idleTimer: NodeJS.Timeout;
@@ -284,8 +295,8 @@ export function main(): void {
         const { pruned: staleUnfolds } = pruneStaleUnfolds(store);
         if (staleUnfolds > 0) stateDirty = true;
       } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: tombstone GC failed — ${err.message}`); }
-      try { flushIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: content mirror not flushed — ${err.message}`); }
-      try { flushStateIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: .state mirror not flushed — ${err.message}`); }
+      try { flushIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown WARNING: content mirror flush refused — ${err.message}. Discarding un-flushed in-memory changes.`); }
+      try { flushStateIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown WARNING: .state mirror flush refused — ${err.message}. Discarding un-flushed in-memory state.`); }
     }).finally(() => {
       clearLock();
       process.exit(code);
@@ -299,9 +310,12 @@ export function main(): void {
       case 'reload':
         return reloadStore(req.discard);
       case 'flush':
-        if (req.clobber) clobberFlush();
-        else { flushIfDirty(); flushStateIfDirty(); }
-        return { clobbered: req.clobber };
+        if (req.clobber) return clobberFlush();
+        else {
+          flushIfDirty();
+          flushStateIfDirty();
+          return { clobbered: false };
+        }
       case 'track': {
         if (req.reload) reloadStore();
         const result = runTrack(store, req.paths, req.force);

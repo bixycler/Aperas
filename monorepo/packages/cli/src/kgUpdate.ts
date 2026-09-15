@@ -129,8 +129,13 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     // is its complete content and re-pushes it expecting a title refresh). Skipped when `target`
     // itself is a heading: `firstChild` there is the heading's *adopted leading paragraph*, a
     // different piece of text from the heading's own title, which only the branch above (a real
-    // piped heading line) may touch.
-    if (target.type !== 'heading') {
+    // piped heading line) may touch. Also skipped for an `ArtifactNode` target: its `title` is the
+    // file basename set once at track time (`trackFromDisk`), never a function of its own leading-
+    // paragraph text the way an ordinary block's lead-in is — confirmed live to corrupt
+    // `issues/core.md`'s own title (and with it, its own path resolution — `findChild`'s slug match
+    // is title-based) by re-deriving it from whatever paragraph text was pushed to the artifact
+    // root's own leading-summary convention every concern doc's `ArtifactNode.text` uses.
+    if (target.type !== 'heading' && kind !== 'ArtifactNode') {
       title = firstChild.title;
     }
   } else {

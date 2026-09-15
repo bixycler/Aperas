@@ -1195,8 +1195,15 @@ export class TreeView extends ApeironInstance {
 
   /** Adds exactly `ref` (a `TreeNode` or `Link` id) to this view's `unfolds` set — idempotent, and
    *  *only* `ref` (Aperas-treeview-design.md §5 — an earlier draft of that design wrongly proposed
-   *  also adding every child/link; the real behavior matches the old single-flag `setUnfolded`). */
+   *  also adding every child/link; the real behavior matches the old single-flag `setUnfolded`).
+   *
+   *  Write-time existence check (issues/treeview.md's "stale `TreeView.unfolds` references have no
+   *  general cleanup") — a no-op, not a throw, matching `unfold`'s own idempotent-no-op-on-repeat
+   *  posture: a ref already dead *at unfold time* is refused up front, the cheap complementary half
+   *  of the fix. It doesn't catch a ref that goes stale *afterward*, through an unrelated edit or GC
+   *  pass elsewhere — `pruneStaleUnfolds` (below) is the sweep that actually closes that half. */
   unfold(ref: string): void {
+    if (!nodeExists(this.store, ref)) return;
     const current = (this.unfolds as unknown as ApeironNode[] | undefined) ?? [];
     if (current.some((n) => n.id === ref)) return;
     this.unfolds = [...current, ref as unknown as ApeironNode];
@@ -1283,6 +1290,16 @@ function tombstoneTag(node: { tombstonedAt?: string }): string {
   return node.tombstonedAt ? '  (tombstoned)' : '';
 }
 
+/** Whether `node` should print at all, in either renderer below — default is to hide a tombstoned
+ *  node (and, since callers skip recursing into a hidden node, its whole subtree) from `kg:tree`/
+ *  `kg:unfold` output entirely, revealed only via `--tombstoned` (issues/treeview.md: an unmarked
+ *  tombstoned node used to render identically to a live sibling, and even once tagged, showing dead
+ *  retained-for-id-stability data unmarked-by-default in an exploratory listing invites exactly
+ *  that misreading). `showTombstoned` reverts to the old always-shown-and-tagged behavior. */
+function shouldHideTombstoned(node: { tombstonedAt?: string }, opts: TreeOptions): boolean {
+  return node.tombstonedAt !== undefined && opts.showTombstoned !== true;
+}
+
 /** Renders one line per node plus its subtree, title-only, always recursing (`maxDepth`/
  *  `noHolders` aside) — `TreeNode.renderTree`'s plain default when no `TreeOptions.view` is
  *  supplied. Kept as a module-scope function rather than a method so the recursion doesn't need to
@@ -1293,6 +1310,7 @@ function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, lines
     lines.push(`${'│ '.repeat(depth)}${id}  [?]  <not found>`);
     return;
   }
+  if (shouldHideTombstoned(node as unknown as { tombstonedAt?: string }, opts)) return;
   const isLiteralHolder = node.holder === true;
   const hidden = opts.noHolders === true && isLiteralHolder;
   if (!hidden) {
@@ -1527,6 +1545,7 @@ function emitNode(
     lines.push(`${'│ '.repeat(depth)}${id}  [?]  <not found>`);
     return;
   }
+  if (shouldHideTombstoned(node as unknown as { tombstonedAt?: string }, opts)) return;
   const isLiteralHolder = node.holder === true;
   const hidden = opts.noHolders === true && isLiteralHolder;
   const isGenuinelyUnfolded = cone.unfoldedTreeIds.has(id);
@@ -1536,6 +1555,10 @@ function emitNode(
   const showAbstract = parentQualifiesForPreview || isGenuinelyUnfolded;
 
   const childDepth = hidden ? depth : depth + 1;
+  // Tombstoned entries aren't filtered out of these two arrays — each still routes through
+  // `emitNode`/`emitLinkLine`, whose own top-of-function `shouldHideTombstoned` check (mirrored for
+  // a link's *target* in `emitLinkLine`) is what actually suppresses the line and the recursion
+  // below it. Filtering here too would just make `foldTag`'s hidden-count subtly wrong twice over.
   const childrenToShow = isGenuinelyUnfolded
     ? node.treeChildren
     : node.treeChildren.filter((c) => cone.neededChildren.get(id)?.has(c.id));
@@ -1602,6 +1625,7 @@ function emitLinkLine(
     return;
   }
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
+  if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return;
   const targetTitle = targetNode.title ?? '<not found>';
   // `{title, abstract}` for a preview or a "shown fully" position (§5 rule b) -- but the pointer
   // branch below stays title-only by design (it's a cross-reference note, not a content preview;
@@ -1727,6 +1751,30 @@ export function removeTreeViewByName(store: Store, name: string): { removed: boo
   return { removed: true };
 }
 
+/** Audit/prune sweep for every `TreeView`'s `unfolds` set (issues/treeview.md — the fix that
+ *  actually closes the gap `unfold`'s own write-time check above only half-covers): a ref can go
+ *  stale *after* being unfolded, through an unrelated edit or GC pass elsewhere (unlike
+ *  `removeDanglingUnfolds`, which only ever fires reactively at the exact moment a specific id is
+ *  hard-deleted) — nothing else ever revisits an *existing* entry against what's currently live.
+ *  Meant to run as an explicit sweep alongside `pruneUnreachableTombstones`/
+ *  `tombstoneVacuousContainers` at the same call sites, not after every mutation — same cost model,
+ *  same reasoning (cheap only in bulk). A stale entry here means the id has *no* quads at all
+ *  (`nodeExists`), not merely tombstoned — a tombstoned target stays a legitimate `unfolds` entry,
+ *  revealed via `--tombstoned` the same as any other tombstoned node. */
+export function pruneStaleUnfolds(store: Store): { pruned: number } {
+  let pruned = 0;
+  for (const viewId of allIdsOfKind(store, 'TreeView')) {
+    const view = wrap(store, viewId) as unknown as TreeView;
+    const current = (view.unfolds as unknown as ApeironNode[] | undefined) ?? [];
+    const live = current.filter((n) => nodeExists(store, n.id));
+    if (live.length !== current.length) {
+      pruned += current.length - live.length;
+      view.unfolds = live;
+    }
+  }
+  return { pruned };
+}
+
 /** Finds the `TreeView` named `"default"` (Aperas-treeview-design.md §10), creating it — and a
  *  `Profile` with `handle: "default"` to own it — on first use. The one deliberate exception to
  *  `createTreeView`'s "owner must already exist" rule. */
@@ -1839,6 +1887,44 @@ export function pruneUnreachableTombstones(store: Store): { pruned: number } {
     }
   }
   return { pruned };
+}
+
+/** Companion sweep for `pruneUnreachableTombstones`, run just before it at each of the same
+ *  explicit-sweep call sites: a `list`/childless-wrapper `listItem` never gets `tombstonedAt` set
+ *  as a side effect of its own children being tombstoned one at a time (each resolved/removed
+ *  independently, via its own separate reconcile or `kg:remove` call that only ever looks at that
+ *  one child) — nothing revisits the now-vacuous parent to ask whether it still holds anything
+ *  live. Confirmed live against `issues/packaging.md`'s own dead nested-list-wrapper chain: an
+ *  empty `list` sitting under "Open Issues" long after its one-and-only item was resolved away,
+ *  still reading as live (`!tombstonedAt`) to anything checking.
+ *
+ *  A `list` is unconditionally structural (`nodeAbstract`'s "no text of its own"), so childless
+ *  always means vacuous. A `listItem` only counts once it *also* carries no `.text` of its own —
+ *  an ordinary childless leaf item (the common case: a checkbox line with just its own text) is
+ *  not vacuous merely for having no structural children. Runs to a fixed point in one pass over
+ *  all `BlockNode`s repeated until nothing new tombstones, since tombstoning an inner wrapper can
+ *  vacate its own parent in turn (the "chain" in "nested-list-wrapper chain"). */
+export function tombstoneVacuousContainers(store: Store, now: string = new Date().toISOString()): { tombstoned: number } {
+  const isVacuous = (node: BlockNode): boolean => {
+    if (node.tombstonedAt) return false;
+    if (node.type === 'list') return node.treeChildren.length === 0 || node.treeChildren.every((c) => (c as unknown as BaseNode).tombstonedAt);
+    if (node.type === 'listItem' && !node.text) return node.treeChildren.length > 0 && node.treeChildren.every((c) => (c as unknown as BaseNode).tombstonedAt);
+    return false;
+  };
+
+  let tombstoned = 0;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const id of allIdsOfKind(store, 'BlockNode')) {
+      const node = wrap(store, id) as unknown as BlockNode;
+      if (!isVacuous(node)) continue;
+      node.tombstonedAt = now;
+      tombstoned++;
+      changed = true;
+    }
+  }
+  return { tombstoned };
 }
 
 /** `kg:profile remove` (Aperas-treeview-design.md §11) — cascade-deletes every `TreeView` a

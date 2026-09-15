@@ -46,7 +46,7 @@ import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/apeironN
 import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts';
 import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folders';
 import { findByExactPath } from '@aperas/core/apeironNgn/tree';
-import { wrap, ensureDefaultView, pruneUnreachableTombstones, type ArtifactNode, type BlockNode, type FolderNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
+import { wrap, ensureDefaultView, pruneUnreachableTombstones, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type FolderNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
 import { nodeExists } from '@aperas/core/apeironNgn/vocab';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runAddBlockLink, runRemoveBlockLink } from './kgLink';
@@ -561,7 +561,7 @@ Intro sentence for the demo folder.
       rmSync(scratchDir, { recursive: true, force: true });
     }
 
-    console.log("8. Testing tombstone visibility in tree rendering (Aperas-apeironngn-design.md §5)...");
+    console.log("8. Testing tombstone visibility in tree rendering (Aperas-apeironngn-design.md §5, issues/treeview.md)...");
     // Tombstoning only clears a dead node's *own* children/links/props — it never sweeps other
     // documents' references *to* it, so a tombstoned node reached through a stale `children`
     // pointer, or through a still-live Link elsewhere, used to render with no signal it had died.
@@ -571,6 +571,11 @@ Intro sentence for the demo folder.
     // `TreeView`/`Profile` (minted below by `ensureDefaultView`) are per-viewer state dehydrated
     // separately from the main JSON-LD mirror (Aperas-treeview-design.md §8), outside what section
     // 7's plain-content round-trip check exercises or expects present in the store.
+    //
+    // Two behaviors now, not one: hidden entirely by default (issues/treeview.md's "both `unfold`
+    // and `tree` should hide them by default" — a tombstoned node unmarked-by-default in an
+    // exploratory listing invites exactly the misreading that finding was filed over), tagged
+    // `(tombstoned)` only once `showTombstoned: true` opts back in.
     const victimId = `BlockNode:${generateNodeId()}`;
     const victim = wrap(store, victimId) as unknown as BlockNode;
     victim.type = 'heading';
@@ -585,12 +590,16 @@ Intro sentence for the demo folder.
 
     const view = ensureDefaultView(store);
     view.unfold(dedupBlockSummary.id); // makes this block's own .links visible in the view render
-    const viewLines = (wrap(store, demoId) as unknown as ArtifactNode).renderTree({ view });
+    const viewLinesDefault = (wrap(store, demoId) as unknown as ArtifactNode).renderTree({ view });
+    if (viewLinesDefault.some((l) => l.includes(victimId))) {
+      throw new Error(`Expected the tombstoned target ${victimId} to be hidden by default, but a line referenced it.`);
+    }
+    const viewLines = (wrap(store, demoId) as unknown as ArtifactNode).renderTree({ view, showTombstoned: true });
     const tombstonedLine = viewLines.find((l) => l.includes(victimId));
     if (!tombstonedLine || !tombstonedLine.includes('(tombstoned)')) {
-      throw new Error(`Expected a rendered line for the tombstoned target ${victimId} tagged '(tombstoned)', got: ${JSON.stringify(tombstonedLine)}.`);
+      throw new Error(`Expected a rendered line for the tombstoned target ${victimId} tagged '(tombstoned)' with showTombstoned:true, got: ${JSON.stringify(tombstonedLine)}.`);
     }
-    console.log(`   - Tombstoned target rendered with a visible marker: ${tombstonedLine.trim()}`);
+    console.log(`   - Tombstoned target hidden by default, revealed with a visible marker via --tombstoned: ${tombstonedLine.trim()}`);
     console.log("   [✓] Tombstone visibility verified successfully.\n");
 
     console.log("9. Testing dangling `unfolds` cleanup on a genuinely-deleted Link (Aperas-apeironngn-design.md §5)...");
@@ -616,6 +625,39 @@ Intro sentence for the demo folder.
     }
     console.log(`   - Deleted Link's dangling 'unfolds' entry was swept automatically (${unfoldsBeforeDelete.length} -> ${unfoldsAfterDelete.length} entries).`);
     console.log("   [✓] Dangling unfolds cleanup verified successfully.\n");
+
+    console.log("9b. Testing stale `unfolds` handling that the reactive hard-delete sweep above doesn't cover (issues/treeview.md)...");
+    // Step 9's cleanup only ever fires reactively, at the exact moment a specific id is hard-
+    // deleted. Two gaps that leaves: (a) `TreeView.unfold(ref)` itself never checked `ref` existed
+    // in the first place, and (b) nothing ever revisited an *already-added* entry against what's
+    // currently live if it went stale some other way (an unrelated edit or GC pass elsewhere).
+    const neverExistedId = `BlockNode:${generateNodeId()}`;
+    const beforeGuardedUnfold = ((view.unfolds as unknown as Array<{ id: string }> | undefined) ?? []).length;
+    view.unfold(neverExistedId); // (a): write-time guard — must be a silent no-op, not an add
+    const afterGuardedUnfold = ((wrap(store, view.id) as unknown as TreeView).unfolds as unknown as Array<{ id: string }> | undefined) ?? [];
+    if (afterGuardedUnfold.some((n) => n.id === neverExistedId)) {
+      throw new Error(`Expected unfold() to refuse a ref with no quads at all ('${neverExistedId}'), but it was added.`);
+    }
+    if (afterGuardedUnfold.length !== beforeGuardedUnfold) {
+      throw new Error(`Expected unfold()'s write-time guard to be a no-op, count changed ${beforeGuardedUnfold} -> ${afterGuardedUnfold.length}.`);
+    }
+    // (b): simulate an entry that went stale *after* being added (bypassing the guard above by
+    // writing `.unfolds` directly, the same "raw array reassignment" verify.ts already uses at
+    // Step 9/Step 5c to construct a state the guarded API can't reach on its own) — a live sibling
+    // entry (`dedupBlockSummary.id`, added back near the top of Step 8) must survive the sweep.
+    const staleId = `BlockNode:${generateNodeId()}`;
+    const beforeSweepIds = ((wrap(store, view.id) as unknown as TreeView).unfolds as unknown as Array<{ id: string }> | undefined ?? []).map((n) => n.id);
+    (wrap(store, view.id) as unknown as TreeView).unfolds = [...beforeSweepIds, staleId] as unknown as ApeironNode[];
+    const { pruned: staleUnfoldsPruned } = pruneStaleUnfolds(store);
+    const afterSweepIds = ((wrap(store, view.id) as unknown as TreeView).unfolds as unknown as Array<{ id: string }> | undefined ?? []).map((n) => n.id);
+    if (staleUnfoldsPruned !== 1 || afterSweepIds.includes(staleId)) {
+      throw new Error(`Expected pruneStaleUnfolds to remove exactly the injected stale ref, pruned=${staleUnfoldsPruned}, still present=${afterSweepIds.includes(staleId)}.`);
+    }
+    if (!afterSweepIds.includes(dedupBlockSummary.id)) {
+      throw new Error(`Expected pruneStaleUnfolds to leave a genuinely live entry (${dedupBlockSummary.id}) alone.`);
+    }
+    console.log(`   - unfold() refused a never-existed ref at write time; pruneStaleUnfolds swept 1 entry that went stale afterward, leaving ${afterSweepIds.length} live.`);
+    console.log("   [✓] Stale unfolds handling verified successfully.\n");
 
     console.log("10. Testing mark-and-sweep GC collects a cyclic dead cluster but spares a referenced tombstone...");
     // The naive design considered for this (drop a tombstoned node once it has *zero* incoming

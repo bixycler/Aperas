@@ -36,6 +36,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   unlink: { description: 'Remove a manually-added kg:link between two nodes.', load: () => import('./kgUnlink') },
   path: { description: 'Resolve a node to its walkable path.', load: () => import('./kgPath') },
   backlinks: { description: "List every Link that targets a given node — the reverse of unfold's forward view.", load: () => import('./kgBacklinks') },
+  show: { description: "Print a node's exact stored fields — full text, props, tombstonedAt, no truncation, no anchor stripping, no rendering.", load: () => import('./kgShow') },
   resolve: { description: 'Resolve one or more deep paths to node ids.', load: () => import('./kgResolve') },
   insert: { description: 'Position, promote, or (with piped markdown) create a Block node.', load: () => import('./kgInsert') },
   update: { description: "Replace an existing node's text/children (and, for a heading target, its title) from piped markdown.", load: () => import('./kgUpdate') },

@@ -86,7 +86,11 @@ function decodeField(store: Store, id: string, field: string, spec: FieldSpec): 
   return decodeOne(matches[0]);
 }
 
-function serializeDoc(store: Store, id: string): Record<string, unknown> {
+/** Exported for `kg:show` (issues/treeview.md's "no raw single-node inspection command") — the
+ *  exact same per-kind shape walk `dehydrateToJsonLd`/`dehydrateStateToJsonLd` use to write the
+ *  on-disk mirror, reused rather than re-implemented so "what `kg:show` prints" and "what's
+ *  actually on disk" can never drift apart into two competing ideas of a node's raw state. */
+export function serializeDoc(store: Store, id: string): Record<string, unknown> {
   const kind = nodeKindFromId(id);
   const shape = SHAPE_BY_KIND[kind];
   if (!shape) throw new Error(`ApeironNgn dehydrate: no shape declared for kind '${kind}' (id '${id}')`);

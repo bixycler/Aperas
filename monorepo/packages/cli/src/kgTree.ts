@@ -11,7 +11,7 @@ import { wrap, resolveTreeView, type TreeNode, type TreeView } from '@aperas/cor
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string; reload?: boolean }) {
+export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; reload?: boolean }) {
   const id = resolveDeepPath(store, req.pathArg);
   if (!id) throw new Error(`'${req.pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
   // Unlike `unfold`/`fold` (which always need *some* view to mutate, so an omitted `--view`
@@ -20,7 +20,7 @@ export function runTree(store: Store, req: { pathArg: string; maxDepth?: number;
   // behavior. `viewRef: 'default'` (typed explicitly) still resolves through `resolveTreeView`,
   // same as every other `--view` value.
   const view: TreeView | undefined = req.viewRef !== undefined ? resolveTreeView(store, req.viewRef) : undefined;
-  return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, view });
+  return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, showTombstoned: req.showTombstoned, view });
 }
 
 export async function main(): Promise<void> {
@@ -28,7 +28,7 @@ export async function main(): Promise<void> {
   if (wantsHelp(paths)) {
     printHelp({
       description: 'Render the fractal tree from a resolved node.',
-      usage: 'aperas tree [<path>] [--depth <n>] [--view <viewRef>] [--no-holders] [--reload]',
+      usage: 'aperas tree [<path>] [--depth <n>] [--view <viewRef>] [--no-holders] [--tombstoned] [--reload]',
       args: [
         { name: '<path>', description: "Tracked artifact/folder path, deep path, bare node code, or full node id to render from. Defaults to '.', the artifacts root." },
       ],
@@ -36,6 +36,7 @@ export async function main(): Promise<void> {
         { name: '--depth <n>', description: 'Limit rendering to this many levels deep.' },
         { name: '--view <viewRef>', description: 'Render in unfolded mode, driven by this TreeView\'s unfolds set. Omitting it keeps the plain title-only default rendering.' },
         { name: '--no-holders', description: 'Omit placeholder holder nodes from the output.' },
+        { name: '--tombstoned', description: 'Reveal tombstoned nodes (tagged (tombstoned)) — hidden entirely by default.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
       ],
     });
@@ -43,8 +44,9 @@ export async function main(): Promise<void> {
   }
 
   const noHolders = paths.includes('--no-holders');
+  const showTombstoned = paths.includes('--tombstoned');
   const reload = paths.includes('--reload');
-  const withoutFlag0 = paths.filter((p) => p !== '--no-holders' && p !== '--reload');
+  const withoutFlag0 = paths.filter((p) => p !== '--no-holders' && p !== '--tombstoned' && p !== '--reload');
   const viewFlagIdx = withoutFlag0.indexOf('--view');
   const viewRef = viewFlagIdx !== -1 ? withoutFlag0[viewFlagIdx + 1] : undefined;
   const withoutFlag = viewFlagIdx !== -1
@@ -62,7 +64,7 @@ export async function main(): Promise<void> {
   }
 
   await ensureServiceRunning();
-  const lines = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, viewRef, reload });
+  const lines = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, showTombstoned, viewRef, reload });
   console.log(lines.join('\n'));
 }
 

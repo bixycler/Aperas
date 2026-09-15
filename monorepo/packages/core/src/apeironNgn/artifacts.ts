@@ -256,26 +256,6 @@ export function trackAllArtifacts(store: Store, force: boolean = false): { resul
   return { results, sweep, pendingRemovals };
 }
 
-/** Order-independent match by exact key equality, no positional requirement — see
- *  `trackArtifactsScoped`'s own doc comment for why this exists instead of reusing
- *  `matchLeftoverByAbstract`. A key occurring more than once in either list is left unmatched
- *  (nothing anchors which occurrence is "the" one), same "decline rather than guess" spirit as
- *  `dropAmbiguousSingletons`, just without the recursion that makes that algorithm sensitive to
- *  where in each array a value happens to sit. */
-function matchByExactKey<T>(
-  removed: Array<{ key: string; item: T }>,
-  added: Array<{ key: string; item: T }>
-): { matched: Array<{ old: T; new: T }> } {
-  const countOf = (list: Array<{ key: string }>, key: string) => list.filter((x) => x.key === key).length;
-  const matched: Array<{ old: T; new: T }> = [];
-  for (const r of removed) {
-    if (countOf(removed, r.key) !== 1) continue;
-    const onlyAdded = added.filter((a) => a.key === r.key);
-    if (onlyAdded.length === 1) matched.push({ old: r.item, new: onlyAdded[0].item });
-  }
-  return { matched };
-}
-
 /** Scoped counterpart to `trackAllArtifacts`'s rename detection, for `kg:track`/`kg:ingest`'s
  *  explicit-`<path>...` branch (`runTrack`, kgTrack.ts): the "old docs migrate one at a time"
  *  plan (AperasKG/artifacts/discussion/cli.md) means a real corpus-wide sweep can't be the answer
@@ -290,18 +270,9 @@ function matchByExactKey<T>(
  *  listing) — so untouched, never-yet-tracked territory like `archive/` can never enter either
  *  side of the match, no matter how large it is.
  *
- *  Deliberately does *not* reuse `trackAllArtifacts`'s `matchLeftoverByAbstract` (the Gestalt/
- *  Ratcliff-Obershelp recursion `reconcile.ts` uses everywhere else): that algorithm is
- *  position-sensitive by construction — great for reconciling siblings that share a rough common
- *  order across an edit, wrong for an unordered bag of whole-artifact identities scattered across
- *  different concern folders with no such order at all. Confirmed live: batch-renaming 5 concern
- *  docs at once (their "removed" order being store-iteration order, their "added" order being
- *  argv order) matched only 2 of the 4 pairs that were genuinely exact-content matches — the other
- *  2 sat in a recursive quadrant one of the position-sensitive splits had already discarded, not
- *  because they were ambiguous. `matchByExactKey` below keeps the same "decline rather than guess"
- *  principle (a key occurring more than once on either side is left unmatched) but has no
- *  positional requirement at all — every occurrence of a key is found regardless of where it sits
- *  in either array, so this can't strand a real match the way the recursion can.
+ *  Uses the same `matchLeftoverByAbstract` (`reconcile.ts`) `trackAllArtifacts` uses below —
+ *  order-independent exact-key matching now that its own former position-sensitivity is fixed
+ *  (see that function's doc comment).
  *
  *  Deliberately does not tombstone anything: unlike `trackAllArtifacts`, an unmatched "removed"
  *  candidate here just stays exactly as before (still live, still pointing at its old, now-missing
@@ -323,7 +294,7 @@ export function trackArtifactsScoped(store: Store, paths: string[]): { results: 
     })
     .map((id) => ({ key: stripInlineAnchors(((wrap(store, id) as unknown as ArtifactNode).text as string) ?? ''), item: id }));
 
-  const { matched } = matchByExactKey(removedCandidates, addedCandidates);
+  const { matched } = matchLeftoverByAbstract(removedCandidates, addedCandidates);
 
   const sweep: ArtifactSweepStats = { renamed: 0, removed: 0 };
   const renamedIntoPaths = new Set<string>();

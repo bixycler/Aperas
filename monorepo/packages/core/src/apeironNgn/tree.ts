@@ -33,5 +33,8 @@ export function displayLabel(id: string, node: any): string {
 export interface TreeOptions {
   maxDepth?: number;
   noHolders?: boolean;
+  /** Reveal tombstoned nodes (tagged `(tombstoned)`) instead of the default of hiding them
+   *  entirely — issues/treeview.md's "both `unfold` and `tree` should hide them by default". */
+  showTombstoned?: boolean;
   view?: TreeView;
 }

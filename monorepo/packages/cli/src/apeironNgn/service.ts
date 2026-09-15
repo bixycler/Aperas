@@ -47,7 +47,7 @@ import { join } from 'node:path';
 import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
-import { resolveTreeView, pruneUnreachableTombstones } from '@aperas/core/apeironNgn/node';
+import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds } from '@aperas/core/apeironNgn/node';
 import { getSocketPath, markReady, clearLock } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
@@ -64,6 +64,7 @@ import { runProject } from '../kgProject';
 import { runTree } from '../kgTree';
 import { runPath } from '../kgPath';
 import { runBacklinks } from '../kgBacklinks';
+import { runShow } from '../kgShow';
 import { runProfileCreate, runProfileList, runProfileRemove, runProfileCreateView, runProfileListView, runProfileRemoveView } from '../kgProfile';
 
 const FLUSH_INTERVAL_MS = 10_000;
@@ -192,11 +193,16 @@ export function main(): void {
       // `reloadStore` always flushes both mirrors together right after, so a pruned tombstone
       // reliably stays gone rather than reappearing from the very rehydrate this triggers below.
       // Skipped on `discard`, since that path throws away in-memory state instead of flushing it.
+      const { tombstoned } = tombstoneVacuousContainers(store);
       const { pruned } = pruneUnreachableTombstones(store);
-      if (pruned > 0) {
+      if (tombstoned > 0 || pruned > 0) {
         dirty = true;
         stateDirty = true; // a pruned node's own dangling `unfolds` entries may have been swept too
       }
+      // Own sweep, not folded into the above: a stale `unfolds` entry (issues/treeview.md) isn't
+      // necessarily tied to anything just pruned here — it can predate this run entirely.
+      const { pruned: staleUnfolds } = pruneStaleUnfolds(store);
+      if (staleUnfolds > 0) stateDirty = true;
       flushIfDirty();
       flushStateIfDirty();
     }
@@ -218,7 +224,9 @@ export function main(): void {
    *  around `npm run kg:flush --force`'s original footgun (npm's own `--` separator requirement
    *  applies to any `--flag`, not just recognized npm options). */
   function clobberFlush(): void {
+    tombstoneVacuousContainers(store); // same companion sweep `reloadStore` runs — see its own comment
     pruneUnreachableTombstones(store); // same GC pass `reloadStore` runs — see its own comment
+    pruneStaleUnfolds(store); // same `unfolds` audit `reloadStore` runs — see its own comment
     dehydrateToJsonLd(store, contentDir);
     contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
     dirty = false;
@@ -270,8 +278,11 @@ export function main(): void {
       // reasoning as `reloadStore`). Wrapped in its own try/catch for the same "a stop must always
       // complete" reason the two flushes already are.
       try {
+        const { tombstoned } = tombstoneVacuousContainers(store);
         const { pruned } = pruneUnreachableTombstones(store);
-        if (pruned > 0) { dirty = true; stateDirty = true; }
+        if (tombstoned > 0 || pruned > 0) { dirty = true; stateDirty = true; }
+        const { pruned: staleUnfolds } = pruneStaleUnfolds(store);
+        if (staleUnfolds > 0) stateDirty = true;
       } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: tombstone GC failed — ${err.message}`); }
       try { flushIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: content mirror not flushed — ${err.message}`); }
       try { flushStateIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: .state mirror not flushed — ${err.message}`); }
@@ -310,8 +321,12 @@ export function main(): void {
       }
       case 'unfold': {
         if (req.reload) reloadStore();
+        // `peek` (no `--view` at all on the CLI call): read-only, matching `kg:tree`'s own
+        // no-`--view` default — resolves and previews without bootstrapping or mutating the
+        // default view (issues/treeview.md's "bare unfold mutates the default view" gap).
+        if (req.peek) return runUnfold(store, req.ref, null, req.showTombstoned);
         const view = resolveTreeView(store, req.viewRef);
-        const result = runUnfold(store, req.ref, view);
+        const result = runUnfold(store, req.ref, view, req.showTombstoned);
         stateDirty = true;
         // `resolveTreeView`'s `ensureDefaultView` fallback may have just minted a first-use
         // `Profile` as a side effect -- `Profile` lives in the content mirror now, not `.state/`
@@ -390,6 +405,9 @@ export function main(): void {
       case 'backlinks':
         if (req.reload) reloadStore();
         return runBacklinks(store, req.pathArg, req.includeText);
+      case 'show':
+        if (req.reload) reloadStore();
+        return runShow(store, req.pathArg);
       case 'profileCreate': {
         if (req.reload) reloadStore();
         const result = runProfileCreate(store, req.handle, req.name, req.kind);

@@ -19,9 +19,10 @@
  * `title` alone; and any matched pair's `props` (a listItem's `checked`, a run's `orderedList`/
  * `startIndex`), which sits outside every leaf's key regardless of type — a props-only write was
  * otherwise reported as plain `matched`, indistinguishable from no write at all. "Changed" also
- * applies one level up, at ArtifactNode/FolderNode scope, where matching is by path/abstract
- * rather than exact-content equality (see matchLeftoverByAbstract and its callers in
- * artifacts.ts/folders.ts) — a separate mechanism from this one, not the same counter.
+ * applies one level up, at ArtifactNode/FolderNode scope, where matching is by exact-key equality
+ * over an unordered whole-corpus bag rather than `matchKeyed`'s order-sensitive recursion (see
+ * `matchLeftoverByAbstract` and its callers in artifacts.ts/folders.ts) — a separate mechanism
+ * from this one, not the same counter.
  */
 
 import { stripInlineAnchors, headingDepth } from './astParser';
@@ -583,31 +584,39 @@ export function reconcileTree(oldRoot: any, newRoot: any, now: string = new Date
 
 /**
  * Rename/move detection for ArtifactNode/FolderNode leftovers (design §4 — "one mechanism,
- * three fractal layers"): candidates present only on one side (disk-only vs DB-only) are
- * matched by content-abstract similarity using the same Gestalt + ambiguity-decline primitive
- * used for blocks, just at a coarser granularity (one key per whole file/folder instead of per
- * line). A match means "this is a rename," not a delete+create.
+ * three fractal layers"): candidates present only on one side (disk-only vs DB-only) are matched
+ * by exact content-key equality, with no positional requirement at all — every occurrence of a
+ * key is found regardless of where it sits in either array. A match means "this is a rename," not
+ * a delete+create. A key occurring more than once on either side is left unmatched (nothing
+ * anchors which occurrence is "the" one — "decline rather than guess," same spirit as
+ * `dropAmbiguousSingletons`).
+ *
+ * Order-independent by construction, unlike `matchKeyed`'s Gestalt/Ratcliff-Obershelp recursion
+ * (used above for reconciling one artifact's own children, where sibling order really is
+ * meaningful): removed/added candidates here are a whole-corpus bag of file/folder identities
+ * scattered across unrelated concern folders, with no shared order to exploit. This function used
+ * to be that same recursion at file/folder granularity instead of per-line, and it broke on
+ * exactly that mismatch — confirmed live batch-renaming 5 concern docs at once (removed side in
+ * store-iteration order, added side in argv order): only 2 of the 4 genuinely exact-content
+ * matches were found, the other 2 sitting in a recursive quadrant an earlier split had already
+ * discarded, not because they were ambiguous.
  */
 export function matchLeftoverByAbstract<T>(
   removed: Array<{ key: string; item: T }>,
   added: Array<{ key: string; item: T }>
 ): { matched: Array<{ old: T; new: T }>; stillRemoved: T[]; stillAdded: T[] } {
-  const removedKeys = removed.map((r) => r.key);
-  const addedKeys = added.map((a) => a.key);
-  const blocks = matchKeyed(removedKeys, addedKeys);
-
+  const countOf = (list: Array<{ key: string }>, key: string) => list.filter((x) => x.key === key).length;
   const matched: Array<{ old: T; new: T }> = [];
   const matchedRemoved = new Set<number>();
   const matchedAdded = new Set<number>();
-  for (const block of blocks) {
-    for (let k = 0; k < block.length; k++) {
-      const oldIdx = block.aStart + k;
-      const newIdx = block.bStart + k;
-      matched.push({ old: removed[oldIdx].item, new: added[newIdx].item });
-      matchedRemoved.add(oldIdx);
-      matchedAdded.add(newIdx);
-    }
-  }
+  removed.forEach((r, i) => {
+    if (countOf(removed, r.key) !== 1) return;
+    const addedIdx = added.findIndex((a) => a.key === r.key);
+    if (addedIdx === -1 || countOf(added, r.key) !== 1) return;
+    matched.push({ old: r.item, new: added[addedIdx].item });
+    matchedRemoved.add(i);
+    matchedAdded.add(addedIdx);
+  });
 
   return {
     matched,

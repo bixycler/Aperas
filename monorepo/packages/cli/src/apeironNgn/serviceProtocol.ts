@@ -68,7 +68,11 @@ export type ServiceRequest =
   // flag, flushed on its own interval — not `dirty`, the content-mirror flag `track`/`ingest`/etc.
   // use — since it only ever touches `TreeView.unfolds`, never `BlockNode`/`ArtifactNode`/
   // `FolderNode`.
-  | { op: 'unfold'; ref: string; viewRef?: string; flush: boolean; reload: boolean }
+  // `peek: true` — no `--view` at all on the CLI invocation (distinct from `--view` supplied with
+  // no name following it, which still keeps the bootstrap-and-mutate default-view behavior below):
+  // read-only preview, touching no `TreeView` state at all, matching `kg:tree`'s own no-`--view`
+  // default (issues/treeview.md).
+  | { op: 'unfold'; ref: string; viewRef?: string; peek?: boolean; showTombstoned: boolean; flush: boolean; reload: boolean }
   | { op: 'fold'; ref: string; viewRef?: string; flush: boolean; reload: boolean }
   | { op: 'resolve'; paths: string[]; base?: string; createHolder: boolean; titles?: string[]; flush: boolean; reload: boolean }
   // `kg:insert` (Aperas-crud-design.md §7) — `markdown` present (even `''`) means create mode,
@@ -93,11 +97,12 @@ export type ServiceRequest =
   // `viewRef` presence drives unfolded-mode rendering — replaces the old bare `unfoldedMode`
   // boolean (§5): a `--view` flag with no target view still resolves to `"default"`, so this is
   // never actually optional in practice, but stays typed that way to match `unfold`/`fold` above.
-  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; viewRef?: string; reload: boolean }
+  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; reload: boolean }
   | { op: 'path'; idArg: string; reload: boolean }
   // `kg:backlinks` (Aperas-apeironngn-design.md §4 Step 13) — read-only reverse lookup, `reload`-
   // capable like `tree`/`path` above.
   | { op: 'backlinks'; pathArg: string; includeText: boolean; reload: boolean }
+  | { op: 'show'; pathArg: string; reload: boolean }
   // `kg:profile` (Aperas-treeview-design.md §11) — addresses a `Profile` by its own `handle` field,
   // never a raw node id (`findProfileByHandle`, `node.ts`). Each is a standalone one-shot CLI call,
   // not a multi-step interactive session the way `linkCandidates` is, so unlike `addBlockLink`

@@ -28,6 +28,7 @@ import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
 import { displayLabel } from '@aperas/core/apeironNgn/tree';
 import { parseMarkdownTree } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
+import { getProp, type HasProps, type PropEntry } from '@aperas/core/props';
 import { resolveBlockLinks, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
@@ -136,6 +137,32 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
   // `oldLinkTargets`/`oldWikilinksByBlock` are left at their empty defaults.
   const pendingLinks: PendingLinkCodes[] = [];
   for (const child of topLevel) extractLinkCodes(child, pendingLinks);
+
+  // A lone piped `listItem` always parses as its own one-item list (`astParser.ts`'s
+  // `convertChildren`), so it unconditionally comes out of the parse carrying its own
+  // `orderedList`/`startIndex` — correct for a genuinely new list, wrong when it's landing right
+  // after a plain (no-props-of-its-own) `listItem` that's already a continuation of an existing
+  // run: the render-time boundary rule ("a next item's own explicit prop starts a new run") then
+  // reads the freshly-parsed prop as a second run starting immediately, and renders a spurious
+  // blank line before it (issues/list-consumption.md). Only the documented, confirmed-live shape
+  // is handled here — appending/inserting after an ordinary continuation item — not every possible
+  // position relative to a run; landing before an existing run's own leader is a materially
+  // different case (the new item would need to *take over* the leader role, not just avoid
+  // claiming one) and isn't attempted here.
+  if (topLevel.length === 1 && topLevel[0].type === 'listItem') {
+    const siblings = parent.treeChildren;
+    const precedingId = anchorId === undefined
+      ? siblings[siblings.length - 1]?.id
+      : side === 'after'
+        ? anchorId
+        : siblings[siblings.findIndex((s) => s.id === anchorId) - 1]?.id;
+    if (precedingId !== undefined) {
+      const preceding = wrap(store, precedingId) as unknown as BlockNode;
+      if (preceding.type === 'listItem' && getProp(preceding as unknown as HasProps, 'orderedList') === undefined) {
+        topLevel[0].props = (topLevel[0].props ?? []).filter((p: PropEntry) => p.key !== 'orderedList' && p.key !== 'startIndex');
+      }
+    }
+  }
 
   const newIds = topLevel.map((child) => {
     const id = `BlockNode:${child.blockId}`;

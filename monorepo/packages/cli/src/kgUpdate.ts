@@ -28,6 +28,12 @@
  *   machinery (`reconcile.ts`) — matched/moved/changed/removed/added, identical to a real re-ingest.
  * - `--text-only`: overflow still becomes children (never silently dropped), but via a raw prepend
  *   ahead of whatever's already there — no diffing, no identity-matching, the cheap path.
+ *
+ * Promotion (Aperas-crud-design.md §4.1/§6): `target.holder` is unconditionally cleared before
+ * either mode runs, so piping real content onto a placeholder Block/Artifact promotes it in the
+ * same motion — no separate verb needed, and a no-op on an already-real target. `FolderNode` isn't
+ * accepted here at all (see the type check below); its own bare-promote channel is `kg:insert`'s
+ * anchor-less move mode.
  */
 
 import type { Store } from 'oxigraph';
@@ -273,7 +279,7 @@ export async function main(): Promise<void> {
       description: "Replace an existing node's text/children (and, for a heading target, its title) from piped markdown.",
       usage: 'cat content.md | aperas update [--base <path>] <path> [--text-only]',
       args: [
-        { name: '<path>', description: "Existing Block/Artifact node to update. If it's a heading, piping a leading heading line (e.g. '## New Title') also renames it — '#' depth must match; a plain paragraph leaves the title untouched." },
+        { name: '<path>', description: "Existing Block/Artifact node to update — FolderNode isn't accepted (use kg:insert's bare-promote for a folder holder). If it's a heading, piping a leading heading line (e.g. '## New Title') also renames it — '#' depth must match; a plain paragraph leaves the title untouched. Unconditionally clears the target's own '.holder' flag, promoting a placeholder Block/Artifact the same way real content landing on it always would — a no-op if it was already real." },
       ],
       flags: [
         { name: '--base <path>', description: 'Base path deep-path resolution is relative to.' },

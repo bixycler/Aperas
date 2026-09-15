@@ -510,8 +510,9 @@ export function resolveBlockLinks(
  * chain of three or more artifacts each newly unblocking the next is vanishingly unlikely in
  * practice, and not worth the added complexity to cover today.
  */
-export function retryDanglingRefs(store: Store, force: boolean = false): string[] {
+export function retryDanglingRefs(store: Store, force: boolean = false): { reingested: string[]; failed: IngestFailure[] } {
   const reingested: string[] = [];
+  const failed: IngestFailure[] = [];
   for (const id of allLiveIdsOfKind(store, 'ArtifactNode')) {
     const artifact = wrap(store, id) as unknown as ArtifactNode;
     const danglingCodes = getProps(artifact as unknown as any, DANGLING_REF_PROP);
@@ -525,10 +526,16 @@ export function retryDanglingRefs(store: Store, force: boolean = false): string[
       }
     });
     if (!hasNewlyResolvable) continue;
-    const result = ingestArtifact(store, artifactPath, force, true);
-    if (result && !result.pendingConfirmation) reingested.push(artifactPath);
+    // Same isolate-per-file fix as `ingestOne` above, and the same reason: one artifact's retry
+    // failing here must not abort every other artifact still queued in this same pass.
+    try {
+      const result = ingestArtifact(store, artifactPath, force, true);
+      if (result && !result.pendingConfirmation) reingested.push(artifactPath);
+    } catch (err: any) {
+      failed.push({ path: artifactPath, error: err?.message ?? String(err) });
+    }
   }
-  return reingested;
+  return { reingested, failed };
 }
 
 /** AST-parses and commits a tracked artifact into a fractal tree of BlockNodes, delegating the
@@ -561,25 +568,50 @@ export function ingestArtifact(store: Store, artifactPath: string, force: boolea
  *  `ingestAllArtifacts`/`ingestArtifacts` don't each separately (and driftably) redeclare it. */
 type SingleIngestResult = NonNullable<ReturnType<typeof ingestArtifact>>;
 
+/** One file's ingestion failing mid-batch (a bad wikilink, a parse error, anything `ingestArtifact`
+ *  throws) — collected rather than left to propagate. */
+export interface IngestFailure {
+  path: string;
+  error: string;
+}
+
+/** Shared by `ingestAllArtifacts`/`ingestArtifacts`: runs `ingestArtifact` for one file, catching
+ *  anything it throws into an `IngestFailure` instead of letting it escape the loop — the fix for
+ *  "a multi-artifact `kg:ingest` isn't transactional" (issues/core.md): without this, one bad file
+ *  partway through a batch left every earlier file's writes already committed with no rollback,
+ *  and every later file in the same run never attempted at all. True all-or-nothing would need a
+ *  store-wide snapshot/rollback primitive that doesn't exist here; isolating failures per file
+ *  instead — matching the pattern this module already uses for `untracked` below — means a bad
+ *  file no longer silently aborts the rest of the batch, and the caller gets an accurate report of
+ *  exactly what succeeded and what didn't instead of a mid-loop throw. */
+function ingestOne(store: Store, file: string, force: boolean, ingested: Array<{ path: string } & SingleIngestResult>, failed: IngestFailure[]): void {
+  try {
+    const result = ingestArtifact(store, file, force);
+    if (result) ingested.push({ path: file, ...result });
+  } catch (err: any) {
+    failed.push({ path: file, error: err?.message ?? String(err) });
+  }
+}
+
 /** Ingests every already-tracked artifact whose file hash has changed since its last ingestion.
  *  A file on disk with no `ArtifactNode` yet is skipped (reported via `untracked`, not thrown)
  *  rather than aborting the whole sweep — run `kg:track` (or pass the path directly to
  *  `kg:ingest`) to pick it up. `untracked` is returned rather than logged directly because this
  *  runs inside the shared service process, spawned with `stdio: 'ignore'` (`serviceClient.ts`) —
  *  anything printed here is discarded; only the CLI client that issued the request can surface it. */
-export function ingestAllArtifacts(store: Store, force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; untracked: string[] } {
+export function ingestAllArtifacts(store: Store, force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; untracked: string[]; failed: IngestFailure[] } {
   const files = listArtifactFiles();
   const ingested: Array<{ path: string } & SingleIngestResult> = [];
   const untracked: string[] = [];
+  const failed: IngestFailure[] = [];
   for (const file of files) {
     if (!findLiveArtifactByPath(store, file)) {
       untracked.push(file);
       continue;
     }
-    const result = ingestArtifact(store, file, force);
-    if (result) ingested.push({ path: file, ...result });
+    ingestOne(store, file, force, ingested, failed);
   }
-  return { ingested, untracked };
+  return { ingested, untracked, failed };
 }
 
 /** Ingests exactly the given artifact paths (`expandArtifactPaths` turns any directory among them
@@ -587,11 +619,11 @@ export function ingestAllArtifacts(store: Store, force: boolean = false): { inge
  *  Assumes every path is already tracked — `kgIngest.ts`'s `runIngest` tracks each one first (and
  *  rebuilds the folder tree) *before* calling this, specifically so a brand-new file's own folder
  *  is already attached by the time this ingests it and resolves its wikilinks against it. */
-export function ingestArtifacts(store: Store, paths: string[], force: boolean = false): Array<{ path: string } & SingleIngestResult> {
-  const results: Array<{ path: string } & SingleIngestResult> = [];
+export function ingestArtifacts(store: Store, paths: string[], force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; failed: IngestFailure[] } {
+  const ingested: Array<{ path: string } & SingleIngestResult> = [];
+  const failed: IngestFailure[] = [];
   for (const path of expandArtifactPaths(paths)) {
-    const result = ingestArtifact(store, path, force);
-    if (result) results.push({ path, ...result });
+    ingestOne(store, path, force, ingested, failed);
   }
-  return results;
+  return { ingested, failed };
 }

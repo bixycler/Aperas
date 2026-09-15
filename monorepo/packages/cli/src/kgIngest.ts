@@ -51,8 +51,8 @@ export function runIngest(store: Store, paths: string[] = [], track: boolean = f
 
   const { folderCount, sweep, pendingRemovals } = ingestFolderTree(store, force);
 
-  const { ingested, untracked } = paths.length > 0
-    ? { ingested: ingestArtifacts(store, paths, force), untracked: [] as string[] }
+  const { ingested, untracked, failed } = paths.length > 0
+    ? { ...ingestArtifacts(store, paths, force), untracked: [] as string[] }
     : ingestAllArtifacts(store, force);
 
   // Cross-artifact dangling-reference retry (AperasKG/artifacts/history/linking.md's Milestones):
@@ -60,9 +60,9 @@ export function runIngest(store: Store, paths: string[] = [], track: boolean = f
   // couldn't resolve last time stays stale even after whatever it was looking for comes into
   // existence elsewhere in this same run. Runs last, once the folder tree and every explicitly-
   // requested artifact are both already settled, so it sees the fullest possible picture.
-  const retriedDanglingRefs = retryDanglingRefs(store, force);
+  const { reingested: retriedDanglingRefs, failed: retryFailed } = retryDanglingRefs(store, force);
 
-  return { trackResult, ingested, untracked, folderCount, renamed: sweep.renamed, removed: sweep.removed, pendingFolderRemovals: pendingRemovals, retriedDanglingRefs };
+  return { trackResult, ingested, untracked, failed: [...failed, ...retryFailed], folderCount, renamed: sweep.renamed, removed: sweep.removed, pendingFolderRemovals: pendingRemovals, retriedDanglingRefs };
 }
 
 type IngestResponse = Awaited<ReturnType<typeof runIngest>>;
@@ -122,6 +122,12 @@ export async function main(): Promise<void> {
   }
   for (const p of result.untracked) {
     console.warn(`[ApeironNgn kg:ingest] '${p}' is not tracked yet — skipping (run kg:track, or pass --track, or pass it directly to kg:ingest).`);
+  }
+  // One file failing mid-batch no longer aborts the rest — every other file in this run still
+  // ingested (or was attempted), and this is the full account of what didn't (issues/core.md's
+  // "multi-artifact kg:ingest isn't transactional").
+  for (const f of result.failed) {
+    console.warn(`[ApeironNgn kg:ingest] '${f.path}' failed to ingest — ${f.error}`);
   }
 
   const pendingArtifacts = result.ingested.filter((r) => r.pendingConfirmation);

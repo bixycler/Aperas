@@ -8,7 +8,11 @@
  * - No stdin: `<path>` names an *existing* Block node. Repositions it relative to `--after`/
  *   `--before <anchor>` (the anchor's current parent becomes the node's new parent — cross-parent
  *   moves work for free) and unconditionally clears `.holder` — a no-op if it was already real, in
- *   which case this is a plain move. Omitting both flags is a bare in-place promote.
+ *   which case this is a plain move. Omitting both flags is a bare in-place promote. A `FolderNode`
+ *   target is accepted for this bare-promote case only (never with `--after`/`--before` — a
+ *   folder's position comes from its own path, not list order) — the one channel issues/core.md's
+ *   "Folder/Artifact-tier holders have no promotion channel" turned out still to be missing;
+ *   `ArtifactNode` already gets this for free through `kg:update` (it extends `BlockNode`).
  * - Stdin piped: `<path>` names the *parent* to create under. The piped markdown is parsed via the
  *   same `parseMarkdownTree` real artifacts use; each new node's type/title/text/children come
  *   entirely from that parse (no `--type`/`--titles`). If the parse has more than one top-level
@@ -61,8 +65,26 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
   if (req.markdown === undefined) {
     // Move/promote mode: `path` names the existing node itself.
     const targetId = resolveOne(store, req.path, req.base, 'Target');
-    if (nodeKindFromId(targetId) !== 'BlockNode') {
-      throw new Error(`'${req.path}' resolves to a ${nodeKindFromId(targetId)} — kg:insert only positions Block-level nodes (Aperas-crud-design.md §4.1).`);
+    const targetKind = nodeKindFromId(targetId);
+    // `FolderNode` gets one narrow exception: a bare (anchor-less) promote, clearing a holder
+    // folder's own `.holder` flag once every real artifact/subfolder it was scaffolded to hold has
+    // actually landed underneath it — the only gap "Folder/Artifact-tier holders have no promotion
+    // channel" (issues/core.md) turned out to still be open for. An `ArtifactNode` already passes
+    // through `kg:update` today (it `extends BlockNode`, so `kg:update`'s own type check accepts
+    // it, and piping any content through it already clears `.holder`) — no fix needed there. A
+    // folder's position comes from its own path, never from list order among siblings the way a
+    // Block's does, so repositioning was never the missing piece; reject that combination outright
+    // rather than silently ignoring `--after`/`--before`.
+    if (targetKind === 'FolderNode') {
+      if (anchorRef !== undefined) {
+        throw new Error(`'${req.path}' resolves to a FolderNode — kg:insert can only bare-promote a folder holder (no --after/--before, its position comes from its own path); reposition the real directory on disk instead.`);
+      }
+      (wrap(store, targetId) as unknown as { holder?: boolean }).holder = undefined;
+      const folder = wrap(store, targetId) as unknown as { title?: string };
+      return { lines: [`aperas://id/${targetId}  [FolderNode]  ${folder.title}  (promoted in place)`] };
+    }
+    if (targetKind !== 'BlockNode') {
+      throw new Error(`'${req.path}' resolves to a ${targetKind} — kg:insert only positions Block-level nodes, or bare-promotes a FolderNode holder (Aperas-crud-design.md §4.1/§6).`);
     }
     const target = wrap(store, targetId) as unknown as BlockNode;
 
@@ -165,7 +187,7 @@ export async function main(): Promise<void> {
         'cat new-node.md | aperas insert [--base <path>] <parent-path> [--after <anchor>|--before <anchor>]',
       ],
       args: [
-        { name: '<path>', description: 'No stdin: the existing node to move/promote. With piped markdown: the parent to create under.' },
+        { name: '<path>', description: 'No stdin: the existing node to move/promote — any Block, or a FolderNode holder for a bare (anchor-less) promote only. With piped markdown: the parent to create under.' },
       ],
       flags: [
         { name: '--base <path>', description: 'Base path deep-path resolution is relative to.' },

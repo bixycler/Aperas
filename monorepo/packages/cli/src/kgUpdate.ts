@@ -119,6 +119,20 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     text = firstChild.text;
     overflow = [...(firstChild.children ?? []), ...parsedChildren.slice(1)];
     rootLinkCodes = firstChild.linkCodes;
+    // A non-heading target's own title is the lead-in term `astParser.ts` just re-derived from
+    // this exact text (`extractLeadInTitle`, already run during `parseMarkdownTree` above) — read
+    // it the same way the heading branch above reads its own fresh title, instead of leaving
+    // `title` `undefined` here and letting `newShape.title = title ?? target.title` carry the old
+    // one forward unconditionally forever, even once the text no longer has that lead-in at all
+    // (issues/linking.md's "`aperas update` never re-derives a non-heading block's title" — also
+    // confirmed live to tombstone real children when the operator assumes a leaf's `--text` output
+    // is its complete content and re-pushes it expecting a title refresh). Skipped when `target`
+    // itself is a heading: `firstChild` there is the heading's *adopted leading paragraph*, a
+    // different piece of text from the heading's own title, which only the branch above (a real
+    // piped heading line) may touch.
+    if (target.type !== 'heading') {
+      title = firstChild.title;
+    }
   } else {
     text = undefined;
     overflow = parsedChildren;
@@ -143,14 +157,21 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   collectOldWikilinksByBlock(target, oldWikilinksByBlock);
   const artifactId = findEnclosingArtifactId(target) ?? undefined;
 
-  // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions) — only relevant
-  // when the heading-replacement branch above actually supplied a new `title`: an `ArtifactNode`'s
-  // own title never contributes to any `toPath()` (see `toPath()`'s own kind check), and neither
-  // does a plain text/children-only update that never touches `title` at all. `target.parent` is
-  // unchanged by a rename — only `target`'s own final path segment is — so the parent's current
-  // `toPath()` is the right prefix to check the renamed title against. Covers the renamed heading
-  // itself, not the (separately reconciled) `overflow` subtree beneath it — `kg:insert`'s own check
-  // is what covers a freshly-introduced multi-level tree.
+  // A fresh tree-anchor/props only ever arrives alongside a genuine heading retitle (the piped
+  // input's own leading heading line, matched depth and all) — the non-heading title re-derivation
+  // above supplies a `title` too, but never a `props`, and must never touch the target's existing
+  // ones (a listItem's `orderedList`/`startIndex`, say) just because its title happened to change.
+  const retitling = target.type === 'heading' && firstChild?.type === 'heading';
+
+  // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions) — relevant
+  // whenever `title` actually changed, heading retitle or non-heading re-derivation alike:
+  // `toPath()` walks every `BlockNode` ancestor's own `title`, not only headings. An `ArtifactNode`'s
+  // own title never contributes to any `toPath()` (see `toPath()`'s own kind check), so this stays
+  // a no-op there regardless. `target.parent` is unchanged by a rename — only `target`'s own final
+  // path segment is — so the parent's current `toPath()` is the right prefix to check the renamed
+  // title against. Covers the renamed node itself, not the (separately reconciled) `overflow`
+  // subtree beneath it — `kg:insert`'s own check is what covers a freshly-introduced multi-level
+  // tree.
   if (title !== undefined && target.parent) {
     const parentPath = target.parent.toPath();
     if (parentPath) {
@@ -168,11 +189,14 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   target.holder = undefined;
 
   if (req.textOnly) {
-    // Only touch `title`/`props` at all when the heading-replacement branch above actually ran —
-    // an ordinary text-only update (piped input starts with a plain paragraph, or nothing heading-
-    // shaped) must never wipe an existing tree-anchor prop it was never asked to change.
+    // `title` updates whenever a fresh one exists (heading retitle or non-heading re-derivation);
+    // `props` only during an actual heading retitle (`retitling`) — an ordinary text-only update on
+    // a non-heading target must never wipe an existing prop (a listItem's `orderedList`/
+    // `startIndex`) just because its re-derived title changed too.
     if (title !== undefined) {
       target.title = title;
+    }
+    if (retitling) {
       target.props = props?.length ? (props as unknown as ApeironNode[]) : undefined;
     }
     // Extracted *before* `hydrateFromParsed` runs on any of `overflow` below — `extractLinkCodes`
@@ -196,17 +220,18 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   }
 
   // `props` defaults to `oldShape`'s own (preserving whatever `target` already had, e.g. a
-  // heading's tree-anchor) unless the heading-replacement branch above explicitly supplied a new
-  // value to replace it with — an ordinary text/children-only update was never asked to touch it,
-  // and `carryForwardFields`'s own prop-id-preservation only activates when both sides have props
-  // to compare in the first place (leaving it out here, as this used to, silently dropped it).
+  // heading's tree-anchor, or a listItem's `orderedList`/`startIndex`) unless an actual heading
+  // retitle (`retitling`) explicitly supplied a new value to replace it with — a non-heading
+  // title re-derivation was never asked to touch props, and `carryForwardFields`'s own prop-id-
+  // preservation only activates when both sides have props to compare in the first place (leaving
+  // it out here, as this used to, silently dropped it).
   const newShape = {
     blockId: target.key,
     type: target.type,
     title: title ?? target.title,
     text,
     children: overflow,
-    props: title !== undefined ? props : oldShape.props,
+    props: retitling ? props : oldShape.props,
     linkCodes: rootLinkCodes,
   };
   const { finalTree, tombstones, stats } = reconcileTree(oldShape, newShape);

@@ -11,14 +11,16 @@
  * A note on "changed" as a reporting category (design §5): at block level, Stage A matches on
  * exact key equality ("heading XOR text"), so a matched leaf is *usually* unchanged content by
  * construction — an edited paragraph has a different key and surfaces as removed+added, which is
- * the intended "decline rather than guess" behavior (§2), not a gap. A heading is the one
- * exception: its key is `title` alone, but its adopted leading-paragraph `text` (`astParser.ts`)
- * isn't part of that key, so a matched pair of headings can still differ in `text` — checked
- * explicitly (`headingChanged`) rather than assumed away, and counted as `changed` rather than
- * folded into `matched` (named for "matched, not moved, not changed" — not "unchanged", which
- * reads as a claim the `changed` bucket next to it would contradict). "Changed" also applies one
- * level up, at ArtifactNode/FolderNode scope, where matching is by path/abstract rather than
- * exact-content equality (see matchLeftoverByAbstract and its callers in
+ * the intended "decline rather than guess" behavior (§2), not a gap. Two things fall outside that
+ * key and still need checking explicitly (`pairChanged`) rather than assumed away, each counted as
+ * `changed` rather than folded into `matched` (named for "matched, not moved, not changed" — not
+ * "unchanged", which reads as a claim the `changed` bucket next to it would contradict): a
+ * heading's own adopted leading-paragraph `text` (`astParser.ts`), since a heading's key is
+ * `title` alone; and any matched pair's `props` (a listItem's `checked`, a run's `orderedList`/
+ * `startIndex`), which sits outside every leaf's key regardless of type — a props-only write was
+ * otherwise reported as plain `matched`, indistinguishable from no write at all. "Changed" also
+ * applies one level up, at ArtifactNode/FolderNode scope, where matching is by path/abstract
+ * rather than exact-content equality (see matchLeftoverByAbstract and its callers in
  * artifacts.ts/folders.ts) — a separate mechanism from this one, not the same counter.
  */
 
@@ -181,7 +183,14 @@ export interface ChildDiff {
  * — the caller recurses into each matched pair's own children.
  */
 export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff {
-  const oldLeafIdx = oldChildren.map((_, i) => i).filter((i) => LEAF_TYPES.has(oldChildren[i].type));
+  // A tombstoned old child is excluded from every matching pool below (Stage A's leaves and
+  // heading buckets, Stage B's containers) — never a candidate live new content can land on.
+  // Without this, fresh content can silently bind to an already-dead id without reviving it
+  // (issues/core.md's "silently match onto an already-tombstoned node" item): the id stays
+  // tombstoned, so the content becomes invisible even though the reconcile summary reports a
+  // clean match. A dead slot is simply never reused; new content always gets a fresh id instead.
+  const isLiveOld = (i: number) => !oldChildren[i]?.tombstonedAt;
+  const oldLeafIdx = oldChildren.map((_, i) => i).filter((i) => LEAF_TYPES.has(oldChildren[i].type) && isLiveOld(i));
   const newLeafIdx = newChildren.map((_, i) => i).filter((i) => LEAF_TYPES.has(newChildren[i].type));
   const oldLeafKeys = oldLeafIdx.map((i) => leafKey(oldChildren[i]));
   const newLeafKeys = newLeafIdx.map((i) => leafKey(newChildren[i]));
@@ -217,6 +226,8 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
   // ambiguous *about* — same reasoning Stage B's own container alignment already relies on.
   const oldHeadingByDepth = new Map<number, number[]>();
   for (const i of oldLeafIdx) {
+    // `oldLeafIdx` already excludes tombstoned candidates (see above); `matchedOld` excludes
+    // whatever Stage A's exact-key pass already claimed.
     if (oldChildren[i].type !== 'heading' || matchedOld.has(i)) continue;
     const depth = headingDepth(oldChildren[i].title);
     const bucket = oldHeadingByDepth.get(depth);
@@ -248,7 +259,7 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
   // Stage B: partition both index ranges into segments delimited by the anchors (in new-tree
   // order, since that's the order the reconciled tree follows), then align containers within
   // each segment pair by type and relative position.
-  const oldContainerIdx = oldChildren.map((_, i) => i).filter((i) => CONTAINER_TYPES.has(oldChildren[i].type));
+  const oldContainerIdx = oldChildren.map((_, i) => i).filter((i) => CONTAINER_TYPES.has(oldChildren[i].type) && isLiveOld(i));
   const newContainerIdx = newChildren.map((_, i) => i).filter((i) => CONTAINER_TYPES.has(newChildren[i].type));
 
   const segments: Array<{ oldRange: [number, number]; newRange: [number, number] }> = [];
@@ -277,7 +288,29 @@ export function diffChildren(oldChildren: any[], newChildren: any[]): ChildDiff 
       byType.get(t)!.new.push(i);
     }
 
-    for (const { old, new: newer } of byType.values()) {
+    for (const [type, { old, new: newer }] of byType) {
+      // `listItem` gets a real content key to match on (its own text, same as any Stage A leaf) —
+      // a plain positional zip silently reassigns live content onto the wrong id the moment a
+      // skipped/reordered sibling shifts everything after it by one slot (issues/core.md's
+      // "reconciles children by array position... contradicts what both the skill and the code's
+      // own doc comments claim" item, and the "silently match onto an already-tombstoned id" item
+      // right below it — reproduced directly: a 4-item list missing its 2nd, already-tombstoned
+      // item put every later item's content one slot to the left of its own id). A bare `list`
+      // wrapper (the other member of `CONTAINER_TYPES`, effectively unused since the list-
+      // consumption migration removed every live one) has no comparable single-line text to key
+      // on, so it keeps the positional fallback below.
+      if (type === 'listItem') {
+        const oldKeys = old.map((i) => leafKey(oldChildren[i]));
+        const newKeys = newer.map((i) => leafKey(newChildren[i]));
+        for (const block of matchKeyed(oldKeys, newKeys)) {
+          for (let k = 0; k < block.length; k++) {
+            matched.push({ oldIndex: old[block.aStart + k], newIndex: newer[block.bStart + k] });
+            matchedOld.add(old[block.aStart + k]);
+            matchedNew.add(newer[block.bStart + k]);
+          }
+        }
+        continue;
+      }
       const n = Math.min(old.length, newer.length);
       for (let k = 0; k < n; k++) {
         matched.push({ oldIndex: old[k], newIndex: newer[k] });
@@ -366,6 +399,28 @@ function headingChanged(oldNode: any, newNode: any): boolean {
   return oldNode.type === 'heading' && ((oldNode.text ?? '') !== (newNode.text ?? '') || oldNode.title !== newNode.title);
 }
 
+/** Order-independent key/value comparison of a matched pair's `props` — a matched pair is
+ *  content-identical by *text* (`leafKey`'s own guarantee) but `props` (a listItem's `checked`,
+ *  a run's `orderedList`/`startIndex`) sits entirely outside that key, so a real prop-only write
+ *  otherwise reports as plain `matched`, indistinguishable from no write at all having happened
+ *  (issues/core.md's "a props-only change reports as `0 changed`"). Both empty/absent counts as
+ *  unchanged, not as a difference in shape. */
+function propsChanged(oldNode: any, newNode: any): boolean {
+  const oldProps = oldNode.props ?? [];
+  const newProps = newNode.props ?? [];
+  if (oldProps.length !== newProps.length) return true;
+  const oldByKey = new Map<string, unknown>(oldProps.map((p: any) => [p.key, p.value]));
+  return newProps.some((p: any) => oldByKey.get(p.key) !== p.value);
+}
+
+/** `headingChanged`'s heading-only text/title check, generalized to any matched pair via
+ *  `propsChanged` too — the two are independent axes (a heading can be retitled *and* its props
+ *  can differ; a non-heading leaf can only ever differ in props, its text being its own match
+ *  key) so either one alone is enough to report `changed` rather than `matched`. */
+function pairChanged(oldNode: any, newNode: any): boolean {
+  return headingChanged(oldNode, newNode) || propsChanged(oldNode, newNode);
+}
+
 /**
  * Recurses only into matched pairs (Stage A/B within diffChildren). Unmatched children are
  * collected into ctx.removedCandidates/addedCandidates rather than finalized immediately —
@@ -399,7 +454,7 @@ function reconcileNode(oldNode: any, newNode: any, ctx: ReconcileContext): void 
     reconcileNode(oldChild, newChild, ctx);
     if (movedPairs.has(oldIndex)) {
       ctx.stats.moved++;
-    } else if (headingChanged(oldChild, newChild)) {
+    } else if (pairChanged(oldChild, newChild)) {
       ctx.stats.changed++;
     } else {
       ctx.stats.matched++;
@@ -476,7 +531,7 @@ function detectCrossParentMoves(ctx: ReconcileContext, now: string): any[] {
           const oldChild = oldNode.children[oldIndex];
           const newChild = newNode.children[newIndex];
           reconcileNode(oldChild, newChild, ctx);
-          if (headingChanged(oldChild, newChild)) ctx.stats.changed++;
+          if (pairChanged(oldChild, newChild)) ctx.stats.changed++;
           else ctx.stats.matched++;
         }
         for (const ni of subDiff.addedNew) ctx.addedCandidates.push(newNode.children[ni]);

@@ -151,8 +151,32 @@ export const HEADING_TREE_ANCHOR_PROP = 'treeAnchor';
  *  currently answers to for the full-slug-path collision check (planning/linking.md's Slice 2 Task
  *  2) — never strips or rewrites anything, unlike `stripTrailingHeadingAnchors` above. */
 const ANCHOR_NAME_RE = /<a name='([^']*)' class='aperas-anchor(?: aperas-(?:tree|id))?'><\/a>/g;
+
+/** Runs of backtick-delimited inline code in `text`, as `[start, end)` offset ranges — used to
+ *  keep an anchor tag *quoted as an illustration* (design/linking.md's own Anchors section is
+ *  full of these, and so is this file's top-matter/doc comments once copied into a discussion
+ *  entry) from being mistaken for a real one: `extractAnchorNames` would otherwise register the
+ *  quoted example as a name the block genuinely claims, and `stripInlineAnchors` would otherwise
+ *  strip it out as if it were projection markup rather than the real prose it is. Confirmed live —
+ *  the `aperas` skill's own item 2 quotes a complete anchor tag to warn readers off pasting
+ *  projected files back in, and that quoting alone made the block claim the address as its own
+ *  until this fix (`issues/linking.md`'s "extractAnchorNames treats a quoted example anchor as a
+ *  real claimed name"). Regex-based rather than AST-aware — every call site below only ever has
+ *  raw stored text, never a parsed tree (mirrors `findLeadInColonOffset`'s own `inlineCode`
+ *  exclusion above, done properly there because it already has the AST). */
+const INLINE_CODE_SPAN_RE = /`[^`]*`/g;
+
+function anchorMatchesOutsideCode(text: string): RegExpMatchArray[] {
+  const codeRanges: Array<[number, number]> = [];
+  for (const m of text.matchAll(INLINE_CODE_SPAN_RE)) {
+    codeRanges.push([m.index!, m.index! + m[0].length]);
+  }
+  const insideCode = (idx: number) => codeRanges.some(([start, end]) => idx >= start && idx < end);
+  return [...text.matchAll(ANCHOR_NAME_RE)].filter((m) => !insideCode(m.index!));
+}
+
 export function extractAnchorNames(text: string): string[] {
-  return [...text.matchAll(ANCHOR_NAME_RE)].map((m) => m[1]);
+  return anchorMatchesOutsideCode(text).map((m) => m[1]);
 }
 
 /** The write-side counterpart to `extractAnchorNames`: removes every inline anchor tag from
@@ -169,9 +193,29 @@ export function extractAnchorNames(text: string): string[] {
  *  entry), so any comparison that requires exact string equality between "what the graph
  *  remembers" and "what's on disk right now" needs to normalize this away first. Applied at every
  *  site that makes that comparison: `extractAbstract` below (artifact/folder abstracts) and
- *  `reconcile.ts`'s `leafKey` (block-level Gestalt matching). */
+ *  `reconcile.ts`'s `leafKey` (block-level Gestalt matching) — and, as of `convertAstNode`'s own
+ *  `block.text` assignment, at the point of storage itself: without that, copying an already-
+ *  projected file's content back through `update`/`insert` bakes the anchor into the stored text
+ *  as literal prose (confirmed live — AperasKG/artifacts/discussion/linking.md's own "Two
+ *  approved engine fixes" entry).
+ *
+ *  Skips a backtick-quoted example the same way `extractAnchorNames` does (`anchorMatchesOutsideCode`,
+ *  above) — without that, this function would strip a legitimately-quoted anchor illustration out
+ *  of real prose the moment such a block was next touched, corrupting content rather than removing
+ *  a projection artifact. */
 export function stripInlineAnchors(text: string): string {
-  return text.replace(new RegExp(ANCHOR_NAME_RE.source + '\\s*', 'g'), '');
+  const matches = anchorMatchesOutsideCode(text);
+  if (matches.length === 0) return text;
+  let result = '';
+  let cursor = 0;
+  for (const m of matches) {
+    result += text.slice(cursor, m.index);
+    let end = m.index! + m[0].length;
+    while (end < text.length && /\s/.test(text[end])) end++;
+    cursor = end;
+  }
+  result += text.slice(cursor);
+  return result;
 }
 
 /** A heading's markdown depth — its `title`'s leading run of `#` characters, counted (`1` for
@@ -256,13 +300,19 @@ const MAX_LEAD_IN_CHARS_JA = 20;
  * genuine lead-in whose "rest of text" simply lives in child blocks instead of inline. A rejected
  * candidate doesn't end the search — scanning continues for a later, genuine one.
  *
- * Returns the accepted candidate's absolute offset, gated by `MAX_LEAD_IN_WORDS`/
- * `MAX_LEAD_IN_CHARS_JA` on the *visible* (non-code) text preceding it — `null` if no candidate
- * exists at all, or the one found fails the length cap.
+ * Returns the accepted candidate's absolute offset. The canonical `**Term**:` shape — nothing but
+ * a bold/emphasis span (whitespace between multiple runs of one aside) before the colon — is
+ * exempt from the length cap below: the author marked the boundary explicitly, so there's no
+ * ambiguity for the cap to guard against. Every other shape (any plain, non-bold character
+ * anywhere before the colon) stays gated by `MAX_LEAD_IN_WORDS`/`MAX_LEAD_IN_CHARS_JA` on the
+ * *visible* (non-code) text preceding it, exactly as before — that's the case the cap exists for,
+ * a colon only reachable after a long run of ordinary prose. `null` if no candidate exists at all,
+ * or a non-bold one found fails the length cap.
  */
 function findLeadInColonOffset(node: any, lang: DocLang): number | null {
   let candidateOffset: number | null = null;
   let precedingText = '';
+  let sawPlainText = false; // true once a non-whitespace char outside any strong/emphasis span is seen
   const requireSpaceAfter = lang !== 'ja';
 
   const walk = (n: any, insideStrong: boolean): boolean => {
@@ -280,6 +330,7 @@ function findLeadInColonOffset(node: any, lang: DocLang): number | null {
           // A real, non-space character follows — doesn't look like a genuine lead-in delimiter;
           // fall through and keep scanning rather than giving up on the whole block.
         }
+        if (!insideStrong && !/\s/.test(raw[i])) sawPlainText = true;
         precedingText += raw[i];
       }
       return false;
@@ -293,6 +344,7 @@ function findLeadInColonOffset(node: any, lang: DocLang): number | null {
   walk(node, false);
 
   if (candidateOffset === null) return null;
+  if (!sawPlainText) return candidateOffset; // canonical **Term**: shape — no cap
   const withinCap = lang === 'ja'
     ? precedingText.length <= MAX_LEAD_IN_CHARS_JA
     : precedingText.trim().split(/\s+/).filter(Boolean).length <= MAX_LEAD_IN_WORDS;
@@ -496,6 +548,19 @@ function convertChildren(rawSiblings: any[], markdown: string, isHeadingOrListIt
   return { children, leadingText, leadingNode, leadingLinkCodes };
 }
 
+/** A checkbox's mandatory leftover space after `[x] `/`[ ] ` only gets trimmed from a listItem's
+ *  leading paragraph — and that paragraph's own `position` re-based past it — by `mdast-util-gfm-
+ *  task-list-item`'s `exitParagraphWithTaskListItem`, upstream of this file, when the paragraph's
+ *  first inline child is a plain `text` node. When it's `strong`/`emphasis`/`inlineCode`/`link`
+ *  instead, CommonMark's own inline tokenizer never materializes that lone leading space (nothing
+ *  before an inline span) as a text node at all, so the trim-and-rebase never runs and the marker
+ *  survives as literal text at whatever position this file's own `rawSlice`-based extraction then
+ *  trusts — confirmed live on this session's own discussion checkboxes (every one bold-led) and
+ *  traced to the exact line (discussion/treeview.md's "GFM task-list marker leak..." entry).
+ *  Defensive compensation, not a real fix — that lives upstream — for a `listItem` already known
+ *  to be a checkbox (`node.checked` boolean) whose extracted text/title still starts with one. */
+const LEFTOVER_CHECKBOX_RE = /^\[[ xX]\]\s*/;
+
 function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlockNode | null {
   // We only turn structural/block elements into BlockNodes. Inline elements (text, strong, link)
   // are just part of the parent's `text`. `table` is deliberately opaque (text = rawText, same
@@ -582,10 +647,21 @@ function convertAstNode(node: any, markdown: string, lang: DocLang): ParsedBlock
 
   if (node.type === 'listItem' && node.checked !== null && node.checked !== undefined) {
     setProp(block, 'checked', String(Boolean(node.checked)));
+    // See LEFTOVER_CHECKBOX_RE's own doc comment: upstream leaves the marker in when this item's
+    // content doesn't start with plain text (bold/italic/code/link lead-ins all qualify).
+    text = text.replace(LEFTOVER_CHECKBOX_RE, '');
+    if (block.title) block.title = block.title.replace(LEFTOVER_CHECKBOX_RE, '');
   }
 
   if (text) {
-    block.text = text;
+    // Strip any inline anchor tag *before* storing, not just before comparing (`stripInlineAnchors`'s
+    // own doc comment above covers only the comparison sites) — otherwise copying an already-
+    // projected paragraph/listItem's rendered markdown back through `update`/`insert` bakes the
+    // splice-in-only-at-projection-time anchor into the block's stored `text` as literal prose
+    // (design/linking.md's Anchors section: the anchor is never meant to be real content). A
+    // heading never reaches here with one in the first place — `stripTrailingHeadingAnchors`
+    // already removed its own trailing anchor into `treeAnchor` before `text` is ever assigned.
+    block.text = stripInlineAnchors(text);
   }
 
   if (linkCodes.length > 0) {

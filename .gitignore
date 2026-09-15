@@ -6,3 +6,4 @@ skills/*-workspace/iteration-*/
 # Personal, per-machine hook/permission overrides — opt-in, never a project
 # default (see discussion/aperas-skill.md's read-side trigger-gap entry).
 .claude/settings.local.json
+.agents/aperas_memory.json

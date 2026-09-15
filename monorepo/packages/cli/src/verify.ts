@@ -842,7 +842,9 @@ No anchor tag on this one at all.
     if (termItemAfterReingest.id !== termItem.id) {
       throw new Error(`Expected the list item to reconcile-match (same id) across the projected round-trip, got ${termItem.id} -> ${termItemAfterReingest.id}.`);
     }
-    const occurrencesAfterReingest = ((termItemAfterReingest.text as string) ?? '').split(idAnchorMarker).length - 1;
+    const h2BlockAfterReingest = findHeadingByTitle(wrap(store, linkingAId) as unknown as ArtifactNode, 'H2 With Anchor')!;
+    const h2ProjectedAfterReingest = (h2BlockAfterReingest as unknown as BlockNode).toMarkdown()!;
+    const occurrencesAfterReingest = h2ProjectedAfterReingest.split(idAnchorMarker).length - 1;
     if (occurrencesAfterReingest !== 1) {
       throw new Error(`Expected re-projecting an already-anchored list item to not duplicate its id-anchor, got ${occurrencesAfterReingest} occurrence(s).`);
     }

@@ -1,6 +1,11 @@
 ---
 name: oxigraph
-description: Reference for Oxigraph, an embeddable Rust RDF/SPARQL graph database, used here via its Node.js/WASM package (`oxigraph` on npm) as ApeironNgn's storage engine. Use whenever the user mentions Oxigraph, an embedded/in-process RDF or triple store, SPARQL in Node.js, `@rdfjs/data-model`, or ApeironNgn's substrate specifically — even if they don't say "Oxigraph" by name.
+description: >-
+  Reference for Oxigraph, an embeddable Rust RDF/SPARQL graph database, used here via
+  its Node.js/WASM package (`oxigraph` on npm) as ApeironNgn's storage engine. Use whenever
+  the user mentions Oxigraph, an embedded/in-process RDF or triple store, SPARQL in Node.js,
+  `@rdfjs/data-model`, or ApeironNgn's substrate specifically — even if they don't say
+  "Oxigraph" by name.
 ---
 
 # Oxigraph Skill

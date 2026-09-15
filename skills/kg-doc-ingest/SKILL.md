@@ -1,6 +1,12 @@
 ---
 name: kg-doc-ingest
-description: Workflow for the one-time on-ramp of migrating an old/legacy hand-written concern doc (design/discussion/issues/planning/history under AperasKG/artifacts/) into the ApeironNgn knowledge graph via the `aperas` CLI — tracking, ingesting, and verifying round-trip fidelity before handing off to the `aperas` skill's ongoing graph-editing discipline. Use this whenever the user asks to sync/ingest a doc (or several) into the graph for the first time, or migrate a legacy artifact to Apeiron — even if they don't name the skill directly.
+description: >-
+  Workflow for the one-time on-ramp of migrating an old/legacy hand-written concern doc
+  (design/discussion/issues/planning/history under AperasKG/artifacts/) into the ApeironNgn
+  knowledge graph via the `aperas` CLI — tracking, ingesting, and verifying round-trip fidelity
+  before handing off to the `aperas` skill's ongoing graph-editing discipline. Use this whenever
+  the user asks to sync/ingest a doc (or several) into the graph for the first time, or migrate
+  a legacy artifact to Apeiron — even if they don't name the skill directly.
 ---
 
 # kg-doc-ingest

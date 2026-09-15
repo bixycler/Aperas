@@ -1,6 +1,18 @@
 ---
 name: aperas
-description: Before anything else in this project — first turn, every session, whatever the task looks like, including when it looks unrelated, trivial, read-only, or like one quick lookup — check memory for a standing decision on whether Aperas manages this session. Do this without loading this skill, and never ask permission to do it or offer it as an option; just do it. If a decision is recorded, follow it. If none is, ask with AskUserQuestion using exactly these choices — Never / Not now / Yes, this session only / Yes, all sessions — and record only 'all sessions' or 'never' durably, so a session-scoped answer is asked again next session. Load this skill only once the answer is yes; it then governs the work — orient in the graph before acting, change it through the CLI rather than by editing files, put back what the work turns up. Aperas is this project's external memory: a knowledge graph, worked through the `aperas` CLI, holding what has been decided, tried, found and planned. For first-time ingest of existing documents, `kg-doc-ingest` covers that; this one first.
+description: >-
+  Before anything else in this project — first turn, every session, whatever the task looks like,
+  including when it looks unrelated, trivial, read-only, or like one quick lookup — check memory
+  for a standing decision on whether Aperas manages this session. Do this without loading this
+  skill, and never ask permission to do it or offer it as an option; just do it. If a decision
+  is recorded, follow it. If none is, ask with AskUserQuestion using exactly these choices —
+  Never / Not now / Yes, this session only / Yes, all sessions — and record only 'all sessions'
+  or 'never' durably, so a session-scoped answer is asked again next session. Load this skill
+  only once the answer is yes; it then governs the work — orient in the graph before acting,
+  change it through the CLI rather than by editing files, put back what the work turns up.
+  Aperas is this project's external memory: a knowledge graph, worked through the `aperas` CLI,
+  holding what has been decided, tried, found and planned. For first-time ingest of existing
+  documents, `kg-doc-ingest` covers that; this one first.
 ---
 
 # aperas

@@ -1,6 +1,13 @@
 ---
 name: terminusdb
-description: Complete reference for TerminusDB, a Git-like open-source graph and document database — JSON-LD documents, WOQL queries, schema modeling, and branch/commit/merge version control on graph data. Use whenever the user mentions TerminusDB or TerminusCMS, WOQL (Web Object Query Language), a "graph database with version control" or "git for data", the `terminusdb` npm package or `terminusdb-client` pip package, the `terminusdb` CLI, or wants to design a JSON-LD schema, write a WOQL query, branch/diff/merge a database, or stand up a TerminusDB server via Docker — even if they don't say "TerminusDB" by name.
+description: >-
+  Complete reference for TerminusDB, a Git-like open-source graph and document database —
+  JSON-LD documents, WOQL queries, schema modeling, and branch/commit/merge version control
+  on graph data. Use whenever the user mentions TerminusDB or TerminusCMS, WOQL (Web Object
+  Query Language), a "graph database with version control" or "git for data", the `terminusdb`
+  npm package or `terminusdb-client` pip package, the `terminusdb` CLI, or wants to design
+  a JSON-LD schema, write a WOQL query, branch/diff/merge a database, or stand up a TerminusDB
+  server via Docker — even if they don't say "TerminusDB" by name.
 ---
 
 # TerminusDB Skill

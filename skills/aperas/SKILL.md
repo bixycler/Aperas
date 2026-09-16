@@ -17,7 +17,7 @@ description: >-
 
 # aperas
 
-Status: **v2.2** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v2.3** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` isn't published yet. Every command below (`aperas <verb> ...`) actually runs today as `npm run aperas -- <verb> ...` from `Aperas/monorepo/`. **Delete this note once `aperas` ships as a real installed binary** (see `AperasKG/artifacts/issues/packaging.md`'s Pending Tasks — the `bin` build).
 
@@ -256,25 +256,27 @@ The anchor must be a **direct child** of `<path>`, not a descendant. `aperas ins
 
 Be aware this failure is not clean: the new nodes are hydrated into the store *before* the anchor is validated, so a rejected insert leaves live orphans in memory that can collide with your retry. `aperas reload -- --discard` clears them.
 
+### Inserting an item into an existing list
+
+For an **unordered** list, the safest and cleanest route is to insert the new item directly as a sibling of an existing one: `aperas insert <parent> --after <existing-item>`.
+- **The input rule**: Pipe the bare item text **with its bullet marker** (e.g. `- new item`).
+- **Never pipe plain text** with no bullet: it parses as a `paragraph`, which breaks a contiguous list run in two.
+- Should you meet an item nested inside a wrapper list, promote it out with `aperas insert <item-id> --after <existing-direct-child-of-the-list>` and `aperas remove` the emptied wrapper.
+
+For an **ordered** list, direct insertion is riskier because a freshly inserted item becomes its own run-leader and can restart the numbering rather than continuing it. (Though a recent fix clears this for the common case of landing next to a plain continuation item, landing next to a run-leader still renders a spurious blank line). 
+The safer route for ordered lists is to target the list's **parent heading** (`aperas update <heading-id>`) and pipe the heading line plus the *complete* list (every existing item verbatim plus the new one).
+- Exact-key matching reuses every unchanged item's id, **but only while every item keeps its parent and depth**. A push that changes item depth (e.g. regrouping under sub-headings) recreates everything; use `aperas insert` (moves) for that instead.
+- **This only works if the piped content is genuinely complete.** Piping the heading plus *only* the new item reconciles the existing ones away as removed, tombstoning real content.
+
+### Updating an existing list item
+
+To update the text of an *existing* list item without changing its identity, use `aperas update <item-id>`.
+- **The input rule**: Pipe the bare text **without any bullet marker** (e.g. `updated text`, never `- updated text`).
+- **Explanation**: The target node is already a `listItem`. If you pipe a `- `, the parser sees a *new list*, and `update` will replace the existing item's children with this new list, resulting in a nested list rendering bug (`- - updated text`). By piping bare text, it parses as a paragraph, and `update` correctly adopts its text into the existing list item.
+
 ### Updating a heading — `--text-only`
 
 A heading-target `update` **without** `--text-only` reconciles children too, even from an empty body: piping just `## Pending Tasks` with no body reconciles 0 piped children against N existing ones as *all removed*, tombstoning real content. `--text-only` overwrites just `.text`/`.title` and skips reconciliation entirely — that is what makes a retitle safe.
-
-### Adding an item to an existing list
-
-Target the list's **parent heading** — `aperas update <heading-id>` — and pipe the heading line plus the *complete* corrected list, every existing item verbatim plus the new one. Exact-key matching reuses every unchanged item's id (`N matched`, only the new one `added`).
-
-**That promise holds only while every item keeps its parent and its depth.** A push that moves items to a new depth — regrouping a flat list under fresh sub-headings, say — matches nothing and recreates everything; use moves for that instead (see *Preserve identity*, Discipline).
-
-**This only works if the piped content is genuinely complete.** Piping the heading plus *only* the new item reconciles the existing ones away as removed. Hit live on a 4-link Dashboard expecting a one-line addition: the actual summary was `0 matched, 0 added, 5 removed`.
-
-For an **ordered** list this is the only safe route, because a freshly inserted item becomes its own run-leader and can restart the numbering rather than continuing it.
-
-For an unordered list, `aperas insert <parent> --after <existing-item>` piping a bare `- item` line is safe: no live `list`-typed node remains in the graph to mistakenly target. Should you meet an item nested inside a wrapper list anyway, promote it out with `aperas insert <item-id> --after <existing-direct-child-of-the-list>` and `aperas remove` the emptied wrapper.
-
-Two input rules apply either way: pipe the bare content, **never** the ordinal marker (a leading `3.` alone makes the parser read it as a fresh list), and **never** plain text with no bullet marker (it parses as a `paragraph`, breaking a contiguous run in two).
-
-Fixed for the common case: `aperas insert` now clears a freshly-parsed lone item's own `orderedList`/`startIndex` when it lands next to a plain continuation item (no run-leader props of its own), so it silently joins that run instead of starting a spurious new one. Landing right before or after an item that *is* itself a run-leader still carries its own props and renders a spurious blank line — not corruption, a narrower remaining case — see `issues/list-consumption.md`.
 
 ### Renaming
 

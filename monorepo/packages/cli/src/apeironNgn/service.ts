@@ -48,6 +48,7 @@ import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/sto
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
 import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds } from '@aperas/core/apeironNgn/node';
+import { checkLinkIntegrity, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
 import { getSocketPath, markReady, clearLock } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
@@ -459,6 +460,15 @@ export function main(): void {
         if (result.removed) stateDirty = true;
         if (req.flush) flushStateIfDirty();
         return result;
+      }
+      case 'checkLinks': {
+        if (req.reload) reloadStore();
+        if (req.repair) {
+          const res = repairLinkIntegrity(store);
+          dirty = true;
+          return res;
+        }
+        return checkLinkIntegrity(store);
       }
       default:
         throw new Error(`ApeironNgn service: unknown op '${(req as { op?: string }).op}'`);

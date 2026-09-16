@@ -115,7 +115,8 @@ export type ServiceRequest =
   // these mirror the `profile*` shapes above one-for-one.
   | { op: 'profileCreateView'; name: string; profileHandle: string; flush: boolean; reload: boolean }
   | { op: 'profileListView'; name?: string; reload: boolean }
-  | { op: 'profileRemoveView'; name: string; flush: boolean; reload: boolean };
+  | { op: 'profileRemoveView'; name: string; flush: boolean; reload: boolean }
+  | { op: 'checkLinks'; repair: boolean; reload: boolean };
 
 // An unresolved divergence (see `flush`/`clobber` above) doesn't just fail the request that hit
 // it — it's recorded (`contentConflict`/`stateConflict` in `service.ts`) and attached to *every*

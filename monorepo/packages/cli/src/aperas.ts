@@ -46,6 +46,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   flush: { description: 'Force an immediate sync of the ApeironNgn store out to the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgFlush') },
   reload: { description: 'Discard the in-memory ApeironNgn store and rehydrate it from the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgReload') },
   identity: { description: "Show or set this machine's identity.json (currently just machineNumber).", load: () => import('./kgIdentity') },
+  'check-links': { description: 'Run a drift-style link integrity sweep comparing stored .links against live block text.', load: () => import('./kgCheckLinks') },
 };
 
 function printTopLevelHelp(): void {

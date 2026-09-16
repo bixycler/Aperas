@@ -448,6 +448,17 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
   return out;
 }
 
+/**
+ * Parses a standalone text string as a markdown AST and extracts all internal link occurrences
+ * (`[[code]]`, `aperas://...`, `path#fragment`). Used by `checkLinkIntegrity` to scan stored block text.
+ */
+export function collectLinkCodesFromText(text: string): LinkOccurrence[] {
+  if (!text || !text.trim()) return [];
+  const processor = unified().use(remarkParse).use(remarkGfm);
+  const ast = processor.parse(text) as any;
+  return collectLinkCodes(ast, text);
+}
+
 /** Converts every `listItem` of a mdast `list` node into its own BlockNode (recursively). */
 function convertListItems(listNode: any, markdown: string, lang: DocLang): ParsedBlockNode[] {
   return (listNode.children ?? [])

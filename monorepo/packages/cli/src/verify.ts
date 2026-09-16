@@ -47,7 +47,8 @@ import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts
 import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folders';
 import { findByExactPath } from '@aperas/core/apeironNgn/tree';
 import { wrap, ensureDefaultView, pruneUnreachableTombstones, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type FolderNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
-import { nodeExists } from '@aperas/core/apeironNgn/vocab';
+import { checkLinkIntegrity, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
+import { predIri, encodeLiteral, nodeExists } from '@aperas/core/apeironNgn/vocab';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runAddBlockLink, runRemoveBlockLink } from './kgLink';
 import { runBacklinks } from './kgBacklinks';
@@ -1076,6 +1077,26 @@ Old-style reference, never ingested: [old](linking-a.md#h1-heading).
     }
     console.log(`   - A list adopted onto the piped input's own leading paragraph survives as the target's children, not silently dropped.`);
     console.log("   [✓] kg:update list-adoption fix verified successfully.\n");
+
+    console.log("19. Testing checkLinkIntegrity and repairLinkIntegrity sweeps...");
+    const initialReport = checkLinkIntegrity(store);
+    console.log(`   - Initial link integrity scan: ${initialReport.totalLiveBlocks} live blocks, ${initialReport.discrepancies.length} discrepancies.`);
+
+    // Simulate dropped .links by removing a WIKILINK_PREDICATE quad directly from store
+    const linkQuads = store.match(null, predIri('predicate'), encodeLiteral('[[wikilink]]'), null);
+    if (linkQuads.length > 0) {
+      const quadToRemove = linkQuads[0];
+      store.delete(quadToRemove);
+      const reportWithDropped = checkLinkIntegrity(store);
+      if (reportWithDropped.discrepancies.length === 0) {
+        throw new Error(`Expected checkLinkIntegrity to detect dropped WIKILINK_PREDICATE quad, but 0 discrepancies were reported.`);
+      }
+      console.log(`   - Detected dropped link quad successfully (${reportWithDropped.discrepancies.length} discrepancy flagged).`);
+
+      const repairResult = repairLinkIntegrity(store);
+      console.log(`   - repairLinkIntegrity executed: ${repairResult.repairedArtifacts.length} artifact(s) re-resolved.`);
+    }
+    console.log("   [✓] checkLinkIntegrity and repairLinkIntegrity sweeps verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Substrate Integration complete & verified!");
   } finally {

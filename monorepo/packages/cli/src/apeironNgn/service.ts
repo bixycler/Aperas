@@ -61,6 +61,7 @@ import { runResolve } from '../kgResolve';
 import { runInsert } from '../kgInsert';
 import { runUpdate } from '../kgUpdate';
 import { runRemove } from '../kgRemove';
+import { runRetype } from '../kgRetype';
 import { runLinkCandidates, runAddBlockLink, runRemoveBlockLink } from '../kgLink';
 import { runProject } from '../kgProject';
 import { runTree } from '../kgTree';
@@ -531,6 +532,18 @@ export function main(): void {
         const artifactId = artifactForRef(req.path, req.base);
         const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runRemove(store, req);
+        dirty = true;
+        if (req.flush) flushIfDirty();
+        return withLinkCheck(result, artifactId, before);
+      }
+      // Same scoped link-integrity check every other mutating op gets: a retype rewrites `.type`/
+      // `.title` and can drop a type-specific prop, but never `.links` — so anything this sweep
+      // reports here is a real regression, not expected churn.
+      case 'retype': {
+        if (req.reload) reloadStore();
+        const artifactId = artifactForRef(req.path, req.base);
+        const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
+        const result = runRetype(store, req);
         dirty = true;
         if (req.flush) flushIfDirty();
         return withLinkCheck(result, artifactId, before);

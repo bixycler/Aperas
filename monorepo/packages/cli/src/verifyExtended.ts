@@ -32,6 +32,7 @@ import { predIri, nodeIri } from '@aperas/core/apeironNgn/vocab';
 import { runBacklinks } from './kgBacklinks';
 import { runInsert } from './kgInsert';
 import { runUpdate } from './kgUpdate';
+import { runRetype } from './kgRetype';
 import { DEMO_DIR, resetDemoState, findHeadingByTitle, findByText, instrumentStepTiming } from './verifySupport';
 
 // Linking Slice 1/2 (AperasKG/artifacts/planning/linking.md) — its own scratch artifacts, distinct
@@ -54,6 +55,9 @@ const LINKING_CHECK_PATH = `${DEMO_DIR}/linking-check-integrity.md`;
 // bug to step 19's `repairLinkIntegrity` one) — a heading with a real child that carries a
 // resolved wikilink, distinct from every other fixture above.
 const LINKING_TEXTONLY_PATH = `${DEMO_DIR}/linking-textonly-scope.md`;
+// Own fixture for step 21 (`aperas retype`) — a heading with a real child and a resolved link, plus
+// a second heading whose depth changes; distinct from every fixture above.
+const LINKING_RETYPE_PATH = `${DEMO_DIR}/linking-retype-scope.md`;
 
 export async function runApeironNgnExtendedVerification(): Promise<void> {
   console.log("=================================================");
@@ -558,6 +562,115 @@ Content the child citation points to.
     }
     console.log(`   - --text-only update on the parent left the untouched child's Link ${childLinkAfter.id} in place, unchanged.`);
     console.log("   [✓] kg:update --text-only scope fix verified successfully.\n");
+
+    console.log("21. Testing aperas retype — identity-preserving block type conversion with automatic title migration across the heading boundary (discussion/core.md's own plan entry)...");
+    writeFileSync(join(getArtifactsDir(), LINKING_RETYPE_PATH), `# Retype Scope
+
+## Target Section <a name='retype-scope/target' class='aperas-anchor aperas-tree'></a>
+
+Content for the retype fixture to cite.
+
+## Convert Me
+
+Body text of the heading about to be converted, citing [the target](#retype-scope/target).
+
+### Nested Child
+
+A child that must stay attached to its parent across the conversion.
+
+## Depth Me
+
+Body of the heading whose depth changes.
+
+- Plain prose with no bold lead-in term at all, so there's nothing to cut back into a heading.
+`, 'utf-8');
+    trackArtifact(store, LINKING_RETYPE_PATH);
+    ingestFolderTree(store);
+    ingestArtifact(store, LINKING_RETYPE_PATH);
+    const retypeArtifactId = findByExactPath(store, LINKING_RETYPE_PATH);
+    if (!retypeArtifactId) throw new Error(`Expected '${LINKING_RETYPE_PATH}' to be tracked after ingestion.`);
+    const retypeArtifact = wrap(store, retypeArtifactId) as unknown as ArtifactNode;
+    const retypeTarget = findHeadingByTitle(retypeArtifact, 'Target Section');
+    const convertMe = findHeadingByTitle(retypeArtifact, 'Convert Me');
+    const depthMe = findHeadingByTitle(retypeArtifact, 'Depth Me');
+    const noLeadIn = findByText(retypeArtifact, 'Plain prose with no bold lead-in');
+    if (!retypeTarget || !convertMe || !depthMe || !noLeadIn) throw new Error(`Expected all four fixture blocks in '${LINKING_RETYPE_PATH}'.`);
+
+    const convertBlock = wrap(store, convertMe.id) as unknown as BlockNode;
+    const linkBefore = ((convertBlock.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [])
+      .find((l) => l.target?.id === retypeTarget.id);
+    if (!linkBefore) throw new Error(`Expected 'Convert Me' to carry a resolved Link to ${retypeTarget.id} before the retype.`);
+    const childIdsBefore = convertBlock.treeChildren.map((c) => c.id);
+    const originalTitle = convertBlock.title as string;
+    const originalText = convertBlock.text as string | undefined;
+    if (childIdsBefore.length === 0) throw new Error(`Expected 'Convert Me' to have a nested child before the retype.`);
+
+    // (a) heading -> listItem: the heading's own words fold into `.text` as a lead-in, and the new
+    // title is the real parser's own derivation from it — no follow-up `update` needed at all.
+    const conv = runRetype(store, { path: `aperas://id/${convertMe.id}`, to: 'listItem' });
+    const convertAfter = wrap(store, convertMe.id) as unknown as BlockNode;
+    if (convertAfter.type !== 'listItem') throw new Error(`Expected 'Convert Me' to become a listItem, got '${convertAfter.type}'.`);
+    const expectedFoldedText = `**Convert Me**: ${originalText}`;
+    if (convertAfter.text !== expectedFoldedText) {
+      throw new Error(`Expected the heading's words folded into '.text' as a lead-in, got ${JSON.stringify(convertAfter.text)} (wanted ${JSON.stringify(expectedFoldedText)}).`);
+    }
+    if (convertAfter.title !== '**Convert Me**') throw new Error(`Expected the title to be the parser's own derivation from the folded text, got ${JSON.stringify(convertAfter.title)}.`);
+    if (conv.untitled) throw new Error(`Expected the automatic fold to succeed (untitled should be false), got untitled=true.`);
+    if (conv.toText !== expectedFoldedText) throw new Error(`Expected the result to report the new text, got ${JSON.stringify(conv.toText)}.`);
+    const linkAfter = ((convertAfter.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [])
+      .find((l) => l.target?.id === retypeTarget.id);
+    if (!linkAfter) throw new Error(`Expected the resolved Link to survive the retype, but '.links' is now: ${JSON.stringify(convertAfter.links)}`);
+    if (linkAfter.id !== linkBefore.id) throw new Error(`Expected the Link id to survive untouched (${linkBefore.id}), got ${linkAfter.id}.`);
+    const childIdsAfter = convertAfter.treeChildren.map((c) => c.id);
+    if (JSON.stringify(childIdsAfter) !== JSON.stringify(childIdsBefore)) {
+      throw new Error(`Expected children to stay attached across the retype: ${JSON.stringify(childIdsBefore)} -> ${JSON.stringify(childIdsAfter)}`);
+    }
+    console.log(`   - heading -> listItem: title auto-folded to ${JSON.stringify(convertAfter.title)}, Link ${linkAfter.id} and children intact.`);
+
+    // (b) listItem -> heading, the reverse: cutting the same canonical lead-in back out must
+    // reproduce the *original* title and text exactly — the round-trip this design promises.
+    const back = runRetype(store, { path: `aperas://id/${convertMe.id}`, to: 'h2' });
+    const convertBack = wrap(store, convertMe.id) as unknown as BlockNode;
+    if (convertBack.type !== 'heading') throw new Error(`Expected the reverse retype to land back on 'heading', got '${convertBack.type}'.`);
+    if (convertBack.title !== originalTitle) throw new Error(`Expected the round-trip to reproduce the original title ${JSON.stringify(originalTitle)}, got ${JSON.stringify(convertBack.title)}.`);
+    if (convertBack.text !== originalText) throw new Error(`Expected the round-trip to reproduce the original text ${JSON.stringify(originalText)}, got ${JSON.stringify(convertBack.text)}.`);
+    if (back.untitled) throw new Error(`Expected the reverse cut to succeed (untitled should be false), got untitled=true.`);
+    const linkAfterBack = ((convertBack.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [])
+      .find((l) => l.target?.id === retypeTarget.id);
+    if (!linkAfterBack || linkAfterBack.id !== linkBefore.id) {
+      throw new Error(`Expected the Link to survive the round-trip with its original id (${linkBefore.id}), got: ${JSON.stringify(convertBack.links)}`);
+    }
+    console.log(`   - listItem -> heading (reverse): reproduces the original title/text exactly — the round-trip holds.`);
+
+    // (c) heading depth as an ordinary retype: h2 -> h3, words preserved, text untouched.
+    const depthResult = runRetype(store, { path: `aperas://id/${depthMe.id}`, to: 'h3' });
+    const depthAfter = wrap(store, depthMe.id) as unknown as BlockNode;
+    if (depthAfter.type !== 'heading') throw new Error(`Expected 'Depth Me' to stay a heading, got '${depthAfter.type}'.`);
+    if (depthAfter.title !== '### Depth Me') throw new Error(`Expected depth to change to h3 keeping its words, got ${JSON.stringify(depthAfter.title)}.`);
+    if (depthResult.toText !== undefined) throw new Error(`Expected a depth-only retype to never touch '.text'.`);
+    if (depthResult.droppedProps.includes('treeAnchor')) throw new Error(`A heading->heading retype must not drop its own treeAnchor prop.`);
+    console.log(`   - h2 -> h3: ${JSON.stringify(depthResult.fromTitle)} -> ${JSON.stringify(depthAfter.title)}, still a heading, text untouched.`);
+
+    // (d) non-heading -> heading with nothing to cut: degrades to the id-fallback case, exactly as
+    // the engine does everywhere else, and must not invent a title or touch '.text'.
+    const noLeadInBlock = wrap(store, noLeadIn.id) as unknown as BlockNode;
+    const textBeforeNoLeadIn = noLeadInBlock.text;
+    const noCut = runRetype(store, { path: `aperas://id/${noLeadIn.id}`, to: 'h4' });
+    const noLeadInAfter = wrap(store, noLeadIn.id) as unknown as BlockNode;
+    if (!noCut.untitled) throw new Error(`Expected a conversion with no lead-in to cut to report 'untitled'.`);
+    if (noLeadInAfter.text !== textBeforeNoLeadIn) throw new Error(`Expected '.text' to stay untouched when there's nothing to cut.`);
+    if (noLeadInAfter.title !== `#### ${noLeadInAfter.key}`) throw new Error(`Expected the id-fallback title, got ${JSON.stringify(noLeadInAfter.title)}.`);
+    console.log(`   - non-heading -> heading with no lead-in to cut: degrades to the id-fallback title, text left alone.`);
+
+    // (e) refusals: a no-op conversion, and a bare 'heading' with no depth.
+    let refusedNoop = false;
+    try { runRetype(store, { path: `aperas://id/${depthMe.id}`, to: 'h3' }); } catch { refusedNoop = true; }
+    if (!refusedNoop) throw new Error('Expected retype to refuse a no-op conversion.');
+    let refusedBareHeading = false;
+    try { runRetype(store, { path: `aperas://id/${depthMe.id}`, to: 'heading' }); } catch { refusedBareHeading = true; }
+    if (!refusedBareHeading) throw new Error("Expected retype to refuse a bare 'heading' target type without a depth.");
+    console.log(`   - refuses a no-op conversion and a depthless 'heading' target.`);
+    console.log("   [✓] aperas retype verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Extended Verification complete!");
   } finally {

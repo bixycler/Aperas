@@ -86,6 +86,10 @@ export type ServiceRequest =
   | { op: 'update'; path: string; base?: string; markdown: string; textOnly: boolean; flush: boolean; reload: boolean }
   // `kg:remove` (Aperas-crud-design.md §10) — recursive soft-tombstone, not a hard delete.
   | { op: 'remove'; path: string; base?: string; flush: boolean; reload: boolean }
+  // `aperas retype` — identity-preserving block type conversion (`to` is `h1`..`h6` or a bare type
+  // name), the refactoring/migration escape hatch from the `type: target.type` pin every ordinary
+  // write applies. Never touches `.text`; changing that stays `update`'s own job.
+  | { op: 'retype'; path: string; base?: string; to: string; flush: boolean; reload: boolean }
   | { op: 'linkCandidates'; pathArg: string; recursive: boolean; all: boolean; reload: boolean }
   | { op: 'addBlockLink'; blockId: string; targetRef: string; flush: boolean }
   | { op: 'removeBlockLink'; blockId: string; targetRef: string; flush: boolean }

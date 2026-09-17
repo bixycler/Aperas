@@ -41,6 +41,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   insert: { description: 'Position, promote, or (with piped markdown) create a Block node.', load: () => import('./kgInsert') },
   update: { description: "Replace an existing node's text/children (and, for a heading target, its title) from piped markdown.", load: () => import('./kgUpdate') },
   remove: { description: 'Recursively (soft) tombstone an arbitrary node.', load: () => import('./kgRemove') },
+  retype: { description: "Change an existing block's type (heading depth included) in place, preserving its identity — refactoring/migration only.", load: () => import('./kgRetype') },
   profile: { description: 'Create/list/remove a Profile and the TreeViews it owns.', load: () => import('./kgProfile') },
   service: { description: 'Direct control over the shared ApeironNgn service process.', load: () => import('./kgService') },
   flush: { description: 'Force an immediate sync of the ApeironNgn store out to the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgFlush') },

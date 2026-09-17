@@ -1544,23 +1544,109 @@ function discoverCone(
   return { apexId, unfoldedTreeIds, linkEntries, neededChildren, nestedCones };
 }
 
+/** `buildRenderTree`'s own item shape (design/webapp.md's render contract) — a `TreeNode` or a
+ *  `Link`, whichever `buildNodeItem`/`buildLinkItem` below turn structure into instead of a string.
+ *  `toText` (the CLI's own consumer) is what still needs the string shape; the webapp's structured
+ *  render reads a `RenderItem` tree directly instead. Each item carries its own `depth` so `toText`
+ *  needs no depth bookkeeping of its own, and so a future non-text consumer never has to re-derive
+ *  indentation from tree position. */
+export type RenderItem = RenderNodeItem | RenderLinkItem;
+
+/** One `TreeNode`'s line plus whatever it reveals beneath it (`emitNode`'s old shape, §13, kept
+ *  here verbatim as documentation of the fields below). `found: false` is the "not found" case
+ *  (`node.title === undefined`) — every other field would be meaningless then, so it's its own
+ *  narrow variant rather than a sea of optionals on one type. */
+export interface RenderNodeItemNotFound {
+  kind: 'node';
+  id: string;
+  depth: number;
+  found: false;
+}
+export interface RenderNodeItemFound {
+  kind: 'node';
+  id: string;
+  depth: number;
+  found: true;
+  /** `opts.noHolders`'s own suppression — this node renders no line of its own, but still passes
+   *  its own `depth` on to its children rather than indenting them a level deeper (`toText`'s own
+   *  `childDepth` computation, mirrored from the old `emitNode`). Not to be confused with `found`. */
+  hidden: boolean;
+  displayLabel: string;
+  title: string;
+  /** Present only when this node's own tier shows one (`tier !== 'title-only'`) *and* one was
+   *  actually computed — a genuinely-unfolded/listed node with no `text` of its own still omits it,
+   *  exactly like the old inline `abstract !== undefined` check did. */
+  abstract?: string;
+  isTextlessList: boolean;
+  /** `unfolded` (tier 1, genuinely unfolded, regardless of parent), `listed` (tier 2, parent
+   *  qualifies) both carry `abstract`; `title-only` (tier 3, bare breadcrumb) never does. */
+  tier: 'unfolded' | 'listed' | 'title-only';
+  holder: boolean;
+  starred: boolean;
+  tombstonedAt?: string;
+  /** How much of this node's own real children/links isn't among `children` below — `0` when
+   *  nothing is hidden (a leaf has nothing to fold; a genuinely-unfolded node with everything
+   *  visible needs no count either). */
+  hiddenCount: number;
+  /** `opts.maxDepth` cut this node off before its own children/links — `toText` renders a single
+   *  `…` marker beneath it instead of walking `children` (which stays empty in that case, exactly
+   *  like the old early `return` before ever recursing). */
+  truncated: boolean;
+  /** Structural children first, in tree order, then this node's own links — the same order
+   *  `emitNode`'s two loops used to push lines in. */
+  children: RenderItem[];
+}
+export type RenderNodeItem = RenderNodeItemNotFound | RenderNodeItemFound;
+
+/** One `Link`'s line plus, in `expanded` mode only, whatever it reveals beneath it (`emitLinkLine`'s
+ *  old shape). `mode` is exactly the branches that function used to pick a string shape from:
+ *  `no-target` (a dangling `Link.target`), `preview` (rule a, no recursion), `expanded` (rule b,
+ *  this link is the canonical position, recurses into `children`), `pointer` (canonical
+ *  elsewhere — `[*see <path>]`), `outside-view` (an upward jump, §13.3). */
+export interface RenderLinkItem {
+  kind: 'link';
+  linkId: string;
+  depth: number;
+  predicate: string;
+  targetId?: string;
+  targetTitle?: string;
+  /** `preview`/`expanded` only — the pointer branch stays title-only by design (a cross-reference
+   *  note, not a content preview). */
+  abstract?: string;
+  mode: 'no-target' | 'preview' | 'expanded' | 'pointer' | 'outside-view';
+  /** `preview`/`outside-view` only. */
+  hiddenCount?: number;
+  /** `expanded` only. */
+  starred?: boolean;
+  /** `expanded` only, and only when this link is a zoom root (`cone.nestedCones.has(linkId)`) with
+   *  a walkable `toPath()` — absent otherwise, exactly like the old `zoomPath !== null` guard. */
+  zoomPath?: string;
+  /** `pointer` only — a path (canonical position is a structural home) or `"<linkId> (link)"`
+   *  (canonical position is itself a `Link`, per §6/§13.2). */
+  pointerTarget?: string;
+  tombstonedAt?: string;
+  /** `expanded` mode only; empty everywhere else. */
+  children: RenderItem[];
+}
+
 /** One `TreeNode`'s line plus whatever it reveals beneath it — the three own-line tiers plus
  *  breadcrumb-passthrough child pruning (§5). `parentQualifiesForPreview` is true for the starting
  *  node and for any node reached as the plain listed child of a genuinely-unfolded parent; false
  *  for a node reached only as a breadcrumb link in someone else's chain (§5's tier-3, bare title).
  *  Structural children always stay within `cone` (a cone's own subtree can't cross a cone
- *  boundary — that's exactly what makes it a cone, §13); only `emitLinkLine` ever switches to a
- *  different (nested) `ConeInfo`. */
-function emitNode(
+ *  boundary — that's exactly what makes it a cone, §13); only `buildLinkItem` ever switches to a
+ *  different (nested) `ConeInfo`. Returns `null` only for the tombstone-hide case
+ *  (`shouldHideTombstoned`) — the old `emitNode`'s bare `return;` with nothing pushed, so a caller
+ *  building `children` filters `null` out same as it used to filter out "nothing pushed". */
+function buildNodeItem(
   store: Store, id: string, cone: ConeInfo, depth: number, opts: TreeOptions,
-  zs: ZoomState, starred: Set<string>, parentQualifiesForPreview: boolean, lines: string[],
-): void {
+  zs: ZoomState, starred: Set<string>, parentQualifiesForPreview: boolean,
+): RenderNodeItem | null {
   const node = wrap(store, id) as unknown as TreeNode;
   if (node.title === undefined) {
-    lines.push(`${'│ '.repeat(depth)}${id}  [?]  <not found>`);
-    return;
+    return { kind: 'node', id, depth, found: false };
   }
-  if (shouldHideTombstoned(node as unknown as { tombstonedAt?: string }, opts)) return;
+  if (shouldHideTombstoned(node as unknown as { tombstonedAt?: string }, opts)) return null;
   const isLiteralHolder = node.holder === true;
   const hidden = opts.noHolders === true && isLiteralHolder;
   const isGenuinelyUnfolded = cone.unfoldedTreeIds.has(id);
@@ -1571,115 +1657,123 @@ function emitNode(
 
   const childDepth = hidden ? depth : depth + 1;
   // Tombstoned entries aren't filtered out of these two arrays — each still routes through
-  // `emitNode`/`emitLinkLine`, whose own top-of-function `shouldHideTombstoned` check (mirrored for
-  // a link's *target* in `emitLinkLine`) is what actually suppresses the line and the recursion
-  // below it. Filtering here too would just make `foldTag`'s hidden-count subtly wrong twice over.
+  // `buildNodeItem`/`buildLinkItem`, whose own top-of-function `shouldHideTombstoned` check
+  // (mirrored for a link's *target* in `buildLinkItem`) is what actually suppresses the item and
+  // the recursion below it. Filtering here too would just make `hiddenCount` subtly wrong twice over.
   const childrenToShow = isGenuinelyUnfolded
     ? node.treeChildren
     : node.treeChildren.filter((c) => cone.neededChildren.get(id)?.has(c.id));
   const linksToShow = isGenuinelyUnfolded ? ((node.links as ApeironNode[] | undefined) ?? []) : [];
 
+  let displayLabelStr = '';
+  let title = '';
+  let isTextlessList = false;
+  let abstract: string | undefined;
+  let holder = false;
+  let star = false;
+  let tombstonedAt: string | undefined;
+  let hiddenCount = 0;
+  let truncated = false;
+
   if (!hidden) {
-    const indent = '│ '.repeat(depth);
-    const holderTag = isLiteralHolder ? '  (holder)' : '';
-    const star = starred.has(id) ? '  [*]' : '';
-    const isTextlessList = nodeKindFromId(id) === 'BlockNode' && (node as unknown as BlockNode).type === 'list';
-    // `{title, abstract}` means both, on the same line -- not one or the other. `node.text` is
-    // truncated here (not just at ingest time) as a safety net for an ordinary BlockNode's own
-    // long paragraph, which `extractAbstract`'s ingest-time truncation never touches (that's real
-    // authored content `kg:project` must reproduce exactly, not a derived preview). Separated by
-    // `║` rather than plain whitespace — both are free-form prose, so a script splitting the line
-    // on the first double-space (as it safely can for the `id`/`[kind]`/content fields, which
-    // aren't free text) can't also assume where title ends and abstract begins.
-    let content = node.title as string;
+    holder = isLiteralHolder;
+    star = starred.has(id);
+    isTextlessList = nodeKindFromId(id) === 'BlockNode' && (node as unknown as BlockNode).type === 'list';
+    displayLabelStr = displayLabel(id, node);
+    title = node.title as string;
+    // `text`/`abstract` on the same line -- not one or the other. `node.text` is truncated here
+    // (not just at ingest time) as a safety net for an ordinary BlockNode's own long paragraph,
+    // which `extractAbstract`'s ingest-time truncation never touches (that's real authored content
+    // `kg:project` must reproduce exactly, not a derived preview).
     if (showAbstract) {
-      const abstract = isTextlessList
+      abstract = isTextlessList
         ? `(no text of its own — see kg:unfold ${id})`
         : node.text !== undefined ? truncateForPreviewWithHint(node.text as unknown as string, id) : undefined;
-      if (abstract !== undefined) content = `${node.title}  ║  ${abstract}`;
     }
-    // Fold state, GUI-icon-equivalent: how much of this node's own real children/links isn't being
-    // shown at this position — omitted entirely when nothing is hidden (a leaf has nothing to
-    // fold; a genuinely-unfolded node with everything visible needs no flag either), same
-    // "no tag when there's nothing to say" posture as `holderTag`/`star`/`tombstoneTag`.
-    const hiddenCount = (node.treeChildren.length - childrenToShow.length)
+    tombstonedAt = (node as unknown as { tombstonedAt?: string }).tombstonedAt;
+    hiddenCount = (node.treeChildren.length - childrenToShow.length)
       + (((node.links as ApeironNode[] | undefined)?.length ?? 0) - linksToShow.length);
-    const foldTag = hiddenCount > 0 ? `  [+${hiddenCount}]` : '';
-    lines.push(`${indent}${id}  [${displayLabel(id, node)}]  ${content}${holderTag}${star}${tombstoneTag(node)}${foldTag}`);
   }
 
+  const children: RenderItem[] = [];
   if (!hidden && opts.maxDepth !== undefined && depth >= opts.maxDepth) {
-    if (childrenToShow.length > 0 || linksToShow.length > 0) lines.push(`${'│ '.repeat(depth + 1)}…`);
-    return;
+    truncated = childrenToShow.length > 0 || linksToShow.length > 0;
+  } else {
+    for (const child of childrenToShow) {
+      const item = buildNodeItem(store, child.id, cone, childDepth, opts, zs, starred, isGenuinelyUnfolded);
+      if (item) children.push(item);
+    }
+    for (const link of linksToShow) {
+      const item = buildLinkItem(store, link.id, cone, childDepth, opts, zs, starred);
+      if (item) children.push(item);
+    }
   }
 
-  for (const child of childrenToShow) {
-    emitNode(store, child.id, cone, childDepth, opts, zs, starred, isGenuinelyUnfolded, lines);
-  }
-  for (const link of linksToShow) {
-    emitLinkLine(store, link.id, cone, childDepth, opts, zs, starred, lines);
-  }
+  return {
+    kind: 'node', id, depth, found: true, hidden,
+    displayLabel: displayLabelStr, title, abstract, isTextlessList,
+    tier: isGenuinelyUnfolded ? 'unfolded' : showAbstract ? 'listed' : 'title-only',
+    holder, starred: star, tombstonedAt, hiddenCount, truncated, children,
+  };
 }
 
-/** One `Link`'s line: a plain preview (target's title/abstract, no recursion) when the link itself
+/** One `Link`'s item: a plain preview (target's title/abstract, no recursion) when the link itself
  *  isn't in `unfolds`; the target shown fully — like an unfolded `TreeNode`, §5 rule b — when it's
  *  in `unfolds` *and* it's the canonical position for that target, recursing in whichever `ConeInfo`
  *  actually owns the target (this same cone if the target's inside it, a nested one if it escaped
  *  and this link is what won it, §13); a short pointer back to wherever the canonical position
- *  actually is, otherwise (§6/§13.2). */
-function emitLinkLine(
+ *  actually is, otherwise (§6/§13.2). Returns `null` only for the tombstone-hide case, same
+ *  contract as `buildNodeItem`. */
+function buildLinkItem(
   store: Store, linkId: string, cone: ConeInfo, depth: number, opts: TreeOptions,
-  zs: ZoomState, starred: Set<string>, lines: string[],
-): void {
+  zs: ZoomState, starred: Set<string>,
+): RenderLinkItem | null {
   const link = wrap(store, linkId) as unknown as Link;
   const targetId = (link.target as unknown as TreeNode | undefined)?.id;
-  const indent = '│ '.repeat(depth);
   const predicate = (link.predicate as unknown as string) ?? '';
   if (!targetId) {
-    lines.push(`${indent}${linkId}  [Link]  ${predicate}  <no target>`);
-    return;
+    return { kind: 'link', linkId, depth, predicate, mode: 'no-target', children: [] };
   }
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
-  if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return;
+  if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return null;
   const targetTitle = targetNode.title ?? '<not found>';
-  // `{title, abstract}` for a preview or a "shown fully" position (§5 rule b) -- but the pointer
-  // branch below stays title-only by design (it's a cross-reference note, not a content preview;
-  // "a pointer line keeps the normal id [kind] title prefix", never an abstract).
   const targetAbstract = targetNode.text !== undefined ? truncateForPreviewWithHint(targetNode.text as unknown as string, targetId) : undefined;
-  const targetPreview = targetAbstract !== undefined ? `${targetTitle}  ║  ${targetAbstract}` : targetTitle;
-  const deadTag = tombstoneTag(targetNode);
-  const head = `${indent}${linkId}  [Link]  ${predicate} → ${targetId}  `;
+  const tombstonedAt = (targetNode as unknown as { tombstonedAt?: string }).tombstonedAt;
 
   if (!cone.linkEntries.has(linkId)) {
     // rule a only — a flat, one-hop preview, never subject to dedup (§4): none of the target's own
     // children/links are shown here, so (unlike the "canonical, full render" branch below, where
-    // they're always all emitted) this position's fold tag is never omitted when the target has
-    // any real content of its own.
+    // they're always all emitted) this position's `hiddenCount` is never omitted when the target
+    // has any real content of its own.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    const foldTag = hiddenCount > 0 ? `  [+${hiddenCount}]` : '';
-    lines.push(`${head}${targetPreview}${deadTag}${foldTag}`);
-    return;
+    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, abstract: targetAbstract, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
   }
   const canon = zs.canonical.get(targetId);
   const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
   if (isCanonicalHere) {
-    const star = starred.has(linkId) ? '  [*]' : '';
-    lines.push(`${head}${targetPreview}${star}${deadTag}`);
     // In-cone win: `targetId` is inside `cone` itself, so its children/links render in `cone` too —
     // still relative to the same root the top-level breadcrumb already named, nothing new to say.
     // Escaping win: `targetId` got its own nested cone (§13), spawned exactly for this link — a
     // genuinely new relative root partway through the tree, everything under it addressed from
-    // *here* on, not from the render's original apex. Gets its own breadcrumb for the same reason
-    // the apex gets one in `kgTree.ts`: without it, nothing below this point says where "here" is.
+    // *here* on, not from the render's original apex. Gets its own breadcrumb (`zoomPath`) for the
+    // same reason the apex gets one in `kgTree.ts`: without it, nothing below this point says where
+    // "here" is.
     const isZoomRoot = cone.nestedCones.has(linkId);
     const targetCone = cone.nestedCones.get(linkId) ?? cone;
-    if (isZoomRoot) {
-      const zoomPath = targetNode.toPath();
-      if (zoomPath !== null) lines.push(`${'│ '.repeat(depth + 1)}aperas://tree/${zoomPath}`);
+    const zoomPath = isZoomRoot ? (targetNode.toPath() ?? undefined) : undefined;
+    const children: RenderItem[] = [];
+    for (const child of targetNode.treeChildren) {
+      const item = buildNodeItem(store, child.id, targetCone, depth + 1, opts, zs, starred, true);
+      if (item) children.push(item);
     }
-    for (const child of targetNode.treeChildren) emitNode(store, child.id, targetCone, depth + 1, opts, zs, starred, true, lines);
-    for (const l of (targetNode.links as ApeironNode[] | undefined) ?? []) emitLinkLine(store, l.id, targetCone, depth + 1, opts, zs, starred, lines);
-    return;
+    for (const l of (targetNode.links as ApeironNode[] | undefined) ?? []) {
+      const item = buildLinkItem(store, l.id, targetCone, depth + 1, opts, zs, starred);
+      if (item) children.push(item);
+    }
+    return {
+      kind: 'link', linkId, depth, predicate, targetId, targetTitle, abstract: targetAbstract,
+      mode: 'expanded', starred: starred.has(linkId), zoomPath, tombstonedAt, children,
+    };
   }
   if (canon?.kind === 'upward') {
     // §13.3: an upward jump into a cone already active in the current discovery chain — no
@@ -1688,19 +1782,81 @@ function emitLinkLine(
     // at — unlike `home`/`link`, `upward` never claims a position anywhere). Flat, non-recursing
     // reference instead, same shape as a rule-a preview, tagged to explain why it stops here.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    const foldTag = hiddenCount > 0 ? `  [+${hiddenCount}]` : '';
-    lines.push(`${head}${targetPreview}${deadTag}${foldTag}  (outside view)`);
-    return;
+    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, abstract: targetAbstract, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
   }
   const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
-  lines.push(`${head}${targetTitle}${deadTag}  [*see ${pointerTo}]`);
+  return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
 }
 
-/** `TreeNode.renderTree`'s `opts.view` branch — entry point for the whole view-based render
- *  (Aperas-treeview-design.md §4-§6, generalized to an arbitrary apex and recursive nested cones by
- *  §13's Viewcone Zoom: `rootId` need not be the global root — zooming to it degenerates to
- *  exactly today's flat render only when it *is*, since nothing can ever escape that cone, §13). */
-function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: TreeOptions): string[] {
+/** `RenderItem`'s text serializer — the sole remaining consumer of the string format `buildNodeItem`/
+ *  `buildLinkItem` used to write directly. Byte-identical to the old `emitNode`/`emitLinkLine`
+ *  output by construction: every field read here is exactly the value those functions used to
+ *  compute inline, just carried on the item instead of formatted immediately. */
+function toText(items: RenderItem[], lines: string[]): void {
+  for (const item of items) {
+    const indent = '│ '.repeat(item.depth);
+    if (item.kind === 'node') {
+      if (!item.found) {
+        lines.push(`${indent}${item.id}  [?]  <not found>`);
+        continue;
+      }
+      if (!item.hidden) {
+        const holderTag = item.holder ? '  (holder)' : '';
+        const star = item.starred ? '  [*]' : '';
+        const tomb = item.tombstonedAt ? '  (tombstoned)' : '';
+        const foldTag = item.hiddenCount > 0 ? `  [+${item.hiddenCount}]` : '';
+        const content = item.abstract !== undefined ? `${item.title}  ║  ${item.abstract}` : item.title;
+        lines.push(`${indent}${item.id}  [${item.displayLabel}]  ${content}${holderTag}${star}${tomb}${foldTag}`);
+        if (item.truncated) {
+          lines.push(`${'│ '.repeat(item.depth + 1)}…`);
+          continue;
+        }
+      }
+      toText(item.children, lines);
+      continue;
+    }
+    // item.kind === 'link'
+    const tomb = item.tombstonedAt ? '  (tombstoned)' : '';
+    const head = `${indent}${item.linkId}  [Link]  ${item.predicate} → ${item.targetId}  `;
+    const preview = item.abstract !== undefined ? `${item.targetTitle}  ║  ${item.abstract}` : (item.targetTitle ?? '');
+    switch (item.mode) {
+      case 'no-target':
+        lines.push(`${indent}${item.linkId}  [Link]  ${item.predicate}  <no target>`);
+        break;
+      case 'preview': {
+        const foldTag = (item.hiddenCount ?? 0) > 0 ? `  [+${item.hiddenCount}]` : '';
+        lines.push(`${head}${preview}${tomb}${foldTag}`);
+        break;
+      }
+      case 'expanded': {
+        const star = item.starred ? '  [*]' : '';
+        lines.push(`${head}${preview}${star}${tomb}`);
+        if (item.zoomPath !== undefined) lines.push(`${'│ '.repeat(item.depth + 1)}aperas://tree/${item.zoomPath}`);
+        toText(item.children, lines);
+        break;
+      }
+      case 'outside-view': {
+        const foldTag = (item.hiddenCount ?? 0) > 0 ? `  [+${item.hiddenCount}]` : '';
+        lines.push(`${head}${preview}${tomb}${foldTag}  (outside view)`);
+        break;
+      }
+      case 'pointer':
+        lines.push(`${head}${item.targetTitle}${tomb}  [*see ${item.pointerTarget}]`);
+        break;
+    }
+  }
+}
+
+/** Pass 1 + the render-plan-to-tree half of pass 2 (§13), exposed as its own entry point for a
+ *  structured (non-text) consumer — design/webapp.md's render contract reads this directly rather
+ *  than parsing `renderTreeWithView`'s strings back apart. `renderTreeWithView` below is now just
+ *  `toText`'s caller: `TreeNode.renderTree`'s `opts.view` branch (Aperas-treeview-design.md §4-§6,
+ *  generalized to an arbitrary apex and recursive nested cones by §13's Viewcone Zoom — `rootId`
+ *  need not be the global root; zooming to it degenerates to exactly today's flat render only when
+ *  it *is*, since nothing can ever escape that cone, §13). Returns `null` only when `rootId` itself
+ *  is tombstone-hidden (`buildNodeItem`'s own `null` case) — the old `renderTreeWithView` handled
+ *  this the same way, `emitNode` simply pushing nothing. */
+export function buildRenderTree(store: Store, rootId: string, view: TreeView, opts: TreeOptions = {}): RenderNodeItem | null {
   const unfoldsWrapped = (view.unfolds as unknown as ApeironNode[] | undefined) ?? [];
   const allUnfoldedIds: string[] = [];
   const allLinkEntries: UnfoldedLinkEntry[] = [];
@@ -1724,8 +1880,13 @@ function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: 
     starred.add(c.kind === 'home' ? id : c.linkId);
   }
 
+  return buildNodeItem(store, rootId, rootCone, 0, opts, zs, starred, true);
+}
+
+function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: TreeOptions): string[] {
+  const tree = buildRenderTree(store, rootId, view, opts);
   const lines: string[] = [];
-  emitNode(store, rootId, rootCone, 0, opts, zs, starred, true, lines);
+  if (tree) toText([tree], lines);
   return lines;
 }
 

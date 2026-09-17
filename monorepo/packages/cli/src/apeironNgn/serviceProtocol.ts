@@ -101,7 +101,12 @@ export type ServiceRequest =
   // `viewRef` presence drives unfolded-mode rendering — replaces the old bare `unfoldedMode`
   // boolean (§5): a `--view` flag with no target view still resolves to `"default"`, so this is
   // never actually optional in practice, but stays typed that way to match `unfold`/`fold` above.
-  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; reload: boolean }
+  // `format` (design/webapp.md's render contract): `'render-tree'` returns `buildRenderTree`'s own
+  // structured `RenderNodeItem` instead of joined text lines — a structured (non-CLI) caller reads
+  // this directly rather than parsing the text format back apart. Requires `viewRef` (the
+  // structured render only exists for the view-based renderer, §13); omitted (or `'text'`) keeps
+  // today's string-lines shape, view-based or not.
+  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload: boolean }
   | { op: 'path'; idArg: string; reload: boolean }
   // `kg:backlinks` (Aperas-apeironngn-design.md §4 Step 13) — read-only reverse lookup, `reload`-
   // capable like `tree`/`path` above.

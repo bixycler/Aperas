@@ -1,7 +1,160 @@
-#root {
-  min-height: 100svh;
+.app {
+  max-width: 100%;
+  padding: 0 1.5rem 3rem;
+}
+
+.app-header {
   display: flex;
   align-items: center;
-  justify-content: center;
-  text-align: center;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid #3332;
 }
+.app-header h1 { font-size: 1.1rem; margin: 0; opacity: 0.7; }
+
+.breadcrumbs {
+  padding: 0.5rem 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+.crumb { cursor: pointer; }
+.crumb:hover { text-decoration: underline; }
+.crumb-sep { opacity: 0.4; margin: 0 0.15rem; }
+
+.status { opacity: 0.6; font-style: italic; }
+.status-error { color: #c0392b; font-style: normal; }
+
+.tree {
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.fd-node { margin-left: calc(var(--depth, 0) * 0px); }
+.fd-children { margin-left: 1.1rem; border-left: 1px dotted #8884; padding-left: 0.6rem; }
+
+.fd-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.05rem 0.2rem;
+  border-radius: 3px;
+  cursor: default;
+}
+.fd-line:hover { background: #80808014; }
+
+.fd-arrow {
+  display: inline-block;
+  width: 0.9em;
+  cursor: pointer;
+  transform: rotate(0deg);
+  transition: transform 0.1s ease;
+  opacity: 0.6;
+  user-select: none;
+}
+.fd-arrow:hover { opacity: 1; }
+.fd-arrow-open { transform: rotate(90deg); }
+.fd-arrow-spacer { display: inline-block; width: 0.9em; }
+
+.fd-kind { opacity: 0.5; font-size: 0.8em; }
+.fd-title { font-weight: 600; }
+.fd-title-only .fd-title { font-weight: 400; opacity: 0.75; }
+
+.fd-abstract {
+  margin-left: 1.7rem;
+  opacity: 0.75;
+  white-space: pre-wrap;
+}
+.fd-muted { font-style: italic; opacity: 0.5; }
+.fd-ellipsis { margin-left: 1.7rem; opacity: 0.4; }
+
+.fd-tag {
+  font-size: 0.72rem;
+  padding: 0 0.35em;
+  border-radius: 3px;
+  background: #80808022;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.fd-tag-holder { background: #d4a01730; }
+.fd-tag-star { background: #f1c40f40; }
+.fd-tag-dead { background: #c0392b30; text-decoration: line-through; }
+.fd-tag-fold { background: #2980b930; }
+
+.fd-link .fd-title { font-weight: 400; font-style: italic; }
+.fd-link-text { cursor: pointer; }
+.fd-link-text:hover { text-decoration: underline; }
+.fd-preview .fd-title { opacity: 0.8; }
+.fd-pointer .fd-title, .fd-outside .fd-title { opacity: 0.7; }
+.fd-dangling .fd-title { color: #c0392b; opacity: 0.8; }
+.fd-breadcrumb { margin-left: 1.7rem; opacity: 0.5; font-size: 0.8em; }
+
+.fd-edit-btn {
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0.85em;
+  margin-left: 0.3em;
+}
+.fd-line:hover .fd-edit-btn { opacity: 0.55; }
+.fd-edit-btn:hover { opacity: 1 !important; }
+
+.fd-editor { margin: 0.25rem 0 0.4rem 1.7rem; display: flex; flex-direction: column; gap: 0.35rem; max-width: 42rem; }
+.fd-editor textarea {
+  font: inherit;
+  font-family: inherit;
+  padding: 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #8886;
+  background: #80808010;
+  color: inherit;
+  resize: vertical;
+}
+.fd-editor-actions { display: flex; gap: 0.5rem; }
+.fd-editor-actions button {
+  font: inherit;
+  padding: 0.15rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid #8886;
+  background: #80808018;
+  cursor: pointer;
+}
+.fd-editor-actions button:disabled { opacity: 0.5; cursor: default; }
+
+.inline-link-wrap { position: relative; }
+.inline-link { color: #4a9eff; cursor: pointer; text-decoration: none; }
+.inline-link:hover { text-decoration: underline; }
+.inline-link-inert { cursor: default; opacity: 0.7; border-bottom: 1px dotted currentColor; }
+
+.link-popover {
+  position: fixed;
+  z-index: 1000;
+  min-width: 16rem;
+  max-width: 26rem;
+  /* Fully opaque, on purpose — the previous `#1e1e1eee` (~93% alpha) with no explicit text color
+   * left readability to whatever the page behind it happened to be, and to the browser's own
+   * light/dark guess for the text color; the combination was reported unreadable. A solid
+   * `--surface` (lighter than the page `--bg`, so it still visually "lifts" as a card) with
+   * explicit `--fg` text has no such dependency. */
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  box-shadow: 0 4px 16px #00000080;
+  white-space: normal;
+  font-size: 0.92em;
+}
+.link-popover-title { font-weight: 600; margin-bottom: 0.25rem; }
+.link-popover-abstract { color: var(--fg-muted); }
+.link-popover-unfold {
+  margin-top: 0.4rem;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg);
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  cursor: pointer;
+}
+.fd-abstract code, .fd-title code { background: #80808022; padding: 0 0.25em; border-radius: 3px; font-size: 0.95em; }

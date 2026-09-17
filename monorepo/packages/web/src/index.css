@@ -1,8 +1,21 @@
 :root {
-  color-scheme: light dark;
+  /* A deliberate, fixed dark theme rather than `color-scheme: light dark` + inherited UA
+   * defaults — the popover contrast bug was exactly this: text color left to the browser's
+   * light/dark guess while a component set its own background explicitly, so the pairing broke
+   * whenever the two disagreed. Every color below is explicit for the same reason. */
+  color-scheme: dark;
+  --bg: #14161a;
+  --fg: #e6e8eb;
+  --fg-muted: #9aa1ab;
+  --border: #3a3f47;
+  --surface: #1c1f24;
+  --surface-hover: #262a31;
+  --accent: #5aa7ff;
   font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
 }
 
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--fg);
 }

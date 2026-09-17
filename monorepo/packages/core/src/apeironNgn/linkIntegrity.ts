@@ -9,7 +9,7 @@
  */
 
 import type { Store } from 'oxigraph';
-import { wrap, type BlockNode, type Link, type TreeNode } from './node';
+import { wrap, collectOldWikilinksByBlock, type BlockNode, type Link, type TreeNode } from './node';
 import { allIdsOfKind } from './dehydrate';
 import { collectLinkCodesFromText, type LinkOccurrence } from '../astParser';
 import { resolveBlockLinks, retryDanglingRefs, resolveOneCode } from './artifacts';
@@ -86,8 +86,17 @@ function collectAllBlockNodes(node: TreeNode, out: BlockNode[] = []): BlockNode[
  * "N resolved" at write time with an empty `.links` afterward).
  */
 export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
-  const blocks = allIdsOfKind(store, 'BlockNode').map((id) => wrap(store, id) as unknown as BlockNode);
-  return sweepBlocks(store, blocks);
+  const t0 = Date.now();
+  const ids = allIdsOfKind(store, 'BlockNode');
+  const t1 = Date.now();
+  const blocks = ids.map((id) => wrap(store, id) as unknown as BlockNode);
+  const t2 = Date.now();
+  const result = sweepBlocks(store, blocks);
+  if (process.env.APERAS_DEBUG_TIMING) {
+    const mem = process.memoryUsage();
+    console.error(`[checkLinkIntegrity] allIdsOfKind=${t1 - t0}ms wrap(${ids.length})=${t2 - t1}ms sweepBlocks=${Date.now() - t2}ms heapUsed=${(mem.heapUsed / 1e6).toFixed(0)}MB heapTotal=${(mem.heapTotal / 1e6).toFixed(0)}MB external=${(mem.external / 1e6).toFixed(0)}MB rss=${(mem.rss / 1e6).toFixed(0)}MB`);
+  }
+  return result;
 }
 
 /** The same check as `checkLinkIntegrity`, restricted to one artifact's own live `BlockNode`
@@ -121,6 +130,10 @@ function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
   let totalLiveBlocks = 0;
   let blocksWithLinkText = 0;
   const discrepancies: LinkDiscrepancy[] = [];
+  const debug = !!process.env.APERAS_DEBUG_TIMING;
+  let parseMs = 0;
+  let resolveMs = 0;
+  let pathMs = 0;
 
   for (const block of blocks) {
     if (block.tombstonedAt) continue;
@@ -129,25 +142,31 @@ function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
     const text = block.text;
     if (!text) continue;
 
+    const tp0 = debug ? Date.now() : 0;
     const occurrences: LinkOccurrence[] = collectLinkCodesFromText(text);
+    if (debug) parseMs += Date.now() - tp0;
     if (occurrences.length === 0) continue;
 
     blocksWithLinkText++;
 
     const actualLinks = (block.links as unknown as Link[] | undefined) ?? [];
     const actualTargetIds = new Set(actualLinks.map((l) => l.target?.id).filter((tid): tid is string => !!tid));
+    const tb0 = debug ? Date.now() : 0;
     const basePath = block.toPath();
     const artifactPath = artifactPathOfBlock(block);
+    if (debug) pathMs += Date.now() - tb0;
     const missingCodes: string[] = [];
 
     for (const occ of occurrences) {
       const code = occ.code;
       let resolved: string | null = null;
+      const tr0 = debug ? Date.now() : 0;
       try {
         resolved = resolveOneCode(store, code, basePath, artifactPath, false);
       } catch {
         resolved = null; // an ambiguity/lookup failure here is "no confident candidate," not a crash
       }
+      if (debug) resolveMs += Date.now() - tr0;
       // Only a code that genuinely resolves and is still missing from `.links` counts — see
       // `checkLinkIntegrity`'s own doc comment for why an unresolved code isn't reported here.
       if (resolved && !actualTargetIds.has(resolved)) {
@@ -171,6 +190,10 @@ function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
     }
   }
 
+  if (debug) {
+    console.error(`[sweepBlocks] blocks=${blocks.length} withLinkText=${blocksWithLinkText} parse=${parseMs}ms path=${pathMs}ms resolve=${resolveMs}ms`);
+  }
+
   return {
     totalLiveBlocks,
     blocksWithLinkText,
@@ -185,29 +208,48 @@ export interface RepairLinkIntegrityResult {
 }
 
 /**
- * Re-runs link resolution and dangling ref retries for artifacts containing link integrity discrepancies.
+ * Re-runs link resolution and dangling ref retries for artifacts containing link integrity
+ * discrepancies. `knownReportBefore` lets a caller that already has an up-to-date corpus-wide
+ * report (nothing mutated the store since) hand it in instead of paying for an identical sweep a
+ * second time — a real, measured cost: `verify.ts`'s own step 19 used to call `checkLinkIntegrity`
+ * immediately before this function, which computed the exact same report again as its own
+ * `reportBefore`, each full sweep costing whatever a corpus-wide scan costs at that point in the
+ * process (which can be substantial — see `checkLinkIntegrity`'s own `APERAS_DEBUG_TIMING` notes).
+ *
+ * Re-resolves only the blocks the report actually names as discrepant, not every link-bearing
+ * block in the affected artifact, and passes those blocks' pre-existing wikilink `Link`s
+ * (`collectOldWikilinksByBlock`, the same map `ingestFromDisk` builds before an ordinary
+ * `resolveBlockLinks` call) so a match on target reuses the old `Link`'s id instead of minting a
+ * fresh one. Both matter: without the first, a repair touches every block in the artifact whether
+ * or not anything in it was ever wrong; without the second, even a touched block's *other*,
+ * already-correct wikilinks would still be reminted, since `resolveBlockLinks` has no old-Link map
+ * to reuse from otherwise (`issues/linking.md` — `check-links --repair` re-minted every `Link` id
+ * in the affected artifact for exactly this reason).
  */
-export function repairLinkIntegrity(store: Store): RepairLinkIntegrityResult {
-  const reportBefore = checkLinkIntegrity(store);
-  const affectedArtifacts = new Set<string>();
+export function repairLinkIntegrity(store: Store, knownReportBefore?: LinkIntegrityReport): RepairLinkIntegrityResult {
+  const reportBefore = knownReportBefore ?? checkLinkIntegrity(store);
 
+  const discrepanciesByArtifact = new Map<string, LinkDiscrepancy[]>();
   for (const d of reportBefore.discrepancies) {
-    if (d.artifactPath) {
-      affectedArtifacts.add(d.artifactPath);
-    }
+    if (!d.artifactPath) continue;
+    const list = discrepanciesByArtifact.get(d.artifactPath);
+    if (list) list.push(d);
+    else discrepanciesByArtifact.set(d.artifactPath, [d]);
   }
 
-  const repairedArtifacts = Array.from(affectedArtifacts);
+  const repairedArtifacts = Array.from(discrepanciesByArtifact.keys());
 
   for (const artifactPath of repairedArtifacts) {
     const artifactId = findByExactPath(store, artifactPath);
     if (!artifactId) continue;
 
     const artifactNode = wrap(store, artifactId) as unknown as TreeNode;
-    const blocks = collectAllBlockNodes(artifactNode);
+    const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
+    collectOldWikilinksByBlock(artifactNode, oldWikilinksByBlock);
 
     const pendingLinks: PendingLinkCodes[] = [];
-    for (const block of blocks) {
+    for (const d of discrepanciesByArtifact.get(artifactPath)!) {
+      const block = wrap(store, d.blockId) as unknown as BlockNode;
       if (!block.text) continue;
       const codes = collectLinkCodesFromText(block.text);
       if (codes.length > 0) {
@@ -217,7 +259,7 @@ export function repairLinkIntegrity(store: Store): RepairLinkIntegrityResult {
     }
 
     if (pendingLinks.length > 0) {
-      resolveBlockLinks(store, pendingLinks, undefined, undefined, artifactId);
+      resolveBlockLinks(store, pendingLinks, undefined, oldWikilinksByBlock, artifactId);
     }
   }
 

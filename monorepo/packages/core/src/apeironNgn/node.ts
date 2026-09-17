@@ -1650,9 +1650,18 @@ function emitLinkLine(
   if (isCanonicalHere) {
     const star = starred.has(linkId) ? '  [*]' : '';
     lines.push(`${head}${targetPreview}${star}${deadTag}`);
-    // In-cone win: `targetId` is inside `cone` itself, so its children/links render in `cone` too.
-    // Escaping win: `targetId` got its own nested cone (§13), spawned exactly for this link.
+    // In-cone win: `targetId` is inside `cone` itself, so its children/links render in `cone` too —
+    // still relative to the same root the top-level breadcrumb already named, nothing new to say.
+    // Escaping win: `targetId` got its own nested cone (§13), spawned exactly for this link — a
+    // genuinely new relative root partway through the tree, everything under it addressed from
+    // *here* on, not from the render's original apex. Gets its own breadcrumb for the same reason
+    // the apex gets one in `kgTree.ts`: without it, nothing below this point says where "here" is.
+    const isZoomRoot = cone.nestedCones.has(linkId);
     const targetCone = cone.nestedCones.get(linkId) ?? cone;
+    if (isZoomRoot) {
+      const zoomPath = targetNode.toPath();
+      if (zoomPath !== null) lines.push(`${'│ '.repeat(depth + 1)}aperas://tree/${zoomPath}`);
+    }
     for (const child of targetNode.treeChildren) emitNode(store, child.id, targetCone, depth + 1, opts, zs, starred, true, lines);
     for (const l of (targetNode.links as ApeironNode[] | undefined) ?? []) emitLinkLine(store, l.id, targetCone, depth + 1, opts, zs, starred, lines);
     return;

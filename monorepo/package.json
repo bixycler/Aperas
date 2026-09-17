@@ -10,6 +10,7 @@
     "aperas": "tsx packages/cli/src/aperas.ts",
     "build:aperas": "node packages/cli/build.mjs",
     "verify": "tsx packages/cli/src/verify.ts",
+    "verify:slow": "tsx packages/cli/src/verifyExtended.ts",
     "kg:reload": "tsx packages/cli/src/kgReload.ts",
     "kg:flush": "tsx packages/cli/src/kgFlush.ts",
     "kg:track": "tsx packages/cli/src/kgTrack.ts",

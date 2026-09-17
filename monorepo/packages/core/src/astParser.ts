@@ -19,6 +19,22 @@ import remarkFrontmatter from 'remark-frontmatter';
 import { generateNodeId } from './snowflake';
 import { setProp, type PropEntry } from './props';
 
+// Built once, reused for every call — `unified().use(...)` is a real per-call cost (plugin
+// attachment/registration), not the free "just wires up some function references" it looks like,
+// and three call sites below used to pay it fresh on every single invocation: measured live via
+// `linkIntegrity.ts`'s own scan (`APERAS_DEBUG_TIMING=1`), ~40-55ms *per block*, flat across
+// repeated sweeps in the same process rather than dropping off after the first (so not a one-time
+// warm-up cost either) — the dominant cost of a corpus-wide link-integrity sweep, ~85% of it. A
+// `unified` processor is designed to be built once and `.parse()`d many times (it self-freezes on
+// first use); nothing here mutates it between calls. Kept as two singletons, not one, because they
+// are not interchangeable: `parseMarkdownTree` needs `remarkFrontmatter` so a document's own
+// leading `---frontmatter---` block is recognized as such, but running that same plugin over an
+// arbitrary block's own *text* (the other two call sites, always re-parsing an already-extracted
+// fragment, never a full file) would risk misreading a stylistic `---` thematic break inside that
+// text as a frontmatter delimiter instead — the two processors intentionally parse differently.
+const markdownProcessor = unified().use(remarkParse).use(remarkGfm);
+const documentProcessor = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter, ['yaml']);
+
 export interface ParsedBlockNode {
   "@type": "BlockNode";
   blockId: string;
@@ -374,8 +390,7 @@ function extractLeadInTitle(node: any, markdown: string, lang: DocLang): string 
  * `findLeadInColonOffset` runs unmodified, no separate splice-side heuristic to keep in sync.
  */
 export function findLeadInSpliceOffset(text: string, lang: DocLang): number | null {
-  const processor = unified().use(remarkParse).use(remarkGfm);
-  const ast = processor.parse(text) as any;
+  const ast = markdownProcessor.parse(text) as any;
   const paragraphNode = ast.children?.[0];
   if (!paragraphNode) return null;
   return findLeadInColonOffset(paragraphNode, lang);
@@ -454,8 +469,7 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
  */
 export function collectLinkCodesFromText(text: string): LinkOccurrence[] {
   if (!text || !text.trim()) return [];
-  const processor = unified().use(remarkParse).use(remarkGfm);
-  const ast = processor.parse(text) as any;
+  const ast = markdownProcessor.parse(text) as any;
   return collectLinkCodes(ast, text);
 }
 
@@ -762,8 +776,7 @@ export interface ParsedMarkdown {
  * final, already-reconciled ids directly, with no separate early stamp to go stale).
  */
 export function parseMarkdownTree(markdown: string): ParsedMarkdown {
-  const processor = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter, ['yaml']);
-  const ast = processor.parse(markdown);
+  const ast = documentProcessor.parse(markdown);
 
   const yamlNode: any = (ast.children ?? []).find((c: any) => c.type === 'yaml');
   const frontmatter = typeof yamlNode?.value === 'string' ? (yamlNode.value as string) : undefined;

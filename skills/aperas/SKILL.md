@@ -17,7 +17,7 @@ description: >-
 
 # aperas
 
-Status: **v2.5** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v2.6** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` isn't published yet. Every command below (`aperas <verb> ...`) actually runs today as `npm run aperas -- <verb> ...` from `Aperas/monorepo/`. **Delete this note once `aperas` ships as a real installed binary** (see `AperasKG/artifacts/issues/packaging.md`'s Pending Tasks — the `bin` build).
 
@@ -357,6 +357,12 @@ aperas tree --view <name>
 ```
 
 Run `aperas backlinks <id> --text` on a target before adding a link to it — working across several docs at once makes it easy to add a citation that already exists. And note that a link resolves by its `id/` fragment: the leading relative path is for the human reader, so a stale path still resolves correctly while misleading anyone who reads it. Observed live renaming a concern — every fragment kept working, every path string had to be fixed by hand.
+
+### `aperas tree` names the node it started from, once — not every line
+
+The first line of any `aperas tree` render is a breadcrumb, `aperas://tree/<path>` — the walkable path of the node the command was actually pointed at (`.` if none given), directly reusable as a `<ref>` elsewhere with no separate `aperas path` call. It appears exactly once, at the top: every line under it is already relative to that node by construction (that is what a tree render is), so repeating the prefix on each one would say nothing new. Omitted, not shown broken, when the node's own path can't be walked.
+
+`--view` reuses the same idea at a second place it's actually needed: when a link escapes its owner's own viewcone into a nested one (Aperas-treeview-design.md §13 — the target is unfolded independently, and the link, not the target's own structural position, wins canonical placement), everything under that link is now relative to *it*, not to the render's original apex. That position gets its own one-time breadcrumb too, indented to match, for the same reason the apex gets one. An ordinary in-cone link (target already reachable from the apex the normal way) or a "this is superseded, see elsewhere" pointer line needs neither — nothing changes what "here" means at those positions.
 
 ---
 

@@ -11,7 +11,7 @@ import { wrap, resolveTreeView, type TreeNode, type TreeView } from '@aperas/cor
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; reload?: boolean }) {
+export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; reload?: boolean }): string[] {
   const id = resolveDeepPath(store, req.pathArg);
   if (!id) throw new Error(`'${req.pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
   // Unlike `unfold`/`fold` (which always need *some* view to mutate, so an omitted `--view`
@@ -20,7 +20,16 @@ export function runTree(store: Store, req: { pathArg: string; maxDepth?: number;
   // behavior. `viewRef: 'default'` (typed explicitly) still resolves through `resolveTreeView`,
   // same as every other `--view` value.
   const view: TreeView | undefined = req.viewRef !== undefined ? resolveTreeView(store, req.viewRef) : undefined;
-  return (wrap(store, id) as unknown as TreeNode).renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, showTombstoned: req.showTombstoned, view });
+  const node = wrap(store, id) as unknown as TreeNode;
+  const lines = node.renderTree({ maxDepth: req.maxDepth, noHolders: req.noHolders, showTombstoned: req.showTombstoned, view });
+  // One breadcrumb for the node this render actually started from — every line below it is already
+  // relative to this point (that's what a tree render *is*), so repeating the full path on each of
+  // them would say the same prefix over and over for no reason. `aperas path`'s own format
+  // (`aperas://tree/<path>`), so it's directly reusable as a `<ref>` elsewhere without a second
+  // command — the gap this was added to close. Omitted (not printed as broken) for whatever
+  // `toPath()` itself can't walk: a `BlockNode` missing `parent`/`title` along the way.
+  const path = node.toPath();
+  return path !== null ? [`aperas://tree/${path}`, ...lines] : lines;
 }
 
 export async function main(): Promise<void> {

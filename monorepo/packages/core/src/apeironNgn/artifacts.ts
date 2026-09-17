@@ -54,11 +54,16 @@ function isFragmentForm(code: string): boolean {
  *  *relative*, non-absolute `[[code]]`/`aperas://tree/` form relying on one specific block's own
  *  nested position as its base is the one shape this doesn't reproduce exactly on retry — not used
  *  anywhere in the corpus today. */
-function resolveOneCode(store: Store, code: string, basePath: string | null, artifactPath: string | null): string | null {
+/** `createHolder` defaults to `true` (the two in-repo write-path callers below both want a
+ *  not-yet-existing deep-path target minted as a placeholder rather than left dangling) — pass
+ *  `false` for a genuinely read-only resolution (`linkIntegrity.ts`'s `checkLinkIntegrity`, which
+ *  must never mutate the graph as a side effect of a diagnostic scan; `resolveDeepPathDetail`
+ *  itself returns `null` on a miss rather than minting anything once `createHolder` is `false`). */
+export function resolveOneCode(store: Store, code: string, basePath: string | null, artifactPath: string | null, createHolder = true): string | null {
   if (isFragmentForm(code)) return resolveFragmentCode(store, code, artifactPath);
   return resolveDeepPathDetail(store, code, {
     base: basePath ?? undefined,
-    createHolder: true,
+    createHolder,
     titles: titlesFromCode(code),
   })?.id ?? null;
 }

@@ -48,7 +48,7 @@ import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folde
 import { findByExactPath } from '@aperas/core/apeironNgn/tree';
 import { wrap, ensureDefaultView, pruneUnreachableTombstones, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type FolderNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
 import { checkLinkIntegrity, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
-import { predIri, encodeLiteral, nodeExists } from '@aperas/core/apeironNgn/vocab';
+import { predIri, nodeIri, nodeExists } from '@aperas/core/apeironNgn/vocab';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runAddBlockLink, runRemoveBlockLink } from './kgLink';
 import { runBacklinks } from './kgBacklinks';
@@ -1082,20 +1082,58 @@ Old-style reference, never ingested: [old](linking-a.md#h1-heading).
     const initialReport = checkLinkIntegrity(store);
     console.log(`   - Initial link integrity scan: ${initialReport.totalLiveBlocks} live blocks, ${initialReport.discrepancies.length} discrepancies.`);
 
-    // Simulate dropped .links by removing a WIKILINK_PREDICATE quad directly from store
-    const linkQuads = store.match(null, predIri('predicate'), encodeLiteral('[[wikilink]]'), null);
-    if (linkQuads.length > 0) {
-      const quadToRemove = linkQuads[0];
-      store.delete(quadToRemove);
-      const reportWithDropped = checkLinkIntegrity(store);
-      if (reportWithDropped.discrepancies.length === 0) {
-        throw new Error(`Expected checkLinkIntegrity to detect dropped WIKILINK_PREDICATE quad, but 0 discrepancies were reported.`);
-      }
-      console.log(`   - Detected dropped link quad successfully (${reportWithDropped.discrepancies.length} discrepancy flagged).`);
-
-      const repairResult = repairLinkIntegrity(store);
-      console.log(`   - repairLinkIntegrity executed: ${repairResult.repairedArtifacts.length} artifact(s) re-resolved.`);
+    // Simulate the actual historical bug precisely (issues/linking.md: `resolveBlockLinks` reports
+    // "N resolved" at write time, `.links` ends up empty regardless) rather than an arbitrary quad:
+    // append one more heading+self-link paragraph onto the *same* demo artifact 5b already proved
+    // this exact `[[<id>]]` self-link form resolves correctly against — not a reuse of 5b's own
+    // `linkBlock` (its Links get regenerated repeatedly by 5c-18's later re-ingestions of the shared
+    // demo artifact, and a first attempt found its text no longer even carried the occurrence by
+    // step 19), and not a brand-new isolated scratch file either (tried first: a lone H1 + paragraph
+    // with nothing else ingested as a single collapsed block, the paragraph consumed into the
+    // ArtifactNode's own leading abstract instead of becoming a real child with its own `.links`).
+    // Then delete only the new Link's own forward `links` edge. An earlier version of this test
+    // instead deleted the first store-wide quad matching `predicate = "[[wikilink]]"`, which proved
+    // nothing: `checkLinkIntegrity`'s match logic never reads `predicate` at all, and this demo store
+    // already carries discrepancies of its own from deliberately-dangling test links (line 319
+    // above), so `discrepancies.length === 0` could never actually fail regardless of whether the
+    // deletion was detected — confirmed live: before/after counts were identical.
+    const checkLinkMarkdown = readFileSync(demoAbsPath, 'utf-8') + `\n\n## Check Link Integrity Fixture\n\nA [fresh self-link check]([[${rootBareCode}]]) for the integrity sweep test.\n`;
+    writeFileSync(demoAbsPath, checkLinkMarkdown, 'utf-8');
+    trackArtifact(store, DEMO_ARTIFACT_PATH);
+    ingestFolderTree(store);
+    ingestArtifact(store, DEMO_ARTIFACT_PATH);
+    const checkLinkArtifact = wrap(store, demoId) as unknown as ArtifactNode;
+    const citingBlockSummary = findByText(checkLinkArtifact, 'fresh self-link check');
+    if (!citingBlockSummary) throw new Error('Expected to find the freshly-ingested citing paragraph.');
+    const citingBlock = wrap(store, citingBlockSummary.id) as unknown as BlockNode;
+    const citingLinks = (citingBlock.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [];
+    const rootLink = citingLinks.find((l) => l.target?.id === rootId);
+    if (!rootLink) {
+      throw new Error(`Expected the freshly-ingested paragraph to carry a resolved Link targeting ${rootId}, got: ${JSON.stringify(citingLinks)}`);
     }
+    for (const q of store.match(nodeIri(citingBlockSummary.id), predIri('links'), nodeIri(rootLink.id), null)) store.delete(q);
+
+    const reportWithDropped = checkLinkIntegrity(store);
+    const droppedDelta = reportWithDropped.discrepancies.length - initialReport.discrepancies.length;
+    if (droppedDelta !== 1) {
+      throw new Error(`Expected exactly one new discrepancy after dropping ${citingBlockSummary.id}'s link, got a delta of ${droppedDelta} (before=${initialReport.discrepancies.length}, after=${reportWithDropped.discrepancies.length}).`);
+    }
+    const droppedDisc = reportWithDropped.discrepancies.find((d) => d.blockId === citingBlockSummary.id);
+    if (!droppedDisc || !droppedDisc.missingCodes.includes(rootBareCode)) {
+      throw new Error(`Expected ${citingBlockSummary.id}'s own discrepancy to name the dropped code '${rootBareCode}', got: ${JSON.stringify(droppedDisc)}`);
+    }
+    console.log(`   - Detected the dropped link precisely: ${citingBlockSummary.id} now missing '${rootBareCode}' (discrepancies ${initialReport.discrepancies.length} -> ${reportWithDropped.discrepancies.length}).`);
+
+    const repairResult = repairLinkIntegrity(store);
+    if (repairResult.reportAfter.discrepancies.length !== initialReport.discrepancies.length) {
+      throw new Error(`Expected repairLinkIntegrity to restore the discrepancy count to baseline (${initialReport.discrepancies.length}), got ${repairResult.reportAfter.discrepancies.length}.`);
+    }
+    const restoredBlock = wrap(store, citingBlockSummary.id) as unknown as BlockNode;
+    const restoredLinks = (restoredBlock.links as unknown as Array<{ target?: { id: string } }>) ?? [];
+    if (!restoredLinks.some((l) => l.target?.id === rootId)) {
+      throw new Error(`Expected repairLinkIntegrity to re-resolve ${citingBlockSummary.id}'s link back onto ${rootId}.`);
+    }
+    console.log(`   - repairLinkIntegrity executed: ${repairResult.repairedArtifacts.length} artifact(s) re-resolved, link restored, discrepancies back to ${repairResult.reportAfter.discrepancies.length}.`);
     console.log("   [✓] checkLinkIntegrity and repairLinkIntegrity sweeps verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Substrate Integration complete & verified!");

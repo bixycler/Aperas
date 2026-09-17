@@ -42,14 +42,14 @@
  */
 
 import { createServer, type Socket } from 'node:net';
-import { unlinkSync, readFileSync, existsSync } from 'node:fs';
+import { unlinkSync, readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
 import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds } from '@aperas/core/apeironNgn/node';
 import { checkLinkIntegrity, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
-import { getSocketPath, markReady, clearLock } from './serviceLock';
+import { getRunDir, getSocketPath, markReady, clearLock } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { runTrack, runReverseTrack } from '../kgTrack';
@@ -96,6 +96,24 @@ function diverged(dir: string, kinds: readonly string[], known: Stamps): string[
   return kinds.filter((kind) => fileHash(dir, kind) !== known[kind]);
 }
 
+/** Durable fallback for events that matter after the fact but would otherwise only ever reach
+ *  `console.error` — which goes nowhere under the service's normal `stdio: 'ignore'` spawn
+ *  (`serviceClient.ts#spawnService`: both the dev and built-bundle paths spawn detached with stdio
+ *  ignored, unconditionally, so nothing printed here is ever visible in real use). Appends one line
+ *  to a fixed, `getRunDir()`-based log file so a startup GC sweep or a shutdown-time flush refusal
+ *  leaves a trace a human can actually go read later, instead of vanishing every single time.
+ *  Best-effort: a logging failure must never take the service down. */
+function logService(message: string): void {
+  console.error(message);
+  try {
+    const dir = getRunDir();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, 'service.log'), `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    // best-effort only
+  }
+}
+
 export function main(): void {
   // Computed once, at this process's own startup, from whatever source was on disk at that
   // moment — deliberately never recomputed afterward. `ping`'s response carries it so
@@ -110,16 +128,11 @@ export function main(): void {
   const contentDir = getApeironExportDir();
   const artifactsDir = getArtifactsDir();
 
-  let { store, quadCount } = rehydrateStore(contentDir);
-  console.error(`[ApeironNgn service] Rehydrated ${quadCount} quad(s) from ${contentDir}.`);
-
-  // Run startup GC companion passes to clean up any unreachable tombstones or vacuous containers on boot
-  const { tombstoned: initTombstoned } = tombstoneVacuousContainers(store);
-  const { pruned: initPruned } = pruneUnreachableTombstones(store);
-  const { pruned: initStaleUnfolds } = pruneStaleUnfolds(store);
-  if (initTombstoned > 0 || initPruned > 0 || initStaleUnfolds > 0) {
-    console.error(
-      `[ApeironNgn service] Startup GC: cleaned ${initPruned} unreachable tombstone(s), ${initTombstoned} vacuous container(s), ${initStaleUnfolds} stale unfold(s).`
+  let { store, quadCount, duplicateIds: initDuplicateIds } = rehydrateStore(contentDir);
+  logService(`[ApeironNgn service] Rehydrated ${quadCount} quad(s) from ${contentDir}.`);
+  if (initDuplicateIds.length > 0) {
+    logService(
+      `[ApeironNgn service] WARNING: ${initDuplicateIds.length} duplicate @id(s) in the mirror — quads from every occurrence merged onto one subject, so at most one document per id survives the next dehydrate: ${initDuplicateIds.join(', ')}`
     );
   }
 
@@ -140,6 +153,30 @@ export function main(): void {
   // the very next `kg:xxx` call of any kind, not just a `flush`/`reload`.
   let contentConflict: string | null = null;
   let stateConflict: string | null = null;
+
+  // Startup GC (Aperas-apeironngn-design.md §5) — the same companion sweep `reloadStore`/
+  // `clobberFlush`/`shutdown` already run at their own explicit boundaries, run here too so a
+  // backlog never survives indefinitely across however many restarts land between one real
+  // (non-`--discard`) `reload`/`clobber`/graceful shutdown and the next. Must flush immediately
+  // rather than just mark dirty and rely on the periodic timer or some later, unrelated mutation to
+  // carry it along: at cold boot, disk can't have diverged yet (this store was just rehydrated from
+  // it), so this flush is guaranteed to succeed. Deferring it is what let a real backlog (four
+  // already-tombstoned blocks from earlier the same day) survive 8+ hours and several restarts
+  // untouched — computed in memory every boot, never once written back, gone the moment the
+  // process exited before anything else happened to flush.
+  const { tombstoned: initTombstoned } = tombstoneVacuousContainers(store);
+  const { pruned: initPruned } = pruneUnreachableTombstones(store);
+  const { pruned: initStaleUnfolds } = pruneStaleUnfolds(store);
+  if (initTombstoned > 0 || initPruned > 0 || initStaleUnfolds > 0) {
+    dirty = true;
+    stateDirty = true;
+    logService(
+      `[ApeironNgn service] Startup GC: cleaned ${initPruned} unreachable tombstone(s), ${initTombstoned} vacuous container(s), ${initStaleUnfolds} stale unfold(s).`
+    );
+    flushIfDirty();
+    flushStateIfDirty();
+  }
+
   let queue: Promise<unknown> = Promise.resolve();
   function enqueue<T>(fn: () => T | Promise<T>): Promise<T> {
     const result = queue.then(fn, fn);
@@ -192,7 +229,16 @@ export function main(): void {
    *  favor of the external change (`kg:reload --discard`; never implied by any op's own bare
    *  `reload: true`, which always takes the safe, preserving path — a read shouldn't have the
    *  side effect of silently dropping someone else's pending write). */
-  function reloadStore(discard = false): { quadCount: number; nodeCount: number } {
+  function reloadStore(discard = false): {
+    quadCount: number;
+    nodeCount: number;
+    prunedTombstones: number;
+    tombstonedContainers: number;
+    prunedUnfolds: number;
+  } {
+    let tombstoned = 0;
+    let pruned = 0;
+    let staleUnfolds = 0;
     if (discard) {
       dirty = false;
       stateDirty = false;
@@ -204,15 +250,15 @@ export function main(): void {
       // `reloadStore` always flushes both mirrors together right after, so a pruned tombstone
       // reliably stays gone rather than reappearing from the very rehydrate this triggers below.
       // Skipped on `discard`, since that path throws away in-memory state instead of flushing it.
-      const { tombstoned } = tombstoneVacuousContainers(store);
-      const { pruned } = pruneUnreachableTombstones(store);
+      ({ tombstoned } = tombstoneVacuousContainers(store));
+      ({ pruned } = pruneUnreachableTombstones(store));
       if (tombstoned > 0 || pruned > 0) {
         dirty = true;
         stateDirty = true; // a pruned node's own dangling `unfolds` entries may have been swept too
       }
       // Own sweep, not folded into the above: a stale `unfolds` entry (issues/treeview.md) isn't
       // necessarily tied to anything just pruned here — it can predate this run entirely.
-      const { pruned: staleUnfolds } = pruneStaleUnfolds(store);
+      ({ pruned: staleUnfolds } = pruneStaleUnfolds(store));
       if (staleUnfolds > 0) stateDirty = true;
       flushIfDirty();
       flushStateIfDirty();
@@ -221,8 +267,26 @@ export function main(): void {
     store = result.store;
     contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
     stateStamps = stampAll(stateDir, STATE_CLASSES);
-    console.error(`[ApeironNgn service] Reloaded ${result.quadCount} quad(s).`);
-    return { quadCount: result.quadCount, nodeCount: result.nodeCount };
+    const gcParts: string[] = [];
+    if (pruned) gcParts.push(`${pruned} unreachable tombstone(s) pruned`);
+    if (tombstoned) gcParts.push(`${tombstoned} vacuous container(s) tombstoned`);
+    if (staleUnfolds) gcParts.push(`${staleUnfolds} stale unfold(s) cleared`);
+    logService(
+      `[ApeironNgn service] Reloaded ${result.quadCount} quad(s), ${result.nodeCount} node(s).` +
+        (gcParts.length > 0 ? ` GC: ${gcParts.join(', ')}.` : '')
+    );
+    if (result.duplicateIds.length > 0) {
+      logService(
+        `[ApeironNgn service] WARNING: ${result.duplicateIds.length} duplicate @id(s) in the mirror — quads from every occurrence merged onto one subject, so at most one document per id survives the next dehydrate: ${result.duplicateIds.join(', ')}`
+      );
+    }
+    return {
+      quadCount: result.quadCount,
+      nodeCount: result.nodeCount,
+      prunedTombstones: pruned,
+      tombstonedContainers: tombstoned,
+      prunedUnfolds: staleUnfolds,
+    };
   }
 
   /** The other side of `reloadStore(discard: true)`: resolves a conflict in favor of the *local*
@@ -261,10 +325,10 @@ export function main(): void {
   // interval forever. An explicit `--flush`/`--reload`/`--discard` from a CLI command always
   // surfaces the same error normally through the request/response path regardless.
   const flushTimer = setInterval(() => {
-    enqueue(() => flushIfDirty()).catch((err) => console.error(`[ApeironNgn service] Timed flush: ${err.message}`));
+    enqueue(() => flushIfDirty()).catch((err) => logService(`[ApeironNgn service] Timed flush: ${err.message}`));
   }, FLUSH_INTERVAL_MS);
   const stateFlushTimer = setInterval(() => {
-    enqueue(() => flushStateIfDirty()).catch((err) => console.error(`[ApeironNgn service] Timed state flush: ${err.message}`));
+    enqueue(() => flushStateIfDirty()).catch((err) => logService(`[ApeironNgn service] Timed state flush: ${err.message}`));
   }, STATE_FLUSH_INTERVAL_MS);
 
   let shuttingDown = false;
@@ -295,9 +359,9 @@ export function main(): void {
         if (tombstoned > 0 || pruned > 0) { dirty = true; stateDirty = true; }
         const { pruned: staleUnfolds } = pruneStaleUnfolds(store);
         if (staleUnfolds > 0) stateDirty = true;
-      } catch (err: any) { console.error(`[ApeironNgn service] Shutdown: tombstone GC failed — ${err.message}`); }
-      try { flushIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown WARNING: content mirror flush refused — ${err.message}. Discarding un-flushed in-memory changes.`); }
-      try { flushStateIfDirty(); } catch (err: any) { console.error(`[ApeironNgn service] Shutdown WARNING: .state mirror flush refused — ${err.message}. Discarding un-flushed in-memory state.`); }
+      } catch (err: any) { logService(`[ApeironNgn service] Shutdown: tombstone GC failed — ${err.message}`); }
+      try { flushIfDirty(); } catch (err: any) { logService(`[ApeironNgn service] Shutdown WARNING: content mirror flush refused — ${err.message}. Discarding un-flushed in-memory changes.`); }
+      try { flushStateIfDirty(); } catch (err: any) { logService(`[ApeironNgn service] Shutdown WARNING: .state mirror flush refused — ${err.message}. Discarding un-flushed in-memory state.`); }
     }).finally(() => {
       clearLock();
       process.exit(code);
@@ -466,6 +530,7 @@ export function main(): void {
         if (req.repair) {
           const res = repairLinkIntegrity(store);
           dirty = true;
+          if (req.flush) flushIfDirty();
           return res;
         }
         return checkLinkIntegrity(store);

@@ -8,8 +8,13 @@
  * pending is silently discarded by the reload — unless that flush is itself refused because disk
  * diverged since this service last read it (someone else's write landed while local work was
  * still pending here): `--discard` resolves that conflict by dropping the pending local mutation
- * and taking disk as-is, instead of leaving the reload stuck. `kg:flush --force` is the opposite
+ * and taking disk as-is, instead of leaving the reload stuck. `kg:flush --clobber` is the opposite
  * resolution — keep the local mutation, overwrite whatever's on disk.
+ *
+ * Unless `--discard` is given, this is also one of the three explicit boundaries (alongside
+ * `kg:flush --clobber` and a graceful service shutdown) where the tombstone/vacuous-container/
+ * stale-unfold GC sweep runs — see `service.ts#reloadStore`'s own doc comment. The counts below
+ * reflect that sweep, not just the rehydrate.
  */
 
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
@@ -29,8 +34,23 @@ export async function main(): Promise<void> {
   }
   const discard = rawArgs.includes('--discard');
   await ensureServiceRunning();
-  const { quadCount, nodeCount } = await request<{ quadCount: number; nodeCount: number }>({ op: 'reload', discard });
-  console.log(`[ApeironNgn kg:reload] Reloaded ${quadCount} quad(s), ${nodeCount} node(s).`);
+  const { quadCount, nodeCount, prunedTombstones, tombstonedContainers, prunedUnfolds } = await request<{
+    quadCount: number;
+    nodeCount: number;
+    prunedTombstones: number;
+    tombstonedContainers: number;
+    prunedUnfolds: number;
+  }>({ op: 'reload', discard });
+
+  const gcParts: string[] = [];
+  if (prunedTombstones) gcParts.push(`${prunedTombstones} unreachable tombstone(s) pruned`);
+  if (tombstonedContainers) gcParts.push(`${tombstonedContainers} vacuous container(s) tombstoned`);
+  if (prunedUnfolds) gcParts.push(`${prunedUnfolds} stale unfold(s) cleared`);
+
+  console.log(
+    `[ApeironNgn kg:reload] Reloaded ${quadCount} quad(s), ${nodeCount} node(s).` +
+      (gcParts.length > 0 ? ` GC: ${gcParts.join(', ')}.` : '')
+  );
 }
 
 if (process.argv[1]?.endsWith('kgReload.ts')) {

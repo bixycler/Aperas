@@ -1,16 +1,18 @@
 /**
  * Link Integrity Check & Repair Sweep — `issues/linking.md` Shared Fix Direction:
  * Compares live `BlockNode` text against stored `.links` RDF triples in Oxigraph Store.
- * Detects live nodes whose text contains internal-style link occurrences (`[[code]]`,
- * `aperas://...`, `path#fragment`) but whose `.links` property in store lacks a matching
- * resolved `Link` (or where `.links` is empty).
+ * Detects live nodes whose text contains an internal-style link occurrence (`[[code]]`,
+ * `aperas://...`, `path#fragment`) that *resolves* (via `artifacts.ts#resolveOneCode`, the same
+ * dispatch `resolveBlockLinks` itself uses, read-only here) to a live target with no matching
+ * entry in that block's own `.links` — narrower than "any unresolved code," which is routine (a
+ * `#fragment` anchor) or already tracked separately (`danglingRef`/`retryDanglingRefs`).
  */
 
 import type { Store } from 'oxigraph';
 import { wrap, type BlockNode, type Link, type TreeNode } from './node';
 import { allIdsOfKind } from './dehydrate';
 import { collectLinkCodesFromText, type LinkOccurrence } from '../astParser';
-import { resolveBlockLinks, retryDanglingRefs } from './artifacts';
+import { resolveBlockLinks, retryDanglingRefs, resolveOneCode } from './artifacts';
 import { nodeKindFromId } from './vocab';
 import { findByExactPath } from './tree';
 import type { PendingLinkCodes } from '../artifacts';
@@ -26,10 +28,10 @@ export interface LinkDiscrepancy {
   blockText: string;
   /** Expected link codes found in block text */
   textLinkCodes: string[];
-  /** Missing or unresolved link codes in store */
+  /** Codes that resolve to a live target with no matching entry in this block's own `.links` */
   missingCodes: string[];
-  /** Actual resolved Link objects attached to node in store */
-  resolvedLinks: { id: string; targetId: string | null; code: string | null }[];
+  /** This block's actual resolved Link objects, for comparison */
+  resolvedLinks: { id: string; targetId: string | null }[];
 }
 
 export interface LinkIntegrityReport {
@@ -67,7 +69,21 @@ function collectAllBlockNodes(node: TreeNode, out: BlockNode[] = []): BlockNode[
 }
 
 /**
- * Sweeps the entire Oxigraph Store for live BlockNodes and compares their text against stored `.links`.
+ * Sweeps the entire Oxigraph Store for live BlockNodes and compares their text against stored
+ * `.links`, resolving each occurrence for real (`resolveOneCode`, `createHolder: false` so a scan
+ * never mutates the graph) instead of guessing from the raw code string. A substring/containment
+ * check against `Link.target.id` only ever happens to work for `path#id/<ID>`/`aperas://id/<ID>`
+ * forms, where the id is textually embedded in the code — it can't work at all for `[[<deep-path>]]`
+ * addressing (`resolve.ts`'s deep-path grammar, "used extensively" per `history/linking.md`'s own
+ * account), where the code is a heading-path string with no relationship to the opaque id it
+ * resolves to. Resolving properly also lets this scan be precise about *what* it reports: a code
+ * that doesn't resolve to anything at all is a dangling reference — already `resolveBlockLinks`'s
+ * own concern via its `danglingRef` prop + `retryDanglingRefs` (and routine, not a defect, for a
+ * bare `#fragment` — most of those are ordinary same-page anchors, never meant as an internal
+ * reference). This scan exists for the narrower, previously-invisible failure this tool was built
+ * for: a code that *does* resolve, correctly, to a live target — yet that target is missing from
+ * this block's own `.links` regardless (`issues/linking.md`'s two confirmed incidents both showed
+ * "N resolved" at write time with an empty `.links` afterward).
  */
 export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
   let totalLiveBlocks = 0;
@@ -88,21 +104,22 @@ export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
     blocksWithLinkText++;
 
     const actualLinks = (block.links as unknown as Link[] | undefined) ?? [];
+    const actualTargetIds = new Set(actualLinks.map((l) => l.target?.id).filter((tid): tid is string => !!tid));
+    const basePath = block.toPath();
+    const artifactPath = artifactPathOfBlock(block);
     const missingCodes: string[] = [];
 
     for (const occ of occurrences) {
       const code = occ.code;
-      // Check if any actual link in block.links matches this code or target
-      const match = actualLinks.some((l) => {
-        if (l.code === code) return true;
-        if (l.target?.id) {
-          // Check if code contains target id or target matches code resolution
-          if (code.includes(l.target.id) || l.target.id.includes(code)) return true;
-        }
-        return false;
-      });
-
-      if (!match) {
+      let resolved: string | null = null;
+      try {
+        resolved = resolveOneCode(store, code, basePath, artifactPath, false);
+      } catch {
+        resolved = null; // an ambiguity/lookup failure here is "no confident candidate," not a crash
+      }
+      // Only a code that genuinely resolves and is still missing from `.links` counts — see this
+      // function's own doc comment for why an unresolved code is deliberately not reported here.
+      if (resolved && !actualTargetIds.has(resolved)) {
         missingCodes.push(code);
       }
     }
@@ -118,7 +135,6 @@ export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
         resolvedLinks: actualLinks.map((l) => ({
           id: l.id,
           targetId: l.target?.id ?? null,
-          code: l.code ?? null,
         })),
       });
     }

@@ -52,13 +52,26 @@ export interface RehydrateResult {
    *  `@id` anywhere in the mirror — a genuine data problem now that every reference-shaped field
    *  points at one of the 3 `INSTANCE_FILES` kinds. Surfaced rather than silently dropped. */
   danglingRefs: string[];
+  /** Two or more distinct JSON-LD documents (top-level or embedded) sharing one `@id` — quads from
+   *  every occurrence land on the same subject, so encoding silently merges them and a later
+   *  dehydrate can only ever emit one JSON document back out per id, dropping whichever source
+   *  document doesn't win. Confirmed live: a hand-edit collapsed two distinct `Profile` entries
+   *  (`Aperas-apeironngn-design.md`'s Profile identity — see `issues/core.md`) onto one `@id`, and
+   *  the "claude" profile silently vanished on every subsequent flush/reload/clobber, with nothing
+   *  ever reporting *why* — this array exists so that never again requires a human noticing a
+   *  missing profile by hand before anyone finds out. Surfaced, never auto-resolved: picking a
+   *  winner here would just be a second, quieter way to lose the same data. */
+  duplicateIds: string[];
 }
 
 /** Encodes one JSON-LD document's own fields as quads, recursing into `@subdocument` arrays
- *  (`props`: `Prop`/`StringProp`) whose entries carry their own `@id` and fields. */
-function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>): void {
+ *  (`props`: `Prop`/`StringProp`) whose entries carry their own `@id` and fields. `duplicateIds`
+ *  collects (doesn't throw on) an `@id` already seen earlier in this same rehydrate — see
+ *  `RehydrateResult.duplicateIds`'s own doc comment for why surfacing beats guessing a winner. */
+function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>, duplicateIds: string[]): void {
   const id: string = doc['@id'];
   if (!id) return;
+  if (seenIds.has(id)) duplicateIds.push(id);
   seenIds.add(id);
   const subject = nodeIri(id);
 
@@ -85,7 +98,7 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>)
         // Embedded subdocument (props: StringProp) — its own subject, recurse, plus a forward
         // link from the owner so `owner.props` can find it.
         store.add(quad(subject, predIri(field), nodeIri(item['@id'])));
-        encodeDoc(store, item, seenIds);
+        encodeDoc(store, item, seenIds, duplicateIds);
         continue;
       }
       if (isNodeRef(item)) {
@@ -110,12 +123,13 @@ export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: st
   const store = new Store();
   const seenIds = new Set<string>();
   const referencedIds = new Set<string>();
+  const duplicateIds: string[] = [];
 
   for (const file of INSTANCE_FILES) {
     const docs: any[] = JSON.parse(readFileSync(join(dir, `${file}.jsonld`), 'utf-8'));
     for (const doc of docs) {
       if (doc['@type'] === '@context') continue;
-      encodeDoc(store, doc, seenIds);
+      encodeDoc(store, doc, seenIds, duplicateIds);
     }
   }
   for (const file of STATE_FILES) {
@@ -124,7 +138,7 @@ export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: st
     const docs: any[] = JSON.parse(readFileSync(path, 'utf-8'));
     for (const doc of docs) {
       if (doc['@type'] === '@context') continue;
-      encodeDoc(store, doc, seenIds);
+      encodeDoc(store, doc, seenIds, duplicateIds);
     }
   }
 
@@ -138,5 +152,5 @@ export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: st
   }
   const danglingRefs = [...referencedIds].filter((id) => !seenIds.has(id)).sort();
 
-  return { store, quadCount: store.size, nodeCount: seenIds.size, danglingRefs };
+  return { store, quadCount: store.size, nodeCount: seenIds.size, danglingRefs, duplicateIds: [...new Set(duplicateIds)].sort() };
 }

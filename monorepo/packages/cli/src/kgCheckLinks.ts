@@ -31,7 +31,12 @@ export async function main(): Promise<void> {
   await ensureServiceRunning();
 
   if (repair) {
-    const result = await request<RepairLinkIntegrityResult>({ op: 'checkLinks', repair: true, reload });
+    // Flushes unconditionally, not gated behind its own flag: the help text above already promises
+    // "re-resolve and flush" — before this, `flush` wasn't even part of the request shape, so a
+    // repair only ever marked the store dirty and left persisting it to the 10s timer (or whatever
+    // op happened to flush next), the same "can't stage immediately" trap the skill's own discipline
+    // warns about elsewhere. A one-shot corrective sweep should be flushable in the same call.
+    const result = await request<RepairLinkIntegrityResult>({ op: 'checkLinks', repair: true, reload, flush: true });
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
       return;
@@ -43,7 +48,7 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const report = await request<LinkIntegrityReport>({ op: 'checkLinks', repair: false, reload });
+  const report = await request<LinkIntegrityReport>({ op: 'checkLinks', repair: false, reload, flush: false });
 
   if (asJson) {
     console.log(JSON.stringify(report, null, 2));

@@ -48,7 +48,8 @@ import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/sto
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
 import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds } from '@aperas/core/apeironNgn/node';
-import { checkLinkIntegrity, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
+import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/apeironNgn/linkIntegrity';
+import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
 import { getRunDir, getSocketPath, markReady, clearLock } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
@@ -153,6 +154,9 @@ export function main(): void {
   // the very next `kg:xxx` call of any kind, not just a `flush`/`reload`.
   let contentConflict: string | null = null;
   let stateConflict: string | null = null;
+  // Standing result of the last corpus-wide link-integrity sweep (startup/reload), attached to every
+  // response the same way the two conflicts above are — see `serviceProtocol.ts#ServiceResponse`.
+  let linkWarning: string | null = null;
 
   // Startup GC (Aperas-apeironngn-design.md §5) — the same companion sweep `reloadStore`/
   // `clobberFlush`/`shutdown` already run at their own explicit boundaries, run here too so a
@@ -203,6 +207,70 @@ export function main(): void {
     contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
     dirty = false;
     contentConflict = null;
+  }
+
+  /** Corpus-wide link-integrity sweep (~0.6s, measured), run at the two boundaries where the graph
+   *  can have changed without this process doing it: cold boot, and `reload`. Sets/clears the
+   *  standing `linkWarning` rather than throwing — a broken link is a data problem to report, never
+   *  a reason to refuse an unrelated request. Never repairs: the known workaround for the still-
+   *  unreproduced regression in `issues/linking.md` is "re-run the identical write and it sticks,"
+   *  and a silent auto-retry here would destroy the evidence that bug is still being hunted with. */
+  function corpusLinkSweep(context: string): void {
+    try {
+      const report = checkLinkIntegrity(store);
+      if (report.discrepancies.length === 0) {
+        linkWarning = null;
+        return;
+      }
+      const blocks = report.discrepancies.map((d) => d.blockId).join(', ');
+      linkWarning =
+        `${report.discrepancies.length} live block(s) cite a resolvable target that's missing from their own '.links' ` +
+        `(found at ${context}): ${blocks}. Run 'aperas check-links --verbose' for detail, ` +
+        `'aperas check-links --repair' to re-resolve them.`;
+      logService(`[ApeironNgn service] LINK INTEGRITY: ${linkWarning}`);
+    } catch (err: any) {
+      logService(`[ApeironNgn service] Link integrity sweep (${context}) failed — ${err.message}`);
+    }
+  }
+
+  /** Which artifact a mutating op is about to touch, resolved from the same `path`/`base` pair the
+   *  op itself resolves — read-only (`resolveDeepPath` mints nothing without `createHolder`), and
+   *  best-effort: a ref this can't resolve just means no scoped check, never a failed write. */
+  function artifactForRef(ref: string, base?: string): string | null {
+    try {
+      const id = resolveDeepPath(store, ref, { base });
+      return id ? owningArtifactId(store, id) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function discrepancyKeys(report: LinkIntegrityReport): Set<string> {
+    const keys = new Set<string>();
+    for (const d of report.discrepancies) for (const code of d.missingCodes) keys.add(`${d.blockId}\u0000${code}`);
+    return keys;
+  }
+
+  /** Re-checks the written artifact and appends anything *this write* broke to the op's own result,
+   *  right where the caller is already reading its `Links: N resolved…` summary — the exact line
+   *  that reported success while `.links` came back empty in both recorded incidents. Diffed against
+   *  a sweep taken just before the write, so a pre-existing discrepancy elsewhere in the same
+   *  artifact isn't re-reported on every subsequent edit to it. */
+  function withLinkCheck<T extends object>(result: T, artifactId: string | null, before: LinkIntegrityReport | null): T {
+    if (!artifactId || !before) return result;
+    let after: LinkIntegrityReport;
+    try {
+      after = checkArtifactLinkIntegrity(store, artifactId);
+    } catch {
+      return result;
+    }
+    const known = discrepancyKeys(before);
+    const introduced = after.discrepancies.flatMap((d) =>
+      d.missingCodes
+        .filter((code) => !known.has(`${d.blockId}\u0000${code}`))
+        .map((code) => ({ blockId: d.blockId, blockTitle: d.blockTitle, code }))
+    );
+    return introduced.length > 0 ? { ...result, linkBreakage: introduced } : result;
   }
 
   function flushStateIfDirty(): void {
@@ -280,6 +348,10 @@ export function main(): void {
         `[ApeironNgn service] WARNING: ${result.duplicateIds.length} duplicate @id(s) in the mirror — quads from every occurrence merged onto one subject, so at most one document per id survives the next dehydrate: ${result.duplicateIds.join(', ')}`
       );
     }
+    // The other boundary where the graph can have changed without this process doing it — a reload
+    // exists precisely to pick up someone else's write, which is exactly when a link can arrive
+    // already broken.
+    corpusLinkSweep('reload');
     return {
       quadCount: result.quadCount,
       nodeCount: result.nodeCount,
@@ -432,26 +504,36 @@ export function main(): void {
         if (req.flush) flushIfDirty();
         return result;
       }
+      // The three write paths where a link resolved at write time has been seen not to persist
+      // (`issues/linking.md`) — each re-checks its own artifact afterward and reports what the write
+      // itself broke. `ingest` deliberately isn't one of them: it always ran `resolveBlockLinks`
+      // correctly, reports its own link stats already, and can span the whole corpus in one call.
       case 'insert': {
         if (req.reload) reloadStore();
+        const artifactId = artifactForRef(req.path, req.base);
+        const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runInsert(store, req);
         dirty = true;
         if (req.flush) flushIfDirty();
-        return result;
+        return withLinkCheck(result, artifactId, before);
       }
       case 'update': {
         if (req.reload) reloadStore();
+        const artifactId = artifactForRef(req.path, req.base);
+        const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runUpdate(store, req);
         dirty = true;
         if (req.flush) flushIfDirty();
-        return result;
+        return withLinkCheck(result, artifactId, before);
       }
       case 'remove': {
         if (req.reload) reloadStore();
+        const artifactId = artifactForRef(req.path, req.base);
+        const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runRemove(store, req);
         dirty = true;
         if (req.flush) flushIfDirty();
-        return result;
+        return withLinkCheck(result, artifactId, before);
       }
       case 'linkCandidates':
         if (req.reload) reloadStore();
@@ -558,7 +640,12 @@ export function main(): void {
           const conflict = (contentConflict || stateConflict)
             ? { content: contentConflict ?? undefined, state: stateConflict ?? undefined }
             : undefined;
-          return conflict ? { ok: true, result, conflict } : { ok: true, result };
+          return {
+            ok: true,
+            result,
+            ...(conflict ? { conflict } : {}),
+            ...(linkWarning ? { linkWarning } : {}),
+          };
         } catch (err: any) {
           resetIdleTimer();
           return { ok: false, error: err.message || String(err) };
@@ -586,6 +673,14 @@ export function main(): void {
   server.listen(socketPath, () => {
     markReady(contentDir, artifactsDir);
     resetIdleTimer();
+    // Deliberately *after* `markReady`, and queued rather than run inline: `waitForReady` gives a
+    // starting service 5s, and this sweep costs ~0.6s of that budget on an idle machine and more
+    // under load — enough to turn `aperas service start` into a spurious "did not become ready in
+    // time" failure (hit exactly once, on a loaded machine, before this was moved). Nothing depends
+    // on the result being ready before the first request: it rides on responses until it clears, so
+    // arriving a fraction of a second late costs nothing. `enqueue` keeps it from interleaving with
+    // a request already in flight.
+    enqueue(() => corpusLinkSweep('startup')).catch(() => {});
   });
 }
 

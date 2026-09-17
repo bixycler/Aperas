@@ -17,7 +17,7 @@ description: >-
 
 # aperas
 
-Status: **v2.4** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v2.5** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` isn't published yet. Every command below (`aperas <verb> ...`) actually runs today as `npm run aperas -- <verb> ...` from `Aperas/monorepo/`. **Delete this note once `aperas` ships as a real installed binary** (see `AperasKG/artifacts/issues/packaging.md`'s Pending Tasks — the `bin` build).
 
@@ -163,6 +163,10 @@ Confirmed live three times: two sessions investigated `reconcile.ts`/`node.ts` b
 After a step lands clean, `git add` it — in both the code repo and `AperasKG/`. The index becomes a running checkpoint: if a later step goes wrong, `git restore`/`git diff` against it recovers cleanly. **Staging only, never committing** — `git commit` stays the user's call. Pass `--flush` on the mutating call you are about to stage, not just at the end of a sequence; the service's own flush timer can otherwise land *after* a `git add`, leaving the index holding stale content.
 
 This is not bookkeeping. Recovering a live incident that tombstoned real content was only possible because the prior step had actually been staged.
+
+**At the end of a batch — not after each step — run `aperas check-links` once before handing back.** The per-write check the service runs on its own only sweeps the artifact that was written; this is the pass that catches the damage that lands *elsewhere* — an edit in artifact A breaking a citation that lives in artifact B, which nothing scoped to A can see. It costs about 0.6s against the whole corpus, so the reason to run it once per batch rather than per edit is noise, not expense.
+
+The other two link checks need nothing from you, and that is the point — the two recorded losses were both found by a human happening to look, never by a check that fired. The service now sweeps the written artifact after every `update`/`insert`/`remove` and reports anything that write resolved but failed to persist, right under the write's own `Links: N resolved…` line; and it sweeps the whole corpus at startup and on `reload`, carrying any finding on *every* later response until it clears. When either one speaks up, it is describing a link that already looks fine everywhere else — treat it as real and re-run the write (which has fixed it before) or `aperas check-links --repair`.
 
 ### Write discussion before executing, not after
 

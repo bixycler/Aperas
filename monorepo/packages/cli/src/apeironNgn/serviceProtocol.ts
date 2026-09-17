@@ -125,8 +125,14 @@ export type ServiceRequest =
 // explicit `flush`/`reload`) would sit `dirty` forever with nothing ever surfacing it — no CLI
 // command would have any reason to notice. `serviceClient.ts#request` prints this on the client
 // side (this process's own stdio, not the service's `stdio: 'ignore'`'d one) on every call.
+// `linkWarning` rides the same "attached to every response regardless of op" channel, for the same
+// reason: the corpus link-integrity sweep runs at startup/reload (`service.ts#corpusLinkSweep`),
+// where nothing is listening — drift that landed while the service was down (a `git pull`, a
+// hand-edit, a `git restore`) would otherwise sit unreported until somebody thought to run
+// `aperas check-links`, which is precisely the "being asked is the part that fails" mode this
+// concern keeps hitting (`issues/linking.md`). Cleared the moment a later sweep comes back clean.
 export type ServiceResponse =
-  | { ok: true; result: unknown; conflict?: { content?: string; state?: string } }
+  | { ok: true; result: unknown; conflict?: { content?: string; state?: string }; linkWarning?: string }
   | { ok: false; error: string };
 
 export function encodeMessage(msg: unknown): string {

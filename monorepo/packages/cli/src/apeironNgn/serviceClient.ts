@@ -145,22 +145,49 @@ export async function ensureServiceRunning(): Promise<void> {
   throw new Error('No ApeironNgn service running. Start one with: aperas service start');
 }
 
-/** An unresolved flush conflict (`ServiceResponse`'s own doc comment) rides on *every* response
- *  until resolved, regardless of the op that response is for — printed here, on this short-lived
- *  client process's own stdio, since the long-running service is normally spawned with
- *  `stdio: 'ignore'` and can't make itself heard any other way. This is what makes the conflict
- *  "emerge" on the very next `kg:xxx` call of any kind rather than sitting silently `dirty`
- *  forever, only ever visible to whichever explicit `flush`/`reload` happens to hit it. */
-function reportConflict(res: Extract<ServiceResponse, { ok: true }>): void {
-  if (!res.conflict) return;
-  if (res.conflict.content) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (content mirror): ${res.conflict.content}`);
-  if (res.conflict.state) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (.state mirror): ${res.conflict.state}`);
-  console.error(`[ApeironNgn service] ${CONFLICT_RESOLUTION_HINT}`);
+/** The service's two standing conditions — an unresolved flush conflict, and a corpus link-integrity
+ *  finding (`ServiceResponse`'s own doc comment) — ride on *every* response until they clear,
+ *  regardless of the op that response is for. Printed here, on this short-lived client process's own
+ *  stdio, since the long-running service is normally spawned with `stdio: 'ignore'` and can't make
+ *  itself heard any other way. This is what makes either one "emerge" on the very next `kg:xxx` call
+ *  of any kind rather than sitting silently forever, visible only to whichever explicit
+ *  `flush`/`reload`/`check-links` happens to go looking for it. */
+function reportStanding(res: Extract<ServiceResponse, { ok: true }>): void {
+  if (res.conflict) {
+    if (res.conflict.content) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (content mirror): ${res.conflict.content}`);
+    if (res.conflict.state) console.error(`[ApeironNgn service] UNRESOLVED CONFLICT (.state mirror): ${res.conflict.state}`);
+    console.error(`[ApeironNgn service] ${CONFLICT_RESOLUTION_HINT}`);
+  }
+  // Same channel, same reason (see this function's own doc comment): a link that lost its
+  // resolution is invisible in every ordinary rendering, so it has to arrive unasked-for.
+  if (res.linkWarning) console.error(`[ApeironNgn service] LINK INTEGRITY: ${res.linkWarning}`);
+}
+
+/** One entry per link a write reported resolving that still isn't in the block's own `.links`
+ *  afterward — `service.ts#withLinkCheck` attaches these to a mutating op's own result. */
+interface LinkBreakage {
+  blockId: string;
+  blockTitle: string;
+  code: string;
+}
+
+/** Printed from here, not from each `kgX.ts`, for the same reason the check itself runs service-side
+ *  rather than as a discipline step: anything a caller has to remember to do is something a caller
+ *  eventually doesn't. Every op that carries `linkBreakage` reports it, including ops added later. */
+function reportLinkBreakage(result: unknown): void {
+  const breakage = (result as { linkBreakage?: LinkBreakage[] } | null)?.linkBreakage;
+  if (!breakage || breakage.length === 0) return;
+  console.error(
+    `[ApeironNgn service] LINK INTEGRITY: this write resolved ${breakage.length} link(s) that are still missing from '.links' afterward:`
+  );
+  for (const b of breakage) console.error(`  • ${b.blockId} — '${b.code}' (${b.blockTitle})`);
+  console.error(`  Re-running the identical write has fixed this before; 'aperas check-links --repair' also re-resolves. See issues/linking.md.`);
 }
 
 export async function request<T>(req: ServiceRequest): Promise<T> {
   const res = await sendRaw(req, 0);
   if (!res.ok) throw new Error(res.error);
-  reportConflict(res);
+  reportStanding(res);
+  reportLinkBreakage(res.result);
   return res.result as T;
 }

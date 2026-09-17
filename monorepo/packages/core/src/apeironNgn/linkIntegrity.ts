@@ -86,12 +86,43 @@ function collectAllBlockNodes(node: TreeNode, out: BlockNode[] = []): BlockNode[
  * "N resolved" at write time with an empty `.links` afterward).
  */
 export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
+  const blocks = allIdsOfKind(store, 'BlockNode').map((id) => wrap(store, id) as unknown as BlockNode);
+  return sweepBlocks(store, blocks);
+}
+
+/** The same check as `checkLinkIntegrity`, restricted to one artifact's own live `BlockNode`
+ *  descendants — cheap enough (tens of ms against a typical concern doc, vs. ~0.6s for the whole
+ *  corpus) to run on every write, which is what lets `service.ts` verify a mutation's own link
+ *  resolution immediately instead of leaving it to a sweep somebody has to remember. Matches the
+ *  corpus scan's coverage exactly: `allIdsOfKind(store, 'BlockNode')` excludes `ArtifactNode`s by
+ *  kind, and `collectAllBlockNodes` likewise only collects `BlockNode`-kind descendants, so neither
+ *  form inspects an artifact root's own text. */
+export function checkArtifactLinkIntegrity(store: Store, artifactId: string): LinkIntegrityReport {
+  const artifactNode = wrap(store, artifactId) as unknown as TreeNode;
+  return sweepBlocks(store, collectAllBlockNodes(artifactNode));
+}
+
+/** Walks `.parent` up from any node to the id of the `ArtifactNode`/`FolderNode` that owns it —
+ *  `artifactPathOfBlock`'s id-returning counterpart, for callers that need to scope a sweep rather
+ *  than name a file. Returns `nodeId` itself when it already is an artifact/folder root. */
+export function owningArtifactId(store: Store, nodeId: string): string | null {
+  let current: TreeNode = wrap(store, nodeId) as unknown as TreeNode;
+  for (;;) {
+    const kind = nodeKindFromId(current.id);
+    if (kind === 'ArtifactNode' || kind === 'FolderNode') return current.id;
+    if (kind !== 'BlockNode') return null;
+    const parent = (current as unknown as BlockNode).parent;
+    if (!parent) return null;
+    current = parent;
+  }
+}
+
+function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
   let totalLiveBlocks = 0;
   let blocksWithLinkText = 0;
   const discrepancies: LinkDiscrepancy[] = [];
 
-  for (const id of allIdsOfKind(store, 'BlockNode')) {
-    const block = wrap(store, id) as unknown as BlockNode;
+  for (const block of blocks) {
     if (block.tombstonedAt) continue;
     totalLiveBlocks++;
 
@@ -117,8 +148,8 @@ export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
       } catch {
         resolved = null; // an ambiguity/lookup failure here is "no confident candidate," not a crash
       }
-      // Only a code that genuinely resolves and is still missing from `.links` counts — see this
-      // function's own doc comment for why an unresolved code is deliberately not reported here.
+      // Only a code that genuinely resolves and is still missing from `.links` counts — see
+      // `checkLinkIntegrity`'s own doc comment for why an unresolved code isn't reported here.
       if (resolved && !actualTargetIds.has(resolved)) {
         missingCodes.push(code);
       }
@@ -127,7 +158,7 @@ export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
     if (missingCodes.length > 0) {
       discrepancies.push({
         blockId: block.id,
-        artifactPath: artifactPathOfBlock(block),
+        artifactPath,
         blockTitle: block.title || block.id,
         blockText: text.length > 120 ? text.slice(0, 117) + '...' : text,
         textLinkCodes: occurrences.map((o) => o.code),

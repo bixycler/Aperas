@@ -47,7 +47,7 @@ import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts
 import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folders';
 import { findByExactPath } from '@aperas/core/apeironNgn/tree';
 import { wrap, ensureDefaultView, pruneUnreachableTombstones, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type FolderNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
-import { checkLinkIntegrity, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
+import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
 import { predIri, nodeIri, nodeExists } from '@aperas/core/apeironNgn/vocab';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runAddBlockLink, runRemoveBlockLink } from './kgLink';
@@ -1123,6 +1123,24 @@ Old-style reference, never ingested: [old](linking-a.md#h1-heading).
       throw new Error(`Expected ${citingBlockSummary.id}'s own discrepancy to name the dropped code '${rootBareCode}', got: ${JSON.stringify(droppedDisc)}`);
     }
     console.log(`   - Detected the dropped link precisely: ${citingBlockSummary.id} now missing '${rootBareCode}' (discrepancies ${initialReport.discrepancies.length} -> ${reportWithDropped.discrepancies.length}).`);
+
+    // The scoped variant `service.ts` runs after every write must agree with the corpus sweep on the
+    // same data — it's the same check restricted to one artifact's own live blocks, so a finding the
+    // corpus pass reports inside this artifact must appear here too, and `owningArtifactId` must walk
+    // back to that artifact from the offending block on its own.
+    const scopedArtifactId = owningArtifactId(store, citingBlockSummary.id);
+    if (scopedArtifactId !== demoId) {
+      throw new Error(`Expected owningArtifactId to walk ${citingBlockSummary.id} back to ${demoId}, got ${scopedArtifactId}.`);
+    }
+    const scopedReport = checkArtifactLinkIntegrity(store, scopedArtifactId);
+    const scopedDisc = scopedReport.discrepancies.find((d) => d.blockId === citingBlockSummary.id);
+    if (!scopedDisc || !scopedDisc.missingCodes.includes(rootBareCode)) {
+      throw new Error(`Expected the scoped artifact check to report the same dropped code '${rootBareCode}', got: ${JSON.stringify(scopedReport.discrepancies)}`);
+    }
+    if (scopedReport.totalLiveBlocks >= reportWithDropped.totalLiveBlocks) {
+      throw new Error(`Expected the scoped check to inspect fewer blocks than the corpus sweep (${scopedReport.totalLiveBlocks} vs ${reportWithDropped.totalLiveBlocks}) — it isn't actually scoped.`);
+    }
+    console.log(`   - Scoped check agrees: same discrepancy found inspecting ${scopedReport.totalLiveBlocks} blocks of one artifact, vs ${reportWithDropped.totalLiveBlocks} corpus-wide.`);
 
     const repairResult = repairLinkIntegrity(store);
     if (repairResult.reportAfter.discrepancies.length !== initialReport.discrepancies.length) {

@@ -1017,10 +1017,24 @@ export function collectLinkTargetsByBlock(node: TreeNode, out: Map<string, Set<s
  *  to drop them all unconditionally before this could ever be checked). Must run at the same point
  *  `collectLinkTargetsByBlock` does — before `hydrateFromParsed` touches anything — since this is
  *  the only moment a matched block's *old* wikilink `Link`s are both still live and known to be
- *  old. Exported for the same reason as `collectLinkTargetsByBlock` above. */
+ *  old. Exported for the same reason as `collectLinkTargetsByBlock` above.
+ *
+ * `recursive` (default `true`) must stay `true` for every caller whose own `pendingLinks` is
+ * *also* built by walking `node`'s whole subtree (`ingestArtifact`'s `extractLinkCodes(finalRoot)`,
+ * `kg:update`'s reconcile branch on `finalTree`) — `resolveBlockLinks`'s block loop unions this
+ * map's keys with `pendingLinks`' own, so the two must cover the same population or a block present
+ * in one but not the other gets reprocessed with zero codes and its real `.links` wiped to empty.
+ * Pass `false` for a caller whose `pendingLinks` covers only `node` itself, never its children —
+ * `kg:update --text-only` (whose `overflow` prepends new content but leaves existing children
+ * completely untouched) and `repairLinkIntegrity` (whose `pendingLinks` covers only the blocks a
+ * discrepancy report actually names, not their descendants) both need this: recursing into
+ * `node`'s real children in either case populated old-wikilink entries for blocks `pendingLinks`
+ * never touches, and the exact same union-driven wipe followed (`issues/linking.md`'s Open Issues
+ * (3), and `check-links --repair` turning 2 discrepancies into 16 by the same mechanism). */
 export function collectOldWikilinksByBlock(
   node: TreeNode,
-  out: Map<string, Array<{ id: string; target: string; positions: number[] }>>
+  out: Map<string, Array<{ id: string; target: string; positions: number[] }>>,
+  recursive = true
 ): void {
   const links = (node.links as unknown as Link[] | undefined) ?? [];
   const wikilinks = links.filter((l) => l.predicate === WIKILINK_PREDICATE && l.target);
@@ -1034,6 +1048,7 @@ export function collectOldWikilinksByBlock(
       }))
     );
   }
+  if (!recursive) return;
   for (const child of node.treeChildren) {
     if (nodeKindFromId(child.id) === 'BlockNode') collectOldWikilinksByBlock(child, out);
   }

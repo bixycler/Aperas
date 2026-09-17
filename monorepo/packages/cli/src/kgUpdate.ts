@@ -165,7 +165,16 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   const oldLinkTargets = new Map<string, Set<string>>();
   const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
   collectLinkTargetsByBlock(target, oldLinkTargets);
-  collectOldWikilinksByBlock(target, oldWikilinksByBlock);
+  // Recursive (the default) only for the reconcile branch below, whose own `pendingLinks` is built
+  // from `extractLinkCodes(finalTree)` over `target`'s *entire* post-reconciliation subtree — the
+  // same "both maps cover the same population" invariant `collectOldWikilinksByBlock`'s own doc
+  // comment names. `--text-only` mode's `pendingLinks` covers only `target` itself plus the freshly
+  // parsed `overflow` (brand-new blocks with no "old" wikilinks to speak of) — never `target`'s real
+  // *existing* children, which stay completely untouched. Recursing into them here anyway is exactly
+  // the bug `repairLinkIntegrity` had (`issues/linking.md`'s Open Issues (3)): `resolveBlockLinks`'s
+  // key-union would reprocess each with zero pending codes and wipe its real `.links` to empty.
+  // Confirmed live twice on real headings with real children before this fix.
+  collectOldWikilinksByBlock(target, oldWikilinksByBlock, !req.textOnly);
   const artifactId = findEnclosingArtifactId(target) ?? undefined;
 
   // A fresh tree-anchor/props only ever arrives alongside a genuine heading retitle (the piped

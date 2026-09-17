@@ -50,6 +50,10 @@ const LINKING_UNTRACKED_PATH = `${DEMO_DIR}/linking-untracked-referrer.md`;
 // remove. Self-contained the same way 13-18 already are: an anchor-tagged target heading plus a
 // citing paragraph, both freshly minted here.
 const LINKING_CHECK_PATH = `${DEMO_DIR}/linking-check-integrity.md`;
+// Own fixture for step 20 (`kg:update --text-only`'s own scope-mismatch regression, the sibling
+// bug to step 19's `repairLinkIntegrity` one) — a heading with a real child that carries a
+// resolved wikilink, distinct from every other fixture above.
+const LINKING_TEXTONLY_PATH = `${DEMO_DIR}/linking-textonly-scope.md`;
 
 export async function runApeironNgnExtendedVerification(): Promise<void> {
   console.log("=================================================");
@@ -397,6 +401,16 @@ Content for the link-integrity sweep test to cite.
 ## Citation
 
 A [self-reference](#check-link-integrity/target) back to the target above.
+
+## Other Target <a name='check-link-integrity/other-target' class='aperas-anchor aperas-tree'></a>
+
+Unrelated content that a separate citation below points to.
+
+## Other Citation
+
+An [unrelated reference](#check-link-integrity/other-target) that must survive a repair of the
+*other* citation above untouched — same \`Link\` id, same target — since \`repairLinkIntegrity\`
+must never reprocess a block the discrepancy report didn't name.
 `, 'utf-8');
     trackArtifact(store, LINKING_CHECK_PATH);
     ingestFolderTree(store);
@@ -416,6 +430,23 @@ A [self-reference](#check-link-integrity/target) back to the target above.
     const targetLink = citingLinks.find((l) => l.target?.id === targetHeading.id);
     if (!targetLink) {
       throw new Error(`Expected the citing paragraph to carry a resolved Link targeting ${targetHeading.id}, got: ${JSON.stringify(citingLinks)}`);
+    }
+
+    // The unrelated pair, captured before anything is dropped — `repairLinkIntegrity` must never
+    // touch this block at all, since the discrepancy report below never names it. Regression check
+    // for the incident this fixture exists to catch: `oldWikilinksByBlock` used to be built by
+    // walking the *whole artifact*, so `resolveBlockLinks`'s own key-union reprocessed every other
+    // link-bearing block in it too — this one included — with zero pending codes, wiping its real
+    // `.links` to empty (2 discrepancies became 16 on a real corpus artifact).
+    const otherTargetHeading = findHeadingByTitle(linkCheckArtifact, 'Other Target');
+    if (!otherTargetHeading) throw new Error(`Expected to find the 'Other Target' heading in '${LINKING_CHECK_PATH}'.`);
+    const otherCitingSummary = findByText(linkCheckArtifact, 'unrelated reference');
+    if (!otherCitingSummary) throw new Error('Expected to find the unrelated citing paragraph.');
+    const otherCitingBlock = wrap(store, otherCitingSummary.id) as unknown as BlockNode;
+    const otherLinksBefore = (otherCitingBlock.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [];
+    const otherLinkBefore = otherLinksBefore.find((l) => l.target?.id === otherTargetHeading.id);
+    if (!otherLinkBefore) {
+      throw new Error(`Expected the unrelated citing paragraph to carry a resolved Link targeting ${otherTargetHeading.id}, got: ${JSON.stringify(otherLinksBefore)}`);
     }
     for (const q of store.match(nodeIri(citingBlockSummary.id), predIri('links'), nodeIri(targetLink.id), null)) store.delete(q);
 
@@ -456,7 +487,77 @@ A [self-reference](#check-link-integrity/target) back to the target above.
       throw new Error(`Expected repairLinkIntegrity to re-resolve ${citingBlockSummary.id}'s link back onto ${targetHeading.id}.`);
     }
     console.log(`   - repairLinkIntegrity executed: ${repairResult.repairedArtifacts.length} artifact(s) re-resolved, link restored, discrepancies back to ${repairResult.reportAfter.discrepancies.length}.`);
+
+    // The regression check: the unrelated block the discrepancy report never named must come out of
+    // the repair completely untouched — same Link id, same target, not wiped and not reminted.
+    const otherCitingAfter = wrap(store, otherCitingSummary.id) as unknown as BlockNode;
+    const otherLinksAfter = (otherCitingAfter.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [];
+    const otherLinkAfter = otherLinksAfter.find((l) => l.target?.id === otherTargetHeading.id);
+    if (!otherLinkAfter) {
+      throw new Error(`Expected repairLinkIntegrity to leave the unrelated citing paragraph's Link to ${otherTargetHeading.id} in place, but '.links' is now: ${JSON.stringify(otherLinksAfter)}`);
+    }
+    if (otherLinkAfter.id !== otherLinkBefore.id) {
+      throw new Error(`Expected repairLinkIntegrity to leave the unrelated Link's id untouched (${otherLinkBefore.id}), but it's now ${otherLinkAfter.id} — reminted despite not being named in the discrepancy report.`);
+    }
+    console.log(`   - Unrelated Link ${otherLinkAfter.id} (never named in the discrepancy report) survived the repair untouched.`);
     console.log("   [✓] checkLinkIntegrity and repairLinkIntegrity sweeps verified successfully.\n");
+
+    console.log("20. Testing kg:update --text-only doesn't wipe an untouched real child's wikilink (the sibling bug to step 19 — issues/linking.md's Open Issues (3))...");
+    writeFileSync(join(getArtifactsDir(), LINKING_TEXTONLY_PATH), `# Update Text-Only Scope
+
+## Parent Heading
+
+Parent's own original leading text.
+
+### Child Citation
+
+A [child self-reference](#update-text-only-scope/target) to the target below.
+
+## Target <a name='update-text-only-scope/target' class='aperas-anchor aperas-tree'></a>
+
+Content the child citation points to.
+`, 'utf-8');
+    trackArtifact(store, LINKING_TEXTONLY_PATH);
+    ingestFolderTree(store);
+    ingestArtifact(store, LINKING_TEXTONLY_PATH);
+    const textOnlyId = findByExactPath(store, LINKING_TEXTONLY_PATH);
+    if (!textOnlyId) throw new Error(`Expected '${LINKING_TEXTONLY_PATH}' to be tracked after ingestion.`);
+    const textOnlyArtifact = wrap(store, textOnlyId) as unknown as ArtifactNode;
+    const parentHeading = findHeadingByTitle(textOnlyArtifact, 'Parent Heading');
+    if (!parentHeading) throw new Error(`Expected to find the 'Parent Heading' heading in '${LINKING_TEXTONLY_PATH}'.`);
+    const textOnlyTargetHeading = findHeadingByTitle(textOnlyArtifact, 'Target');
+    if (!textOnlyTargetHeading) throw new Error(`Expected to find the 'Target' heading in '${LINKING_TEXTONLY_PATH}'.`);
+    const childCitationSummary = findByText(textOnlyArtifact, 'child self-reference');
+    if (!childCitationSummary) throw new Error('Expected to find the child citing paragraph.');
+    const childCitationBlock = wrap(store, childCitationSummary.id) as unknown as BlockNode;
+    const childLinksBefore = (childCitationBlock.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [];
+    const childLinkBefore = childLinksBefore.find((l) => l.target?.id === textOnlyTargetHeading.id);
+    if (!childLinkBefore) {
+      throw new Error(`Expected the child citing paragraph to carry a resolved Link targeting ${textOnlyTargetHeading.id}, got: ${JSON.stringify(childLinksBefore)}`);
+    }
+
+    // The write under test: `--text-only` on the *parent* heading, touching none of the child's own
+    // text or links directly — piping a bare heading line, exactly the "holder promotion" shape that
+    // originally surfaced this bug (issues/linking.md's Open Issues (3)).
+    runUpdate(store, { path: `aperas://id/${parentHeading.id}`, markdown: '## Parent Heading\n', textOnly: true });
+    const parentAfter = wrap(store, parentHeading.id) as unknown as BlockNode;
+    if (parentAfter.text !== undefined) {
+      throw new Error(`Expected the --text-only update to leave 'Parent Heading' with no leading text (bare heading line piped), got: ${JSON.stringify(parentAfter.text)}`);
+    }
+    const childAfter = wrap(store, childCitationSummary.id) as unknown as BlockNode;
+    const childLinksAfter = (childAfter.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [];
+    const childLinkAfter = childLinksAfter.find((l) => l.target?.id === textOnlyTargetHeading.id);
+    if (!childLinkAfter) {
+      throw new Error(`Expected 'Parent Heading's --text-only update to leave the untouched child's Link to ${textOnlyTargetHeading.id} in place, but '.links' is now: ${JSON.stringify(childLinksAfter)}`);
+    }
+    if (childLinkAfter.id !== childLinkBefore.id) {
+      throw new Error(`Expected the child's Link id to survive untouched (${childLinkBefore.id}), but it's now ${childLinkAfter.id} — reminted despite the child never being part of this write.`);
+    }
+    if (!parentAfter.treeChildren.some((c) => c.id === childCitationBlock.id)) {
+      throw new Error(`Expected 'Child Citation' to remain 'Parent Heading's own child after the --text-only update.`);
+    }
+    console.log(`   - --text-only update on the parent left the untouched child's Link ${childLinkAfter.id} in place, unchanged.`);
+    console.log("   [✓] kg:update --text-only scope fix verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Extended Verification complete!");
   } finally {

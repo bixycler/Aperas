@@ -217,14 +217,22 @@ export interface RepairLinkIntegrityResult {
  * process (which can be substantial — see `checkLinkIntegrity`'s own `APERAS_DEBUG_TIMING` notes).
  *
  * Re-resolves only the blocks the report actually names as discrepant, not every link-bearing
- * block in the affected artifact, and passes those blocks' pre-existing wikilink `Link`s
- * (`collectOldWikilinksByBlock`, the same map `ingestFromDisk` builds before an ordinary
- * `resolveBlockLinks` call) so a match on target reuses the old `Link`'s id instead of minting a
- * fresh one. Both matter: without the first, a repair touches every block in the artifact whether
- * or not anything in it was ever wrong; without the second, even a touched block's *other*,
- * already-correct wikilinks would still be reminted, since `resolveBlockLinks` has no old-Link map
- * to reuse from otherwise (`issues/linking.md` — `check-links --repair` re-minted every `Link` id
- * in the affected artifact for exactly this reason).
+ * block in the affected artifact, and passes those *same named blocks'* own pre-existing wikilink
+ * `Link`s (`collectOldWikilinksByBlock` called per block with `recursive: false`, never descending
+ * into a named block's children) so a match on target reuses the old `Link`'s id instead of minting
+ * a fresh one. Both matter, and both must cover the *identical* set of blocks: without the first, a
+ * repair touches every block in the artifact whether or not anything in it was ever wrong; without
+ * the second, even a touched block's *other*, already-correct wikilinks would still be reminted,
+ * since `resolveBlockLinks` has no old-Link map to reuse from otherwise (`issues/linking.md` —
+ * `check-links --repair` re-minted every `Link` id in the affected artifact for exactly this
+ * reason). A now-fixed second-order bug lived in that pairing itself: this used to build
+ * `oldWikilinksByBlock` by walking the *whole artifact* (`collectOldWikilinksByBlock(artifactNode,
+ * ...)`, recursive) while `pendingLinks` stayed scoped to just the named blocks — `resolveBlockLinks`
+ * unions the two maps' keys, so every *other* link-bearing block in the artifact got reprocessed
+ * with zero pending codes and its real `.links` wiped to empty. Confirmed live: 2 discrepancies
+ * became 16 on a single repair of `issues/linking.md`. `collectOldWikilinksByBlock`'s own doc
+ * comment carries the general version of this invariant — its `recursive` parameter exists because
+ * of this exact incident.
  */
 export function repairLinkIntegrity(store: Store, knownReportBefore?: LinkIntegrityReport): RepairLinkIntegrityResult {
   const reportBefore = knownReportBefore ?? checkLinkIntegrity(store);
@@ -243,13 +251,14 @@ export function repairLinkIntegrity(store: Store, knownReportBefore?: LinkIntegr
     const artifactId = findByExactPath(store, artifactPath);
     if (!artifactId) continue;
 
-    const artifactNode = wrap(store, artifactId) as unknown as TreeNode;
+    // Built from exactly the named discrepant blocks below, non-recursively — never from the whole
+    // artifact — so its key population can never exceed `pendingLinks`' own (see this function's
+    // own doc comment above).
     const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
-    collectOldWikilinksByBlock(artifactNode, oldWikilinksByBlock);
-
     const pendingLinks: PendingLinkCodes[] = [];
     for (const d of discrepanciesByArtifact.get(artifactPath)!) {
       const block = wrap(store, d.blockId) as unknown as BlockNode;
+      collectOldWikilinksByBlock(block, oldWikilinksByBlock, false);
       if (!block.text) continue;
       const codes = collectLinkCodesFromText(block.text);
       if (codes.length > 0) {

@@ -12,6 +12,18 @@
 }
 .app-header h1 { font-size: 1.1rem; margin: 0; opacity: 0.7; }
 
+.poll-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  opacity: 0.75;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.poll-toggle input { cursor: pointer; }
+
 .breadcrumbs {
   padding: 0.5rem 0;
   font-family: ui-monospace, monospace;
@@ -24,14 +36,45 @@
 .status { opacity: 0.6; font-style: italic; }
 .status-error { color: #c0392b; font-style: normal; }
 
+/* Sits in `.app-header`, pushed to the far right by `margin-left: auto` on this flex row — constant
+ * height and a capped width whether empty, "Loading…", or an error, so the background poll toggling
+ * this every second never reflows the header's other items or wraps to a second line. */
+.status-bar {
+  margin-left: auto;
+  min-height: 1.4rem;
+  max-width: 20rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 0.85rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .tree {
   font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
   font-size: 0.85rem;
   line-height: 1.5;
 }
 
-.fd-node { margin-left: calc(var(--depth, 0) * 0px); }
-.fd-children { margin-left: 1.1rem; border-left: 1px dotted #8884; padding-left: 0.6rem; }
+/* Two-column layout: a fixed-width gutter (arrow, then a stem line filling the rest of this node's
+ * own height) beside the content column (the line itself, abstract, and nested children). Indentation
+ * per depth then falls out for free — each nested `.fd-node` is a `.fd-children` block inside the
+ * parent's own `.fd-content`, so it starts exactly one gutter-width to the right of its parent's. */
+.fd-node { display: flex; }
+/* Arrow and stem are one clickable/hoverable unit (`Gutter` in FolderDiv.tsx) — matching the original
+ * vanilla FolderDiv.js's single `<label>` wrapping both, rather than two independently-styled
+ * controls. `.fd-gutter-active` only gets `cursor: pointer` — a leaf row with nothing to toggle still
+ * reads as inert. */
+.fd-gutter { display: flex; flex-direction: column; align-items: center; width: 1.2rem; flex-shrink: 0; }
+.fd-gutter-active { cursor: pointer; }
+.fd-gutter-toggle { display: flex; align-items: center; line-height: 1.5; }
+/* The clickable hit area is the full gutter width (easy to hit, like the reference outliner's own
+ * guide line), not just the 1px line — `.fd-stem-line` is only the visible mark, centered in it. */
+.fd-stem { flex: 1; width: 100%; display: flex; justify-content: center; }
+.fd-stem-line { width: 1px; align-self: stretch; background: #8886; transition: background-color 0.1s ease; }
+.fd-content { flex: 1; min-width: 0; }
 
 .fd-line {
   display: flex;
@@ -46,15 +89,18 @@
 .fd-arrow {
   display: inline-block;
   width: 0.9em;
-  cursor: pointer;
   transform: rotate(0deg);
-  transition: transform 0.1s ease;
+  transition: transform 0.1s ease, opacity 0.1s ease, color 0.1s ease;
   opacity: 0.6;
   user-select: none;
 }
-.fd-arrow:hover { opacity: 1; }
 .fd-arrow-open { transform: rotate(90deg); }
 .fd-arrow-spacer { display: inline-block; width: 0.9em; }
+/* Hovering anywhere in the gutter — the arrow or the stem below it — highlights both together, and
+ * only the line itself (color), never a background wash across the gutter (that read as an
+ * unrelated hover-highlight box, not part of the arrow/stem control). */
+.fd-gutter-active:hover .fd-arrow { opacity: 1; color: #6ab0f3; }
+.fd-gutter-active:hover .fd-stem-line { background: #6ab0f3; }
 
 .fd-kind { opacity: 0.5; font-size: 0.8em; }
 .fd-title { font-weight: 600; }
@@ -62,7 +108,7 @@
 
 .fd-abstract {
   margin-left: 1.7rem;
-  opacity: 0.75;
+  opacity: 1;
   white-space: pre-wrap;
 }
 .fd-muted { font-style: italic; opacity: 0.5; }
@@ -84,8 +130,12 @@
 .fd-link .fd-title { font-weight: 400; font-style: italic; }
 .fd-link-text { cursor: pointer; }
 .fd-link-text:hover { text-decoration: underline; }
-.fd-preview .fd-title { opacity: 0.8; }
-.fd-pointer .fd-title, .fd-outside .fd-title { opacity: 0.7; }
+/* Only the title is link-highlighted (the same blue as an inline wikilink, `.inline-link`) — the
+ * target's abstract below it renders as `.fd-abstract` always does, at full brightness, not blue, so
+ * a link preview reads as "a title, then its actual body text" rather than one highlighted run. The
+ * old `opacity: 0.7-0.8` dimming on these titles is gone: it fought the highlight instead of it being
+ * the brightest thing on the line, which it should be. */
+.fd-link-title { color: #4a9eff; }
 .fd-dangling .fd-title { color: #c0392b; opacity: 0.8; }
 .fd-breadcrumb { margin-left: 1.7rem; opacity: 0.5; font-size: 0.8em; }
 
@@ -145,7 +195,9 @@
   font-size: 0.92em;
 }
 .link-popover-title { font-weight: 600; margin-bottom: 0.25rem; }
-.link-popover-abstract { color: var(--fg-muted); }
+/* Was `var(--fg-muted)` — dimmer than the title for no real reason, same over-dimming already fixed
+ * on `.fd-abstract` and the link-row title. Inherits `.link-popover`'s own full-brightness `--fg`. */
+.link-popover-abstract { color: var(--fg); }
 .link-popover-unfold {
   margin-top: 0.4rem;
   font: inherit;

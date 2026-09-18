@@ -40,6 +40,7 @@ export interface RenderLinkItem {
   predicate: string;
   targetId?: string;
   targetTitle?: string;
+  targetDisplayLabel?: string;
   abstract?: string;
   mode: 'no-target' | 'preview' | 'expanded' | 'pointer' | 'outside-view';
   hiddenCount?: number;

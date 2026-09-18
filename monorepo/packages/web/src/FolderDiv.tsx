@@ -30,16 +30,62 @@ export interface FolderDivProps {
   onEdit: (id: string, text: string) => Promise<void>;
 }
 
-function Arrow(props: { open: boolean; onClick: () => void }) {
+/** Compact glyphs for the node-kind tag, replacing the old `[FolderNode]`/`[heading]`/... bracket
+ * label. Only the kinds design/webapp.md's UI review actually called out get one; anything else
+ * (`listItem`, `code`, `table`, ...) gets no tag at all — `undefined` rather than the bare type name,
+ * so the caller can skip rendering the tag's span entirely instead of leaving an empty one in the
+ * flex row (which would still eat a `gap`). */
+const KIND_GLYPH: Record<string, string> = {
+  FolderNode: '📂',
+  ArtifactNode: '📄',
+  heading: '§',
+  paragraph: '¶',
+};
+function kindGlyph(displayLabel: string | undefined): string | undefined {
+  return displayLabel ? KIND_GLYPH[displayLabel] : undefined;
+}
+
+/** The target's own kind glyph, right after the link glyph — so a reader can tell what a link
+ * resolves to (a folder, a heading, ...) without unfolding it. Nothing to show for `no-target`: with
+ * no target there's no kind to name. */
+function LinkKind(props: { targetDisplayLabel?: string }) {
   return (
-    <span
-      class="fd-arrow"
-      classList={{ 'fd-arrow-open': props.open }}
-      onClick={(e) => { e.stopPropagation(); props.onClick(); }}
-      title={props.open ? 'Fold' : 'Unfold'}
+    <>
+      <span class="fd-kind">🔗</span>
+      <Show when={kindGlyph(props.targetDisplayLabel)}>
+        {(glyph) => <span class="fd-kind">{glyph()}</span>}
+      </Show>
+    </>
+  );
+}
+
+/** Purely presentational — the click/hover behavior lives one level up, on the whole `.fd-gutter`
+ * (arrow and stem together), matching the original vanilla `FolderDiv.js`'s single `<label>` wrapping
+ * both: hovering or clicking either the arrow or the stem line below it is the same action. */
+function Arrow(props: { open: boolean }) {
+  return <span class="fd-arrow" classList={{ 'fd-arrow-open': props.open }}>▶</span>;
+}
+
+/** The gutter itself: arrow (or spacer) on top, a stem line filling the rest of this node's height
+ * when it has visible children. `onToggle` undefined means nothing to do — no arrow, no stem, no
+ * hover/pointer affordance (e.g. a link's `pointer`/`outside-view`/`no-target` rows). */
+function Gutter(props: { arrow?: boolean; open?: boolean; hasStem: boolean; onToggle?: () => void }) {
+  return (
+    <div
+      class="fd-gutter"
+      classList={{ 'fd-gutter-active': !!props.onToggle }}
+      onClick={props.onToggle ? (e) => { e.stopPropagation(); props.onToggle!(); } : undefined}
+      title={props.onToggle ? (props.open ? 'Fold' : 'Unfold') : undefined}
     >
-      ▶
-    </span>
+      <div class="fd-gutter-toggle">
+        <Show when={props.arrow} fallback={<span class="fd-arrow-spacer" />}>
+          <Arrow open={!!props.open} />
+        </Show>
+      </div>
+      <Show when={props.hasStem}>
+        <div class="fd-stem"><div class="fd-stem-line" /></div>
+      </Show>
+    </div>
   );
 }
 
@@ -115,41 +161,55 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
           const canToggle = n.hiddenCount > 0 || n.tier === 'unfolded';
           const isOpen = n.tier === 'unfolded';
           const [editing, setEditing] = createSignal(false);
+          const hasChildren = () => !n.truncated && n.children.length > 0;
           return (
-            <div class="fd-node" style={{ '--depth': n.depth }}>
-              <div
-                class="fd-line"
-                classList={{ 'fd-title-only': n.tier === 'title-only' }}
-                onClick={(e) => { if (e.ctrlKey || e.metaKey) props.onZoom(n.id); }}
-                title="Ctrl-click to zoom in"
-              >
-                <Show when={canToggle} fallback={<span class="fd-arrow-spacer" />}>
-                  <Arrow open={isOpen} onClick={() => props.onFold(n.id, isOpen ? 'fold' : 'unfold')} />
+            <div class="fd-node">
+              {/* Arrow and stem are one unit (`Gutter`) sharing this fixed-width column, so the stem
+                  is mechanically centered under the arrow rather than lined up by a separately-guessed
+                  margin (the old `.fd-children` border-left, which had no actual relationship to the
+                  arrow's own position). `.fd-gutter` stretches to the full height of `.fd-content`
+                  (default flex `align-items: stretch`), so the stem's `flex: 1` fills exactly from
+                  under the arrow down to the last child. */}
+              <Gutter
+                arrow={canToggle}
+                open={isOpen}
+                hasStem={hasChildren()}
+                onToggle={canToggle ? () => props.onFold(n.id, isOpen ? 'fold' : 'unfold') : undefined}
+              />
+              <div class="fd-content">
+                <div
+                  class="fd-line"
+                  classList={{ 'fd-title-only': n.tier === 'title-only' }}
+                  onClick={(e) => { if (e.ctrlKey || e.metaKey) props.onZoom(n.id); }}
+                  title="Ctrl-click to zoom in"
+                >
+                  <Show when={kindGlyph(n.displayLabel)}>
+                    {(glyph) => <span class="fd-kind">{glyph()}</span>}
+                  </Show>
+                  <span class="fd-title"><Inline text={n.title} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></span>
+                  <Tags holder={n.holder} starred={n.starred} tombstonedAt={n.tombstonedAt} hiddenCount={n.hiddenCount} />
+                  <Show when={!editing()}>
+                    <span class="fd-edit-btn" onClick={(e) => { e.stopPropagation(); setEditing(true); }} title="Edit this node's own text">✎</span>
+                  </Show>
+                </div>
+                <Show when={editing()}>
+                  <Editor id={n.id} onSave={(text) => props.onEdit(n.id, text)} onCancel={() => setEditing(false)} />
                 </Show>
-                <span class="fd-kind">[{n.displayLabel}]</span>
-                <span class="fd-title"><Inline text={n.title} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></span>
-                <Tags holder={n.holder} starred={n.starred} tombstonedAt={n.tombstonedAt} hiddenCount={n.hiddenCount} />
-                <Show when={!editing()}>
-                  <span class="fd-edit-btn" onClick={(e) => { e.stopPropagation(); setEditing(true); }} title="Edit this node's own text">✎</span>
+                <Show when={!editing() && n.tier !== 'title-only' && n.abstract !== undefined}>
+                  <div class="fd-abstract"><Inline text={n.abstract} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></div>
+                </Show>
+                <Show when={n.isTextlessList}>
+                  <div class="fd-abstract fd-muted">(no text of its own)</div>
+                </Show>
+                <Show when={n.truncated}>
+                  <div class="fd-ellipsis">…</div>
+                </Show>
+                <Show when={hasChildren()}>
+                  <div class="fd-children">
+                    <For each={n.children}>{(child) => <FolderDiv {...props} item={child} />}</For>
+                  </div>
                 </Show>
               </div>
-              <Show when={editing()}>
-                <Editor id={n.id} onSave={(text) => props.onEdit(n.id, text)} onCancel={() => setEditing(false)} />
-              </Show>
-              <Show when={!editing() && n.tier !== 'title-only' && n.abstract !== undefined}>
-                <div class="fd-abstract"><Inline text={n.abstract} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></div>
-              </Show>
-              <Show when={n.isTextlessList}>
-                <div class="fd-abstract fd-muted">(no text of its own)</div>
-              </Show>
-              <Show when={n.truncated}>
-                <div class="fd-ellipsis">…</div>
-              </Show>
-              <Show when={!n.truncated && n.children.length > 0}>
-                <div class="fd-children">
-                  <For each={n.children}>{(child) => <FolderDiv {...props} item={child} />}</For>
-                </div>
-              </Show>
             </div>
           );
         })()}
@@ -167,89 +227,103 @@ function PassthroughChildren(props: FolderDivProps & { item: Extract<RenderItem,
   );
 }
 
-function LinkPreview(props: { title?: string; abstract?: string; onNavigate: (id: string) => void }) {
+/** The target's abstract, broken out of the title line into its own row — same `.fd-abstract` a
+ * normal node's own text renders in, not the link-highlighted title color, so a link preview reads
+ * as "a title, then its actual body text" rather than one long highlighted run. */
+function LinkAbstract(props: { text?: string; onNavigate: (id: string) => void }) {
   return (
-    <>
-      <Inline text={props.title} onNavigate={props.onNavigate} />
-      <Show when={props.abstract !== undefined}>
-        {'  —  '}<Inline text={props.abstract} onNavigate={props.onNavigate} />
-      </Show>
-    </>
+    <Show when={props.text !== undefined}>
+      <div class="fd-abstract"><Inline text={props.text} onNavigate={props.onNavigate} /></div>
+    </Show>
   );
 }
 
 function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'link' }> }) {
   const l = () => props.item;
+  const hasChildren = () => l().mode === 'expanded' && l().children.length > 0;
 
   return (
-    <div class="fd-node fd-link" style={{ '--depth': l().depth }}>
-      <Show when={l().mode === 'no-target'}>
-        <div class="fd-line fd-dangling">
-          <span class="fd-arrow-spacer" />
-          <span class="fd-kind">[Link]</span>
-          <span class="fd-title">{l().predicate} — no target</span>
-        </div>
-      </Show>
-
-      <Show when={l().mode === 'preview'}>
-        <div class="fd-line fd-preview" onClick={() => props.onFold(l().linkId, 'unfold')} title="Click to unfold">
-          <Arrow open={false} onClick={() => props.onFold(l().linkId, 'unfold')} />
-          <span class="fd-kind">[Link]</span>
-          <span class="fd-title fd-link-text"><LinkPreview title={l().targetTitle} abstract={l().abstract} onNavigate={props.onZoom} /></span>
-          <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
-        </div>
-      </Show>
-
-      <Show when={l().mode === 'expanded'}>
-        <div class="fd-line">
-          <Arrow open={true} onClick={() => props.onFold(l().linkId, 'fold')} />
-          <span class="fd-kind">[Link]</span>
-          <span
-            class="fd-title fd-link-text"
-            onClick={(e) => { if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!); }}
-            title="Ctrl-click to zoom to this link's target"
-          >
-            <LinkPreview title={l().targetTitle} abstract={l().abstract} onNavigate={props.onZoom} />
-          </span>
-          <Tags starred={l().starred} tombstonedAt={l().tombstonedAt} />
-        </div>
-        <Show when={l().zoomPath !== undefined}>
-          <div class="fd-breadcrumb">aperas://tree/{l().zoomPath}</div>
-        </Show>
-        <Show when={l().children.length > 0}>
-          <div class="fd-children">
-            <For each={l().children}>{(child) => <FolderDiv {...props} item={child} />}</For>
+    <div class="fd-node fd-link">
+      {/* Same `Gutter` unit as `NodeRow`. Only 'preview' (unfold) and 'expanded' (fold) have anything
+          to toggle; the other three render a plain spacer with no hover/click affordance at all,
+          same as before. */}
+      <Gutter
+        arrow={l().mode === 'preview' || l().mode === 'expanded'}
+        open={l().mode === 'expanded'}
+        hasStem={hasChildren()}
+        onToggle={
+          l().mode === 'preview' ? () => props.onFold(l().linkId, 'unfold')
+          : l().mode === 'expanded' ? () => props.onFold(l().linkId, 'fold')
+          : undefined
+        }
+      />
+      <div class="fd-content">
+        <Show when={l().mode === 'no-target'}>
+          <div class="fd-line fd-dangling">
+            <span class="fd-kind">🔗</span>
+            <span class="fd-title">{l().predicate} — no target</span>
           </div>
         </Show>
-      </Show>
 
-      <Show when={l().mode === 'pointer'}>
-        <div
-          class="fd-line fd-pointer"
-          onClick={() => { if (l().targetId) props.onZoom(l().targetId!); }}
-          title="Jump to this link's canonical position"
-        >
-          <span class="fd-arrow-spacer" />
-          <span class="fd-kind">[Link]</span>
-          <span class="fd-title fd-link-text"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
-          <Tags tombstonedAt={l().tombstonedAt} />
-          <span class="fd-tag">see {l().pointerTarget}</span>
-        </div>
-      </Show>
+        <Show when={l().mode === 'preview'}>
+          <div class="fd-line fd-preview" onClick={() => props.onFold(l().linkId, 'unfold')} title="Click to unfold">
+            <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
+            <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
+            <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
+          </div>
+          <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
+        </Show>
 
-      <Show when={l().mode === 'outside-view'}>
-        <div
-          class="fd-line fd-outside"
-          onClick={() => { if (l().targetId) props.onZoom(l().targetId!); }}
-          title="Click to zoom out to this ancestor"
-        >
-          <span class="fd-arrow-spacer" />
-          <span class="fd-kind">[Link]</span>
-          <span class="fd-title fd-link-text"><LinkPreview title={l().targetTitle} abstract={l().abstract} onNavigate={props.onZoom} /></span>
-          <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
-          <span class="fd-tag">outside view</span>
-        </div>
-      </Show>
+        <Show when={l().mode === 'expanded'}>
+          <div class="fd-line">
+            <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
+            <span
+              class="fd-title fd-link-text fd-link-title"
+              onClick={(e) => { if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!); }}
+              title="Ctrl-click to zoom to this link's target"
+            >
+              <Inline text={l().targetTitle} onNavigate={props.onZoom} />
+            </span>
+            <Tags starred={l().starred} tombstonedAt={l().tombstonedAt} />
+          </div>
+          <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
+          <Show when={l().zoomPath !== undefined}>
+            <div class="fd-breadcrumb">aperas://tree/{l().zoomPath}</div>
+          </Show>
+          <Show when={hasChildren()}>
+            <div class="fd-children">
+              <For each={l().children}>{(child) => <FolderDiv {...props} item={child} />}</For>
+            </div>
+          </Show>
+        </Show>
+
+        <Show when={l().mode === 'pointer'}>
+          <div
+            class="fd-line fd-pointer"
+            onClick={() => { if (l().targetId) props.onZoom(l().targetId!); }}
+            title="Jump to this link's canonical position"
+          >
+            <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
+            <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
+            <Tags tombstonedAt={l().tombstonedAt} />
+            <span class="fd-tag">see {l().pointerTarget}</span>
+          </div>
+        </Show>
+
+        <Show when={l().mode === 'outside-view'}>
+          <div
+            class="fd-line fd-outside"
+            onClick={() => { if (l().targetId) props.onZoom(l().targetId!); }}
+            title="Click to zoom out to this ancestor"
+          >
+            <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
+            <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
+            <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
+            <span class="fd-tag">outside view</span>
+          </div>
+          <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
+        </Show>
+      </div>
     </div>
   );
 }

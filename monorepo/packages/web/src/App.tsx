@@ -1,4 +1,4 @@
-import { createSignal, createResource, createEffect, For, Show, createMemo } from 'solid-js';
+import { createSignal, createResource, createEffect, onCleanup, For, Show, createMemo } from 'solid-js';
 import FolderDiv from './FolderDiv';
 import type { TreeResponse, ViewInfo } from './render';
 import './App.css';
@@ -49,6 +49,18 @@ export default function App() {
     (params) => fetchTree(params),
   );
 
+  // Cheap stopgap for the missing tick channel (Slice 4, planning/webapp.md): no push exists yet
+  // to tell this tab an external `aperas fold`/`unfold`/CLI write changed the store, so poll for it
+  // instead of requiring a manual reload. User-toggleable (`pollingEnabled`) since a 1s poll against
+  // a store someone is deliberately mid-edit on via the CLI can be more noise than help.
+  const POLL_INTERVAL_MS = 1000;
+  const [pollingEnabled, setPollingEnabled] = createSignal(true);
+  createEffect(() => {
+    if (!pollingEnabled()) return;
+    const id = setInterval(() => setRefreshTick((t) => t + 1), POLL_INTERVAL_MS);
+    onCleanup(() => clearInterval(id));
+  });
+
   // Native `<select>` only honors a `value` prop reliably once its `<option>` children already
   // exist in the DOM — `views()` resolves asynchronously, after the element's first paint, so the
   // browser is left to pick its own default (the first option) unless `.value` is re-applied once
@@ -66,8 +78,16 @@ export default function App() {
     history.replaceState(null, '', `${location.pathname}?${params}`);
   });
 
+  // Both `tree()` and `tree.latest` rethrow the resource's stored error once it's set and no newer
+  // fetch is in flight (Solid's ErrorBoundary integration; see `createResource`'s own source) — this
+  // app has no boundary anywhere above it, so a single transient poll failure would otherwise crash
+  // this memo (and the `<Show>` below that reads the tree the same way) permanently: the throw
+  // happens synchronously inside the resource's own error-handling promise chain, which nothing
+  // else awaits, so it surfaces as an uncaught rejection and this computation never runs again. The
+  // fix is to never call either accessor while `tree.error` is set — checking it first short-circuits
+  // before the throwing read happens, and self-heals as soon as the next poll succeeds and clears it.
   const breadcrumbs = createMemo(() => {
-    const path = tree()?.path;
+    const path = tree.error ? undefined : tree.latest?.path;
     if (!path || path === '.') return [] as Array<{ label: string; full: string }>;
     const segments = path.split('/').filter((s) => s.length > 0);
     return segments.map((_, i) => ({ label: segments[i], full: segments.slice(0, i + 1).join('/') }));
@@ -100,6 +120,23 @@ export default function App() {
           <For each={views()}>{(v) => <option value={v.name}>{v.name} ({v.profile})</option>}</For>
         </select>
         <button onClick={() => setApex('.')} title="Zoom out to the artifacts root">⌂ root</button>
+
+        <label class="poll-toggle" title="Poll every 1s for changes made outside this tab (e.g. via the CLI)">
+          <input
+            type="checkbox"
+            checked={pollingEnabled()}
+            onChange={(e) => setPollingEnabled(e.currentTarget.checked)}
+          />
+          sync
+        </label>
+
+        {/* Fixed-size, floated to the header's far right via `margin-left: auto` — always present so
+            a poll flipping loading/error on and off every second never reflows anything around it,
+            in either the header or the tree below (see this file's own note on the background poll). */}
+        <div class="status-bar">
+          <Show when={tree.loading}><span class="status">Loading…</span></Show>
+          <Show when={tree.error}><span class="status status-error">{String((tree.error as Error).message)}</span></Show>
+        </div>
       </header>
 
       <nav class="breadcrumbs">
@@ -115,9 +152,7 @@ export default function App() {
       </nav>
 
       <main class="tree">
-        <Show when={tree.loading}><p class="status">Loading…</p></Show>
-        <Show when={tree.error}><p class="status status-error">{String((tree.error as Error).message)}</p></Show>
-        <Show when={tree()?.tree} fallback={!tree.loading && !tree.error && <p class="status">Nothing here — the apex itself may be hidden.</p>}>
+        <Show when={!tree.error && tree.latest?.tree} fallback={!tree.loading && !tree.error && <p class="status">Nothing here — the apex itself may be hidden.</p>}>
           {(root) => <FolderDiv item={root()} view={view()} onZoom={onZoom} onFold={onFold} onEdit={onEdit} />}
         </Show>
       </main>

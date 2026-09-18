@@ -1610,6 +1610,10 @@ export interface RenderLinkItem {
   predicate: string;
   targetId?: string;
   targetTitle?: string;
+  /** Every mode except `no-target` — there's no target to label there. Lets a UI show what *kind* of
+   *  node a link resolves to (e.g. a small icon) without a second lookup, the same reasoning as
+   *  `RenderNodeItemFound.displayLabel`. */
+  targetDisplayLabel?: string;
   /** `preview`/`expanded` only — the pointer branch stays title-only by design (a cross-reference
    *  note, not a content preview). */
   abstract?: string;
@@ -1776,6 +1780,7 @@ function buildLinkItem(
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
   if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return null;
   const targetTitle = targetNode.title ?? '<not found>';
+  const targetDisplayLabel = displayLabel(targetId, targetNode);
   const targetAbstract = targetNode.text !== undefined
     ? truncateForPreviewWithHint(bakeResolvedLinkIds(targetNode.text as unknown as string, targetNode.links as ApeironNode[] | undefined), targetId)
     : undefined;
@@ -1787,7 +1792,7 @@ function buildLinkItem(
     // they're always all emitted) this position's `hiddenCount` is never omitted when the target
     // has any real content of its own.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, abstract: targetAbstract, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
   }
   const canon = zs.canonical.get(targetId);
   const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
@@ -1812,7 +1817,7 @@ function buildLinkItem(
       if (item) children.push(item);
     }
     return {
-      kind: 'link', linkId, depth, predicate, targetId, targetTitle, abstract: targetAbstract,
+      kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract,
       mode: 'expanded', starred: starred.has(linkId), zoomPath, tombstonedAt, children,
     };
   }
@@ -1823,10 +1828,10 @@ function buildLinkItem(
     // at — unlike `home`/`link`, `upward` never claims a position anywhere). Flat, non-recursing
     // reference instead, same shape as a rule-a preview, tagged to explain why it stops here.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, abstract: targetAbstract, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
   }
   const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
-  return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
+  return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
 }
 
 /** `RenderItem`'s text serializer — the sole remaining consumer of the string format `buildNodeItem`/

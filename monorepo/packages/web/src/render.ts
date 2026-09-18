@@ -23,6 +23,7 @@ export interface RenderNodeItemFound {
   tombstonedAt?: string;
   hiddenCount: number;
   truncated: boolean;
+  backlinkCount: number;
   children: RenderItem[];
 }
 export interface RenderNodeItemNotFound {
@@ -61,4 +62,14 @@ export interface TreeResponse {
 export interface ViewInfo {
   name: string;
   profile: string;
+}
+
+/** Mirror of `@aperas/cli/kgBacklinks`'s own `BacklinkEntry` — same duplication rationale as this
+ * file's header comment, one level removed: `cli` isn't `core`, but it still isn't browser-safe. */
+export interface BacklinkEntry {
+  linkId: string;
+  ownerId: string;
+  label: string;
+  title: string;
+  text?: string;
 }

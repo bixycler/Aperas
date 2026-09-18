@@ -1592,6 +1592,10 @@ export interface RenderNodeItemFound {
    *  `…` marker beneath it instead of walking `children` (which stays empty in that case, exactly
    *  like the old early `return` before ever recursing). */
   truncated: boolean;
+  /** How many live `Link`s target this node (`backlinks(store, id, 'target').length` — an indexed
+   *  store match, not a corpus scan). `0` when `hidden`, matching every other found-node field that
+   *  only means something once this node actually renders a line of its own. */
+  backlinkCount: number;
   /** Structural children first, in tree order, then this node's own links — the same order
    *  `emitNode`'s two loops used to push lines in. */
   children: RenderItem[];
@@ -1715,10 +1719,12 @@ function buildNodeItem(
   let tombstonedAt: string | undefined;
   let hiddenCount = 0;
   let truncated = false;
+  let backlinkCount = 0;
 
   if (!hidden) {
     holder = isLiteralHolder;
     star = starred.has(id);
+    backlinkCount = backlinks(store, id, 'target').length;
     isTextlessList = nodeKindFromId(id) === 'BlockNode' && (node as unknown as BlockNode).type === 'list';
     displayLabelStr = displayLabel(id, node);
     title = node.title as string;
@@ -1756,7 +1762,7 @@ function buildNodeItem(
     kind: 'node', id, depth, found: true, hidden,
     displayLabel: displayLabelStr, title, abstract, isTextlessList,
     tier: isGenuinelyUnfolded ? 'unfolded' : showAbstract ? 'listed' : 'title-only',
-    holder, starred: star, tombstonedAt, hiddenCount, truncated, children,
+    holder, starred: star, tombstonedAt, hiddenCount, truncated, backlinkCount, children,
   };
 }
 

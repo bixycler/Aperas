@@ -1,5 +1,6 @@
-import { For, Show, createSignal } from 'solid-js';
-import type { RenderItem } from './render';
+import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
+import { Portal } from 'solid-js/web';
+import type { RenderItem, BacklinkEntry } from './render';
 import Inline from './Inline';
 
 /**
@@ -28,6 +29,12 @@ export interface FolderDivProps {
    * and re-fetches. The one edit Phase 1 supports — the current node's own text, nothing else;
    * deep write (composing an intent for the Agent) is Phase 2+ (discussion/webapp.md's Settled). */
   onEdit: (id: string, text: string) => Promise<void>;
+  /** Backlinks popover, plain click: unfold the citing link and its owner without changing the apex
+   * (discussion/webapp.md's Freeflow, "Backlinks surfaced..."). */
+  onRevealBacklink: (linkId: string, ownerId: string) => void;
+  /** Backlinks popover, ctrl-click: the "go there for real" action — zoom to the owner too, matching
+   * ctrl-click's meaning everywhere else in this app. */
+  onZoomToBacklink: (linkId: string, ownerId: string) => void;
 }
 
 /** Compact glyphs for the node-kind tag, replacing the old `[FolderNode]`/`[heading]`/... bracket
@@ -142,6 +149,142 @@ function Tags(props: { holder?: boolean; starred?: boolean; tombstonedAt?: strin
   );
 }
 
+/** The popover's own list: each entry rendered like a folded node preview (kind glyph from the
+ * owner's `label` — the same `displayLabel` value `kindGlyph` already maps elsewhere — title, then
+ * abstract beneath it), since that's what a backlink actually is: another node's title-and-text,
+ * with this one cited from inside it. Fetched lazily on open, same as `Inline.tsx`'s own link
+ * hover-popover, via the dev bridge's `/api/backlinks` (wrapping the existing service `'backlinks'`
+ * op — no new core computation). */
+function BacklinksPopover(props: {
+  nodeId: string; anchorLeft: number; anchorTop: number; anchorBottom: number;
+  onRevealBacklink: (linkId: string, ownerId: string) => void;
+  onZoomToBacklink: (linkId: string, ownerId: string) => void;
+}) {
+  const [entries, setEntries] = createSignal<BacklinkEntry[]>();
+  const [error, setError] = createSignal<string>();
+  const [pos, setPos] = createSignal<{ top: number; left: number; ready: boolean }>(
+    { top: props.anchorTop, left: props.anchorLeft, ready: false },
+  );
+  let el: HTMLDivElement | undefined;
+
+  fetch(`/api/backlinks?id=${encodeURIComponent(props.nodeId)}`)
+    .then((r) => r.json())
+    .then((body: BacklinkEntry[]) => setEntries(body))
+    .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+
+  // Two-phase positioning (hidden first render, measured and placed on the next): the request was
+  // "opens above the title line", but a badge near the top of the viewport (or a popover with more
+  // entries than fit) has nowhere above it to open into — clamping into the viewport, and falling
+  // back to opening below when there's truly no room above, beats a box that renders half off-screen
+  // and unreachable. Re-runs whenever `entries()`/`error()` change the content's actual height (the
+  // "Loading…" placeholder is a different size than the list that replaces it).
+  createEffect(() => {
+    entries(); error();
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    let top = props.anchorTop - 4 - r.height;
+    if (top < margin) top = Math.min(props.anchorBottom + 4, window.innerHeight - r.height - margin);
+    top = Math.max(top, margin);
+    let left = Math.min(props.anchorLeft, window.innerWidth - r.width - margin);
+    left = Math.max(left, margin);
+    setPos({ top, left, ready: true });
+  });
+
+  return (
+    <Portal>
+      <div
+        ref={el}
+        class="link-popover backlinks-popover"
+        style={{ top: `${pos().top}px`, left: `${pos().left}px`, visibility: pos().ready ? 'visible' : 'hidden' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Show when={error()}><div class="status status-error">{error()}</div></Show>
+        <Show when={entries() === undefined && !error()}><div class="status">Loading…</div></Show>
+        <Show when={entries()?.length === 0}><div class="status">No backlinks.</div></Show>
+        <For each={entries()}>
+          {(entry) => (
+            <div
+              class="backlink-entry"
+              onClick={(e) => {
+                if (e.ctrlKey || e.metaKey) props.onZoomToBacklink(entry.linkId, entry.ownerId);
+                else props.onRevealBacklink(entry.linkId, entry.ownerId);
+              }}
+              title="Click to unfold in place · ctrl-click to jump there"
+            >
+              <div class="fd-line">
+                <Show when={kindGlyph(entry.label)}>{(glyph) => <span class="fd-kind">{glyph()}</span>}</Show>
+                <span class="fd-title"><Inline text={entry.title} onNavigate={() => {}} /></span>
+              </div>
+              <Show when={entry.text !== undefined}>
+                <div class="fd-abstract"><Inline text={entry.text} onNavigate={() => {}} /></div>
+              </Show>
+            </div>
+          )}
+        </For>
+      </div>
+    </Portal>
+  );
+}
+
+/** The badge itself: only present once there's something to show (matching `Tags`'s own
+ * `hiddenCount > 0` convention). Click toggles the popover open/closed; a document-level click
+ * listener closes it on an outside click, same as any ordinary dropdown — unlike `Inline.tsx`'s
+ * hover popover, this one is click-triggered, so `mouseleave` isn't the right close signal. */
+function BacklinksBadge(props: {
+  nodeId: string; count: number;
+  onRevealBacklink: (linkId: string, ownerId: string) => void;
+  onZoomToBacklink: (linkId: string, ownerId: string) => void;
+}) {
+  const [open, setOpen] = createSignal(false);
+  const [rect, setRect] = createSignal<{ left: number; top: number; bottom: number }>();
+  let el: HTMLSpanElement | undefined;
+
+  const toggle = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (open()) { setOpen(false); return; }
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setRect({ left: r.left, top: r.top, bottom: r.bottom });
+    }
+    setOpen(true);
+  };
+
+  createEffect(() => {
+    if (!open()) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (el && e.target instanceof Node && !el.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('click', onDocClick);
+    onCleanup(() => document.removeEventListener('click', onDocClick));
+  });
+
+  return (
+    <>
+      <span
+        ref={el}
+        class="fd-backlinks"
+        onClick={toggle}
+        title={`${props.count} backlink${props.count === 1 ? '' : 's'} — click to view`}
+      >
+        ↩&thinsp;{props.count}
+      </span>
+      <Show when={open() && rect()}>
+        {(r) => (
+          <BacklinksPopover
+            nodeId={props.nodeId}
+            anchorLeft={r().left}
+            anchorTop={r().top}
+            anchorBottom={r().bottom}
+            onRevealBacklink={(linkId, ownerId) => { setOpen(false); props.onRevealBacklink(linkId, ownerId); }}
+            onZoomToBacklink={(linkId, ownerId) => { setOpen(false); props.onZoomToBacklink(linkId, ownerId); }}
+          />
+        )}
+      </Show>
+    </>
+  );
+}
+
 export default function FolderDiv(props: FolderDivProps) {
   return (
     <Show when={props.item.kind === 'node' ? props.item : undefined} fallback={<LinkRow {...props} item={props.item as any} />}>
@@ -163,7 +306,7 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
           const [editing, setEditing] = createSignal(false);
           const hasChildren = () => !n.truncated && n.children.length > 0;
           return (
-            <div class="fd-node">
+            <div class="fd-node" data-node-id={n.id}>
               {/* Arrow and stem are one unit (`Gutter`) sharing this fixed-width column, so the stem
                   is mechanically centered under the arrow rather than lined up by a separately-guessed
                   margin (the old `.fd-children` border-left, which had no actual relationship to the
@@ -190,6 +333,12 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
                   <Tags holder={n.holder} starred={n.starred} tombstonedAt={n.tombstonedAt} hiddenCount={n.hiddenCount} />
                   <Show when={!editing()}>
                     <span class="fd-edit-btn" onClick={(e) => { e.stopPropagation(); setEditing(true); }} title="Edit this node's own text">✎</span>
+                  </Show>
+                  <Show when={n.backlinkCount > 0}>
+                    <BacklinksBadge
+                      nodeId={n.id} count={n.backlinkCount}
+                      onRevealBacklink={props.onRevealBacklink} onZoomToBacklink={props.onZoomToBacklink}
+                    />
                   </Show>
                 </div>
                 <Show when={editing()}>
@@ -266,7 +415,14 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
         </Show>
 
         <Show when={l().mode === 'preview'}>
-          <div class="fd-line fd-preview" onClick={() => props.onFold(l().linkId, 'unfold')} title="Click to unfold">
+          <div
+            class="fd-line fd-preview"
+            onClick={(e) => {
+              if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!);
+              else props.onFold(l().linkId, 'unfold');
+            }}
+            title="Click to unfold · ctrl-click to zoom in"
+          >
             <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
@@ -275,13 +431,16 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
         </Show>
 
         <Show when={l().mode === 'expanded'}>
-          <div class="fd-line">
+          <div
+            class="fd-line"
+            onClick={(e) => {
+              if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!);
+              else props.onFold(l().linkId, 'fold');
+            }}
+            title="Click to fold · ctrl-click to zoom in"
+          >
             <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
-            <span
-              class="fd-title fd-link-text fd-link-title"
-              onClick={(e) => { if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!); }}
-              title="Ctrl-click to zoom to this link's target"
-            >
+            <span class="fd-title fd-link-text fd-link-title">
               <Inline text={l().targetTitle} onNavigate={props.onZoom} />
             </span>
             <Tags starred={l().starred} tombstonedAt={l().tombstonedAt} />

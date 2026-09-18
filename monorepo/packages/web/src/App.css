@@ -148,6 +148,40 @@
 .fd-line:hover .fd-edit-btn { opacity: 0.55; }
 .fd-edit-btn:hover { opacity: 1 !important; }
 
+/* `margin-left: auto` on a flex child pushes itself (and nothing before it) to the row's far
+ * end — the one item after it in DOM order, so it always lands rightmost regardless of how many
+ * tags/the edit button precede it. */
+.fd-backlinks {
+  margin-left: auto;
+  padding: 0 0.35em;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  /* Distinct from `.fd-tag-fold`'s blue (`#2980b930`) — same tint pattern, different hue, so a
+   * backlink count is never mistaken for the hidden-children fold tag at a glance. */
+  background: #9b59b630;
+  opacity: 0.8;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fd-backlinks:hover { opacity: 1; background: #9b59b650; }
+
+/* `.link-popover.backlinks-popover` (both classes, not just `.backlinks-popover` alone) beats
+ * `.link-popover`'s own `min-width`/`max-width` on specificity rather than depending on source
+ * order — `.link-popover` is declared further down this file. `26rem` (the old fixed `max-width`,
+ * which most entries' content was already wide enough to hit in practice) becomes the new floor;
+ * `50vw` is what actually grows on a wide viewport instead of capping there. */
+.link-popover.backlinks-popover { width: 50vw; min-width: 26rem; max-width: none; }
+.backlinks-popover { max-height: 60vh; overflow-y: auto; }
+.backlink-entry {
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  border-radius: 4px;
+}
+.backlink-entry:hover { background: #80808018; }
+.backlink-entry + .backlink-entry { margin-top: 0.15rem; }
+.backlink-entry .fd-abstract { margin-left: 1.5rem; font-size: 0.95em; }
+
 .fd-editor { margin: 0.25rem 0 0.4rem 1.7rem; display: flex; flex-direction: column; gap: 0.35rem; max-width: 42rem; }
 .fd-editor textarea {
   font: inherit;

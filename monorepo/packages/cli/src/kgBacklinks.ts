@@ -15,6 +15,11 @@ import { wantsHelp, printHelp } from './kgHelp';
 
 export interface BacklinkEntry {
   linkId: string;
+  /** The referring node's own id — exposed alongside `linkId` (rather than left for a caller to
+   *  parse back out of it) since the web UI's backlinks popover needs it to zoom to the source, and
+   *  `ownerOfLink`'s own doc comment is explicit that querying, not id-string parsing, is how every
+   *  other lookup in this codebase resolves it. */
+  ownerId: string;
   label: string;
   title: string;
   text?: string;
@@ -32,6 +37,7 @@ export function runBacklinks(store: Store, pathArg: string, includeText: boolean
     const owner = wrap(store, ownerId) as unknown as TreeNode;
     entries.push({
       linkId: link.id,
+      ownerId,
       label: displayLabel(ownerId, owner),
       title: (owner.title as string) ?? '',
       text: includeText ? nodeAbstract(owner) : undefined,

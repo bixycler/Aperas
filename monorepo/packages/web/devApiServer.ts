@@ -87,6 +87,13 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, result.views.map((v) => ({ name: v.name, profile: v.profileHandle ?? '?' })));
       return;
     }
+    if (url.pathname === '/api/backlinks') {
+      const pathArg = url.searchParams.get('id');
+      if (!pathArg) throw new Error("'id' is required.");
+      const entries = await request<unknown>({ op: 'backlinks', pathArg, includeText: true, reload: false } as ServiceRequest);
+      sendJson(res, 200, entries);
+      return;
+    }
     if (url.pathname === '/api/show') {
       const pathArg = url.searchParams.get('id');
       if (!pathArg) throw new Error("'id' is required.");

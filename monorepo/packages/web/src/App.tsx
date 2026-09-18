@@ -94,10 +94,36 @@ export default function App() {
   });
 
   const onZoom = (id: string) => setApex(id);
+  // Awaited all the way through the refetch, not fire-and-forget — every existing caller already
+  // ignored the returned promise, so this is a strict tightening, and it's what lets
+  // `onRevealBacklink` below know the new content has actually landed before it tries to scroll to it.
   const onFold = async (ref: string, action: 'unfold' | 'fold') => {
     await postFold(ref, view(), action);
-    refetch();
+    await refetch();
     setRefreshTick((t) => t + 1);
+  };
+  // A backlinks-popover entry names both the citing `Link` and the node it lives in. Both unfolds are
+  // needed, not just the link's own: `buildNodeItem` only shows a node's own links at all
+  // (`linksToShow`) once that node itself is in the view's `unfolds` set — being the apex alone
+  // doesn't put it there, confirmed live (the owner rendered as a title+abstract preview with the
+  // link nowhere to be found until its own id was unfolded too).
+  //
+  // Two distinct actions, not one: plain click stays at the current apex — unfolds both in place and
+  // scrolls to the owner once it renders (which only happens if the owner is actually reachable from
+  // here — a sibling top-level document generally isn't, and this silently does nothing then, same as
+  // any anchor-scroll to an id that isn't on the page). Ctrl-click is the "go there for real" action,
+  // matching ctrl-click's meaning everywhere else in this app (zoom).
+  const onRevealBacklink = async (linkId: string, ownerId: string) => {
+    await onFold(ownerId, 'unfold');
+    await onFold(linkId, 'unfold');
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-node-id="${CSS.escape(ownerId)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  };
+  const onZoomToBacklink = (linkId: string, ownerId: string) => {
+    setApex(ownerId);
+    void onFold(ownerId, 'unfold');
+    void onFold(linkId, 'unfold');
   };
   const onEdit = async (id: string, text: string) => {
     await postUpdate(id, text);
@@ -153,7 +179,12 @@ export default function App() {
 
       <main class="tree">
         <Show when={!tree.error && tree.latest?.tree} fallback={!tree.loading && !tree.error && <p class="status">Nothing here — the apex itself may be hidden.</p>}>
-          {(root) => <FolderDiv item={root()} view={view()} onZoom={onZoom} onFold={onFold} onEdit={onEdit} />}
+          {(root) => (
+            <FolderDiv
+              item={root()} view={view()} onZoom={onZoom} onFold={onFold} onEdit={onEdit}
+              onRevealBacklink={onRevealBacklink} onZoomToBacklink={onZoomToBacklink}
+            />
+          )}
         </Show>
       </main>
     </div>

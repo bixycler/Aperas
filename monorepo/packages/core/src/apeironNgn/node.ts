@@ -1629,6 +1629,43 @@ export interface RenderLinkItem {
   children: RenderItem[];
 }
 
+/** Bakes each already-resolved bare-relative-path link's target id into its own href — `#id/<ID>`
+ *  appended — wherever the href doesn't already carry one. Render-tree-only: never touches the
+ *  stored `text` or a projected file, just the string this function's caller sends to the webapp.
+ *
+ *  `apeironNgn/artifacts.ts`'s resolver already turns a `./`/`../`-leading href with no fragment
+ *  (design/linking.md's Topology "cross-file navigation" form) into a real `Link`, with the exact
+ *  block-relative start offset of its `[...](...)` syntax stashed as a `position` prop per
+ *  occurrence — reused here, not re-resolved. The webapp's `Inline.tsx` has no server round trip of
+ *  its own to learn a link's target; it only ever recognizes a same-shape `#...id/<Kind>:<id>`
+ *  fragment already sitting in the href text (design/linking.md's node-ID addressing), so a bare
+ *  href needs one baked in before the client can make it navigable at all. Scoped to exactly the
+ *  href shape `astParser.ts`'s matching extraction branch captures (`./`/`../`-leading, no existing
+ *  fragment) — anything else (already fragment-form, `aperas://`, a bare id) is left untouched,
+ *  either already navigable or out of scope here. */
+function bakeResolvedLinkIds(text: string, links: ApeironNode[] | undefined): string {
+  if (!links || links.length === 0) return text;
+  const insertions: Array<{ at: number; text: string }> = [];
+  for (const link of links) {
+    const l = link as unknown as Link;
+    const targetId = (l.target as unknown as TreeNode | undefined)?.id;
+    if (!targetId) continue;
+    for (const position of getProps(l as unknown as HasProps, 'position').map(Number)) {
+      const match = /^\[([^\]]+)\]\(([^)]+)\)/.exec(text.slice(position));
+      if (!match) continue;
+      const href = match[2];
+      if (!(href.startsWith('./') || href.startsWith('../'))) continue;
+      const hrefStart = position + match[0].indexOf('(') + 1;
+      insertions.push({ at: hrefStart + href.length, text: `#id/${targetId}` });
+    }
+  }
+  if (insertions.length === 0) return text;
+  insertions.sort((a, b) => b.at - a.at);
+  let out = text;
+  for (const { at, text: ins } of insertions) out = out.slice(0, at) + ins + out.slice(at);
+  return out;
+}
+
 /** One `TreeNode`'s line plus whatever it reveals beneath it — the three own-line tiers plus
  *  breadcrumb-passthrough child pruning (§5). `parentQualifiesForPreview` is true for the starting
  *  node and for any node reached as the plain listed child of a genuinely-unfolded parent; false
@@ -1688,7 +1725,9 @@ function buildNodeItem(
     if (showAbstract) {
       abstract = isTextlessList
         ? `(no text of its own — see kg:unfold ${id})`
-        : node.text !== undefined ? truncateForPreviewWithHint(node.text as unknown as string, id) : undefined;
+        : node.text !== undefined
+          ? truncateForPreviewWithHint(bakeResolvedLinkIds(node.text as unknown as string, node.links as ApeironNode[] | undefined), id)
+          : undefined;
     }
     tombstonedAt = (node as unknown as { tombstonedAt?: string }).tombstonedAt;
     hiddenCount = (node.treeChildren.length - childrenToShow.length)
@@ -1737,7 +1776,9 @@ function buildLinkItem(
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
   if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return null;
   const targetTitle = targetNode.title ?? '<not found>';
-  const targetAbstract = targetNode.text !== undefined ? truncateForPreviewWithHint(targetNode.text as unknown as string, targetId) : undefined;
+  const targetAbstract = targetNode.text !== undefined
+    ? truncateForPreviewWithHint(bakeResolvedLinkIds(targetNode.text as unknown as string, targetNode.links as ApeironNode[] | undefined), targetId)
+    : undefined;
   const tombstonedAt = (targetNode as unknown as { tombstonedAt?: string }).tombstonedAt;
 
   if (!cone.linkEntries.has(linkId)) {

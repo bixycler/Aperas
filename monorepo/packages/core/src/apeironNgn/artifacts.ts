@@ -43,6 +43,29 @@ function isFragmentForm(code: string): boolean {
   return !code.startsWith(APERAS_TREE_PREFIX) && !code.startsWith(APERAS_ID_PREFIX) && code.includes('#');
 }
 
+/** Whether `code` is a bare relative-path reference with no fragment — the other half of the
+ *  Compatible/Pre-Ingestion Context split (`astParser.ts`'s matching extraction branch), re-derived
+ *  from the string alone for the same reason `isFragmentForm` is: `retryDanglingRefs` only has the
+ *  bare code. Scoped to the exact shape design/linking.md documents (`./`/`../`-leading), so it
+ *  never collides with a bare snowflake, a full node id, or an `aperas://`/`[[...]]`-origin code —
+ *  none of which are ever written with a leading dot in this corpus. */
+function isBareRelativePath(code: string): boolean {
+  return code.startsWith('./') || code.startsWith('../');
+}
+
+/** Resolves a bare relative-path code with no fragment — cross-file navigation to the whole target
+ *  artifact/folder, the other half of `resolveFragmentCode`'s "which file" vs. "which block within
+ *  it" split. Canonicalizing the path (`leadingPart.ts`'s OS-relative arithmetic, not
+ *  `resolveDeepPathDetail`'s uniform per-segment `..`) names exactly one file or folder, so — like
+ *  the fragment form's own `id/` shortcut — no anchor-matching gate applies, and (matching
+ *  `resolveFragmentCode`'s own choice) no holder is ever minted for a target that doesn't exist. */
+function resolveBarePathCode(store: Store, code: string, currentArtifactPath: string | null): string | null {
+  if (currentArtifactPath === null) return null;
+  const targetPath = relativeToCanonicalArtifactPath(currentArtifactPath, code);
+  if (targetPath === null) return null;
+  return findLiveByKindAndPath(store, 'ArtifactNode', targetPath) ?? findLiveByKindAndPath(store, 'FolderNode', targetPath);
+}
+
 /** The per-code resolution dispatch shared by `resolveBlockLinks`'s own pass and
  *  `retryDanglingRefs`'s later retry of a stashed dangling code — same two branches either way:
  *  a fragment-form code goes through the anchor-matching gate (`resolveFragmentCode`), anything
@@ -61,6 +84,7 @@ function isFragmentForm(code: string): boolean {
  *  itself returns `null` on a miss rather than minting anything once `createHolder` is `false`). */
 export function resolveOneCode(store: Store, code: string, basePath: string | null, artifactPath: string | null, createHolder = true): string | null {
   if (isFragmentForm(code)) return resolveFragmentCode(store, code, artifactPath);
+  if (isBareRelativePath(code)) return resolveBarePathCode(store, code, artifactPath);
   return resolveDeepPathDetail(store, code, {
     base: basePath ?? undefined,
     createHolder,

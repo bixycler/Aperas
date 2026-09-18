@@ -454,6 +454,12 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
         // why what's left still can't be trusted as an internal reference until the resolver checks
         // for a matching anchor.
         out.push({ code: url, position: position(), requiresAnchorMatch: true });
+      } else if (url.startsWith('./') || url.startsWith('../')) {
+        // A bare relative path with no fragment — cross-file navigation to the whole target
+        // artifact/folder (design/linking.md's Topology: splitting "which file" from "which block
+        // within it," the latter being the `#fragment` branch above). Unambiguous once
+        // canonicalized, unlike a fragment match — no anchor-matching gate needed.
+        out.push({ code: url, position: position() });
       }
       return;
     }

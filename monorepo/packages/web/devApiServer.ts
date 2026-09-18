@@ -24,7 +24,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { ensureServiceRunning, request } from '@aperas/cli/apeironNgn/serviceClient';
 import type { ServiceRequest } from '@aperas/cli/apeironNgn/serviceProtocol';
 
-const port = Number(process.argv[2] ?? 5199);
+const port = Number(process.argv[2] ?? 2734);
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;

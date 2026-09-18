@@ -6,7 +6,7 @@ import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(__dirname, '..', '..');
-const API_PORT = 5199;
+const API_PORT = 2734;
 
 /**
  * Spawns `devApiServer.ts` (see its own doc comment for why it's a separate `tsx` process rather
@@ -37,6 +37,7 @@ function aperasDevApiProxy() {
 export default defineConfig({
   plugins: [solid(), aperasDevApiProxy()],
   server: {
+    port: 2737,
     proxy: {
       '/api': `http://127.0.0.1:${API_PORT}`,
     },

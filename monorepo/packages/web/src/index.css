@@ -4,12 +4,12 @@
    * light/dark guess while a component set its own background explicitly, so the pairing broke
    * whenever the two disagreed. Every color below is explicit for the same reason. */
   color-scheme: dark;
-  --bg: #14161a;
+  --bg: #2c313a;
   --fg: #e6e8eb;
   --fg-muted: #9aa1ab;
   --border: #3a3f47;
-  --surface: #1c1f24;
-  --surface-hover: #262a31;
+  --surface: #353b45;
+  --surface-hover: #404754;
   --accent: #5aa7ff;
   font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
 }

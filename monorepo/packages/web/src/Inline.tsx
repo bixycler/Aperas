@@ -1,4 +1,4 @@
-import { For, Show, createSignal, type JSX } from 'solid-js';
+import { For, Show, createSignal, onCleanup, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderNodeItem, TreeResponse } from './render';
 
@@ -46,6 +46,7 @@ export interface InlineProps {
 function LinkPopover(props: {
   targetId: string; view: string; onFold: (ref: string, action: 'unfold' | 'fold') => void;
   top: number; left: number;
+  onMouseEnter: () => void; onMouseLeave: () => void;
 }) {
   const [preview, setPreview] = createSignal<RenderNodeItem | null>();
   const [error, setError] = createSignal<string>();
@@ -65,7 +66,13 @@ function LinkPopover(props: {
   // `getBoundingClientRect()`, taken fresh on each hover in `NavigableLink` below.
   return (
     <Portal>
-      <div class="link-popover" style={{ top: `${props.top}px`, left: `${props.left}px` }} onClick={(e) => e.stopPropagation()}>
+      <div
+        class="link-popover"
+        style={{ top: `${props.top}px`, left: `${props.left}px` }}
+        onClick={(e) => e.stopPropagation()}
+        onMouseEnter={props.onMouseEnter}
+        onMouseLeave={props.onMouseLeave}
+      >
         <Show when={error()}><div class="status status-error">{error()}</div></Show>
         <Show when={preview() === undefined && !error()}><div class="status">Loading…</div></Show>
         <Show when={preview()}>
@@ -104,8 +111,28 @@ function NavigableLink(props: {
 }) {
   const [rect, setRect] = createSignal<{ top: number; left: number }>();
   let anchorEl: HTMLAnchorElement | undefined;
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // The popover renders through a `<Portal>` (see `LinkPopover` below), so it is never a DOM
+  // descendant of this wrapper span — leaving the anchor's own bounding box to move toward the
+  // popover below it already counts as leaving the wrapper, closing it before the pointer arrives.
+  // A short grace period, cancelled by either element's own mouse-enter, bridges that gap and keeps
+  // the popover open while hovering it directly (confirmed live: without this, its one button —
+  // "Unfold in tree" — was never reachable).
+  const cancelClose = () => {
+    if (closeTimer === undefined) return;
+    clearTimeout(closeTimer);
+    closeTimer = undefined;
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer = setTimeout(() => setRect(undefined), 150);
+  };
+  onCleanup(cancelClose);
+
   const onEnter = () => {
     if (!anchorEl) return;
+    cancelClose();
     const r = anchorEl.getBoundingClientRect();
     // `.link-popover` is `position: fixed`, which is already viewport-relative — exactly what
     // `getBoundingClientRect()` returns. Adding `window.scrollY`/`scrollX` on top (as if this were
@@ -114,7 +141,7 @@ function NavigableLink(props: {
     setRect({ top: r.bottom + 2, left: r.left });
   };
   return (
-    <span class="inline-link-wrap" onMouseEnter={onEnter} onMouseLeave={() => setRect(undefined)}>
+    <span class="inline-link-wrap" onMouseEnter={onEnter} onMouseLeave={scheduleClose}>
       <a
         ref={anchorEl}
         class="inline-link"
@@ -124,7 +151,13 @@ function NavigableLink(props: {
         {props.content}
       </a>
       <Show when={rect() && props.popover}>
-        {(pop) => <LinkPopover targetId={props.targetId} view={pop().view} onFold={pop().onFold} top={rect()!.top} left={rect()!.left} />}
+        {(pop) => (
+          <LinkPopover
+            targetId={props.targetId} view={pop().view} onFold={pop().onFold}
+            top={rect()!.top} left={rect()!.left}
+            onMouseEnter={cancelClose} onMouseLeave={scheduleClose}
+          />
+        )}
       </Show>
     </span>
   );

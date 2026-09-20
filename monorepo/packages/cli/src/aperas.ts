@@ -48,6 +48,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   reload: { description: 'Discard the in-memory ApeironNgn store and rehydrate it from the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgReload') },
   identity: { description: "Show or set this machine's identity.json (currently just machineNumber).", load: () => import('./kgIdentity') },
   'check-links': { description: 'Run a drift-style link integrity sweep comparing stored .links against live block text.', load: () => import('./kgCheckLinks') },
+  'migrate-frontmatter': { description: "One-time migration: split every ArtifactNode's opaque frontmatter prop into per-key props (description, lang, ...).", load: () => import('./kgMigrateFrontmatter') },
 };
 
 function printTopLevelHelp(): void {

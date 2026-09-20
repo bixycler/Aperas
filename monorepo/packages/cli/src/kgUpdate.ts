@@ -31,9 +31,19 @@
  *
  * Promotion (Aperas-crud-design.md §4.1/§6): `target.holder` is unconditionally cleared before
  * either mode runs, so piping real content onto a placeholder Block/Artifact promotes it in the
- * same motion — no separate verb needed, and a no-op on an already-real target. `FolderNode` isn't
- * accepted here at all (see the type check below); its own bare-promote channel is `kg:insert`'s
- * anchor-less move mode.
+ * same motion — no separate verb needed, and a no-op on an already-real target. A bare Folder
+ * *holder*'s own promote channel is still `kg:insert`'s anchor-less move mode, not this.
+ *
+ * A `FolderNode` target (discussion/core.md's 2026-09-20 frontmatter-as-props redesign) is a
+ * genuinely separate, much narrower path (`runFolderUpdate` below): frontmatter-only, since a
+ * folder's README body is edited on disk and re-ingested, never through this command — reusing all
+ * the reconciliation machinery above for a folder makes no sense, since `FolderNode` isn't a
+ * `BlockNode` at all (no `.type`, no heading/paragraph shape). Piping any real body content at a
+ * FolderNode target is refused outright rather than silently dropped.
+ *
+ * An `ArtifactNode` target additionally has its own piped `frontmatter` applied to its
+ * `description`/`lang`/etc. (`applyArtifactFrontmatter` below) — orthogonal to, and alongside,
+ * whichever body-update mode ran.
  */
 
 import type { Store } from 'oxigraph';
@@ -42,12 +52,13 @@ import {
   wrap, applyTombstone, rejectSlugPathCollisions,
   collectLinkTargetsByBlock, collectOldWikilinksByBlock, findEnclosingArtifactId,
 } from '@aperas/core/apeironNgn/node';
-import type { BlockNode, TreeNode, ApeironNode } from '@aperas/core/apeironNgn/node';
+import type { BlockNode, FolderNode, TreeNode, ApeironNode } from '@aperas/core/apeironNgn/node';
 import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
-import { parseMarkdownTree, headingDepth, type ParsedBlockNode, type LinkOccurrence } from '@aperas/core/astParser';
-import { extractLinkCodes } from '@aperas/core/artifacts';
+import { parseMarkdownTree, headingDepth, parseFrontmatterFields, collectLinkCodesFromText, type ParsedBlockNode, type LinkOccurrence } from '@aperas/core/astParser';
+import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
 import { reconcileTree } from '@aperas/core/reconcile';
 import { resolveBlockLinks, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
+import { carryForwardProp, type PropEntry } from '@aperas/core/props';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -79,12 +90,13 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     throw new Error(`Target '${req.path}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
   }
   const kind = nodeKindFromId(targetId);
-  if (kind !== 'BlockNode' && kind !== 'ArtifactNode') {
-    throw new Error(`'${req.path}' resolves to a ${kind} — kg:update only targets Block/Artifact nodes.`);
+  if (kind !== 'BlockNode' && kind !== 'ArtifactNode' && kind !== 'FolderNode') {
+    throw new Error(`'${req.path}' resolves to a ${kind} — kg:update only targets Block/Artifact/Folder nodes.`);
   }
+  if (kind === 'FolderNode') return runFolderUpdate(store, targetId, req.markdown);
   const target = wrap(store, targetId) as unknown as BlockNode;
 
-  const { root } = parseMarkdownTree(req.markdown);
+  const { root, frontmatter } = parseMarkdownTree(req.markdown);
   const parsedChildren = root.children ?? [];
   const firstChild = parsedChildren[0];
 
@@ -235,6 +247,7 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     });
     const existing = (target.children as TreeNode[] | undefined) ?? [];
     target.children = [...overflowIds, ...existing];
+    applyArtifactFrontmatter(kind, target, frontmatter, pendingLinks);
     const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, artifactId);
     return { reconciled: false, linkResolution };
   }
@@ -261,9 +274,71 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   // carries every node's own `linkCodes` from the fresh parse, root included.
   const pendingLinks = extractLinkCodes(finalTree as unknown as ParsedBlockNode);
   target.hydrateFromParsed(finalTree);
+  applyArtifactFrontmatter(kind, target, frontmatter, pendingLinks);
   const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, artifactId);
 
   return { reconciled: true, ...stats, linkResolution };
+}
+
+/** The piped input's own `frontmatter` (`parseMarkdownTree` already separates it out) applied to an
+ *  `ArtifactNode` target's own `description`/`lang`/etc. — a no-op for a `BlockNode` target (only an
+ *  artifact/folder root carries frontmatter at all) or when none was piped. One `StringProp` per
+ *  key, replacing whatever was there, same `carryForwardProp` id-preservation as
+ *  `ArtifactNode.ingestFromDisk` (discussion/core.md's 2026-09-20 redesign) — orthogonal to
+ *  `target`'s own body-content update above, so it runs regardless of which mode (`--text-only` or
+ *  reconcile) got there. `description`'s own link codes are appended to the caller's `pendingLinks`
+ *  (never a separate `resolveBlockLinks` call) under `target`'s own key — safe as the *only* entry
+ *  for that key in the ordinary case (a heading/non-paragraph leading child never gives `target`'s
+ *  own key a `pendingLinks` entry from body content at all); see `fullIdForKey`'s own doc
+ *  comment in `apeironNgn/artifacts.ts` for the matching resolver-side fix this depends on. */
+function applyArtifactFrontmatter(kind: string, target: BlockNode, frontmatter: string | undefined, pendingLinks: PendingLinkCodes[]): void {
+  if (kind !== 'ArtifactNode' || frontmatter === undefined) return;
+  const fields = parseFrontmatterFields(frontmatter);
+  const oldProps = target.props as unknown as PropEntry[] | undefined;
+  target.props = Object.keys(fields).length > 0
+    ? (Object.entries(fields).map(([key, value]) => carryForwardProp(oldProps, key, value)) as unknown as ApeironNode[])
+    : undefined;
+  const descriptionLinkCodes = collectLinkCodesFromText(fields.description ?? '');
+  if (descriptionLinkCodes.length > 0) pendingLinks.push({ blockId: target.key, codes: descriptionLinkCodes });
+}
+
+/** `kg:update` on a `FolderNode` target is frontmatter-only — a folder's README *body* is edited on
+ *  disk and re-ingested (`kg:ingest`'s FolderNode half), same as always; this only ever touches its
+ *  own `description`/`lang`/etc., the same "update as scoped reconciliation" pattern the
+ *  Block/Artifact path above already uses, just narrower (discussion/core.md's 2026-09-20
+ *  frontmatter-as-props redesign — a `FolderNode` was previously refused outright by `kg:update`).
+ *  Piped body content beyond frontmatter is refused rather than silently dropped: this was never
+ *  the README-content edit path, and a caller expecting it to be one deserves a clear error, not
+ *  quiet data loss. */
+function runFolderUpdate(store: Store, targetId: string, markdown: string): UpdateResult {
+  const { root, frontmatter } = parseMarkdownTree(markdown);
+  if ((root.children ?? []).length > 0) {
+    throw new Error(
+      `'${targetId}' is a FolderNode — kg:update only edits its frontmatter (description, lang, ...), never its README body. ` +
+      'Edit the README.md file on disk and re-ingest instead.'
+    );
+  }
+  if (frontmatter === undefined) {
+    throw new Error('No frontmatter found in the piped input — nothing for kg:update to change on a FolderNode target.');
+  }
+  const target = wrap(store, targetId) as unknown as FolderNode;
+  const oldLinkTargets = new Map<string, Set<string>>();
+  const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
+  collectLinkTargetsByBlock(target, oldLinkTargets);
+  collectOldWikilinksByBlock(target, oldWikilinksByBlock, false);
+
+  const fields = parseFrontmatterFields(frontmatter);
+  const oldProps = target.props as unknown as PropEntry[] | undefined;
+  target.props = Object.keys(fields).length > 0
+    ? (Object.entries(fields).map(([key, value]) => carryForwardProp(oldProps, key, value)) as unknown as ApeironNode[])
+    : undefined;
+
+  const descriptionLinkCodes = collectLinkCodesFromText(fields.description ?? '');
+  const pendingLinks: PendingLinkCodes[] = descriptionLinkCodes.length > 0
+    ? [{ blockId: target.key, codes: descriptionLinkCodes }]
+    : [];
+  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock);
+  return { reconciled: false, linkResolution };
 }
 
 /** Refuses on empty input rather than silently proceeding — confirmed live this matters: unlike
@@ -288,7 +363,7 @@ export async function main(): Promise<void> {
       description: "Replace an existing node's text/children (and, for a heading target, its title) from piped markdown.",
       usage: 'cat content.md | aperas update [--base <path>] <path> [--text-only]',
       args: [
-        { name: '<path>', description: "Existing Block/Artifact node to update — FolderNode isn't accepted (use kg:insert's bare-promote for a folder holder). If it's a heading, piping a leading heading line (e.g. '## New Title') also renames it — '#' depth must match; a plain paragraph leaves the title untouched. Unconditionally clears the target's own '.holder' flag, promoting a placeholder Block/Artifact the same way real content landing on it always would — a no-op if it was already real." },
+        { name: '<path>', description: "Existing Block/Artifact/Folder node to update. A FolderNode target is frontmatter-only (description, lang, ...) — its README body is edited on disk and re-ingested instead. For a Block/Artifact target: if it's a heading, piping a leading heading line (e.g. '## New Title') also renames it — '#' depth must match; a plain paragraph leaves the title untouched. Piped frontmatter is also applied when the target is an ArtifactNode. Unconditionally clears the target's own '.holder' flag, promoting a placeholder Block/Artifact the same way real content landing on it always would — a no-op if it was already real." },
       ],
       flags: [
         { name: '--base <path>', description: 'Base path deep-path resolution is relative to.' },

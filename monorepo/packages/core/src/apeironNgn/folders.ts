@@ -8,12 +8,13 @@
  */
 
 import type { Store } from 'oxigraph';
-import { wrap, applyTombstone } from './node';
+import { wrap, applyTombstone, collectLinkTargetsByBlock, collectOldWikilinksByBlock } from './node';
 import type { FolderNode, BlockNode } from './node';
 import { nodeKindFromId } from './vocab';
 import { allIdsOfKind } from './dehydrate';
 import { buildFolderTree, collectFolderPaths, countFolders, type ParsedFolderNode } from '../folders';
-import { getArtifactsDir } from '../artifacts';
+import { getArtifactsDir, type PendingLinkCodes } from '../artifacts';
+import { resolveBlockLinks } from './artifacts';
 import { matchLeftoverByAbstract } from '../reconcile';
 
 function allLiveIdsOfKind(store: Store, kind: string): string[] {
@@ -77,8 +78,24 @@ export function ingestFolderTree(store: Store, force: boolean = false): { folder
     return [node.path as string, node.key];
   }));
 
+  // Snapshot of every live folder's *own* current wikilinks (its `description`'s, from a prior
+  // ingest), taken before the tree write below touches anything — same "capture before mutation"
+  // requirement `ArtifactNode.ingestFromDisk` already has for `resolveBlockLinks`'s identity-stable
+  // reuse, applied here per-folder instead of per-artifact. `false` (non-recursive): this call's own
+  // `pendingDescriptionLinks` covers only each folder's own key, never its README children's —
+  // those keep resolving lazily via the corpus-wide sweep, unchanged (`collectOldWikilinksByBlock`'s
+  // own doc comment on why recursing here would wrongly wipe children this pass never touches).
+  const oldLinkTargets = new Map<string, Set<string>>();
+  const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
+  for (const id of liveFolderIds) {
+    const node = wrap(store, id) as unknown as FolderNode;
+    collectLinkTargetsByBlock(node, oldLinkTargets);
+    collectOldWikilinksByBlock(node, oldWikilinksByBlock, false);
+  }
+
   const pendingReadmeTombstones: any[] = [];
-  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingReadmeTombstones);
+  const pendingDescriptionLinks: PendingLinkCodes[] = [];
+  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingReadmeTombstones, pendingDescriptionLinks);
   // Applied unconditionally, not `force`-gated like the folder/artifact removal sweep below: a
   // README content block genuinely missing from the fresh parse was already becoming permanently
   // orphaned (unreferenced, ungoverned) garbage before this reconciliation existed at all — writing
@@ -145,6 +162,11 @@ export function ingestFolderTree(store: Store, force: boolean = false): { folder
 
   console.log(`[ApeironNgn Folders] Ingesting folder tree (${folderCount} folder(s))...`);
   (wrap(store, `FolderNode:${tree.folderId}`) as unknown as FolderNode).hydrateFromParsed(tree);
+
+  const linkResolution = resolveBlockLinks(store, pendingDescriptionLinks, oldLinkTargets, oldWikilinksByBlock);
+  if (linkResolution.resolved > 0 || linkResolution.dangling > 0) {
+    console.log(`[ApeironNgn Folders]   description links: ${linkResolution.resolved} resolved, ${linkResolution.dangling} dangling, ${linkResolution.changed} changed.`);
+  }
 
   return { folderCount, sweep, pendingRemovals };
 }

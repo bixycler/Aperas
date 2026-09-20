@@ -276,6 +276,32 @@ const SUPPORTED_LANGS: readonly DocLang[] = ['en', 'vi', 'ja'];
  * (`parseMarkdownTree` below) and at projection time (`project.ts`, off the artifact's stored
  * `frontmatter` prop) — the one shared reading of the same field, so both sides always agree.
  */
+/**
+ * Splits raw YAML frontmatter into flat `key: value` pairs — deliberately narrow, the same spirit
+ * as `extractLangFromFrontmatter` just above, generalized: single-line scalars only, no nesting,
+ * no block scalars, no lists, still never a real YAML parse. Every key found is preserved, known
+ * or not, so a hand-authored field this engine doesn't yet recognize survives a round trip through
+ * the graph instead of silently vanishing (discussion/core.md's 2026-09-20 frontmatter-as-props
+ * redesign: `ArtifactNode`/`FolderNode` store one `StringProp` per key here, replacing the single
+ * opaque `frontmatter` blob they used to carry). A value wrapped in one matching pair of quotes has
+ * them stripped; anything else — `description`'s markdown links included — is kept verbatim, link
+ * extraction being the caller's job (`collectLinkCodesFromText`), same as any other block's text.
+ */
+export function parseFrontmatterFields(frontmatter: string | undefined): Record<string, string> {
+  if (!frontmatter) return {};
+  const fields: Record<string, string> = {};
+  const LINE_RE = /^([A-Za-z_][\w-]*):\s?(.*)$/;
+  for (const rawLine of frontmatter.split('\n')) {
+    const match = LINE_RE.exec(rawLine);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    const trimmed = rawValue.trim();
+    const quoted = /^(['"])(.*)\1$/.exec(trimmed);
+    fields[key] = quoted ? quoted[2] : trimmed;
+  }
+  return fields;
+}
+
 export function extractLangFromFrontmatter(frontmatter: string | undefined): DocLang {
   if (!frontmatter) return 'en';
   const match = /^lang:\s*['"]?(\w+)['"]?\s*$/m.exec(frontmatter);

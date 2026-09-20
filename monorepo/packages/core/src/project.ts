@@ -16,7 +16,7 @@
  * to `.archive/` with `kgCli.ts`.
  */
 
-import { getProp } from './props';
+import { getProp, type PropEntry } from './props';
 import { HEADING_TREE_ANCHOR_PROP, findLeadInSpliceOffset, type DocLang } from './astParser';
 
 /** `<a name='id/<ID>' class='aperas-anchor aperas-id'></a>` for `id` — the permanent anchor
@@ -51,16 +51,24 @@ function spliceIdAnchor(text: string, id: string | undefined, lang: DocLang): st
   return `${text.slice(0, insertAt)} ${idAnchorMarkup(id)}${text.slice(insertAt)}`;
 }
 
-/** Prepends a re-emitted `---\n...\n---` frontmatter block, if this node's `props` (§5) carries
- *  one, ahead of its otherwise-serialized body. Applies uniformly to ArtifactNode and
- *  FolderNode — both were the exact same `frontmatter` prop scope decided in §5. Also this
- *  serializer's one exit point, so it's where a final trailing newline is guaranteed — every
- *  write-mode caller (`kgCli.ts`'s `project` command, `kgProjectNgn.ts`) writes this return value
- *  straight to disk with no `+ '\n'` of its own, and neither `serializeBlock`/`renderChildren` nor
- *  their ApeironNgn equivalents add one after the last block. */
+/** Rebuilds and prepends a `---\n...\n---` frontmatter block from this node's own `props`, ahead of
+ *  its otherwise-serialized body — one `key: value` line per prop, sorted by key for a
+ *  deterministic projection (props themselves carry no meaningful order). Applies uniformly to
+ *  `ArtifactNode` and `FolderNode`: since discussion/core.md's 2026-09-20 redesign, `.props` on
+ *  either is *exclusively* frontmatter-origin (`description`, `lang`, and whatever else a document
+ *  hand-authors) — never blended with any other kind of node-level metadata — so serializing every
+ *  entry is correct, not just convenient. Replaces the old single opaque `frontmatter` blob prop
+ *  this used to re-emit verbatim; a value is written as-is, no quoting, matching
+ *  `parseFrontmatterFields`'s own equally narrow reader. Also this serializer's one exit point, so
+ *  it's where a final trailing newline is guaranteed — every write-mode caller (`kgCli.ts`'s
+ *  `project` command, `kgProjectNgn.ts`) writes this return value straight to disk with no `+ '\n'`
+ *  of its own, and neither `serializeBlock`/`renderChildren` nor their ApeironNgn equivalents add
+ *  one after the last block. */
 export function withFrontmatter(body: string, node: any): string {
-  const frontmatter = getProp(node, 'frontmatter');
-  const result = frontmatter !== undefined ? `---\n${frontmatter}\n---\n\n${body}` : body;
+  const props = (node.props as PropEntry[] | undefined) ?? [];
+  const result = props.length > 0
+    ? `---\n${[...props].sort((a, b) => a.key.localeCompare(b.key)).map((p) => `${p.key}: ${p.value}`).join('\n')}\n---\n\n${body}`
+    : body;
   return result.endsWith('\n') ? result : `${result}\n`;
 }
 

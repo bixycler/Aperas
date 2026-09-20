@@ -25,8 +25,8 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { parseMarkdownTree, extractAbstract, type ParsedBlockNode } from './astParser';
-import { isReadmeFilename } from './artifacts';
+import { parseMarkdownTree, extractAbstract, parseFrontmatterFields, collectLinkCodesFromText, type ParsedBlockNode } from './astParser';
+import { isReadmeFilename, type PendingLinkCodes } from './artifacts';
 import { generateNodeId } from './snowflake';
 import { carryForwardProp, type PropEntry } from './props';
 import { reconcileTree } from './reconcile';
@@ -47,7 +47,8 @@ export function buildFolderTree(
   folderIdByPath: Map<string, string>,
   artifactIdByPath: Map<string, string>,
   existingByPath: Map<string, any>,
-  pendingTombstones: any[] = []
+  pendingTombstones: any[] = [],
+  pendingDescriptionLinks: PendingLinkCodes[] = []
 ): ParsedFolderNode {
   const relPath = relative(artifactsDir, absoluteDir);
   const isRoot = relPath === '';
@@ -68,7 +69,7 @@ export function buildFolderTree(
     const stat = statSync(fullPath);
 
     if (stat.isDirectory()) {
-      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingTombstones));
+      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingTombstones, pendingDescriptionLinks));
       continue;
     }
     if (!entry.endsWith('.md')) continue;
@@ -100,13 +101,21 @@ export function buildFolderTree(
       } else {
         readmeChildren = parsedRoot.children;
       }
-      // Carries the existing `frontmatter` StringProp's id forward when its value hasn't changed
-      // (`carryForwardProp`) — same fix as `ArtifactNode.ingestFromDisk`'s, and a no-op for the
-      // TerminusDB-backed caller, which doesn't populate `existingByPath`'s `props` (and whose own
-      // `@key: {"@type": "Random"}` schema would ignore a supplied id regardless).
-      readmeProps = frontmatter !== undefined
-        ? [carryForwardProp(existingByPath.get(path)?.props, "frontmatter", frontmatter)]
+      // One `StringProp` per frontmatter key, not one opaque blob — same redesign, same
+      // `carryForwardProp` id-preservation, as `ArtifactNode.ingestFromDisk` (discussion/core.md's
+      // 2026-09-20 entry). `description` is author-opt-in only — never seeded from `readmeText`:
+      // tried once corpus-wide, reverted the same day, since a README's first descendant is
+      // routinely not a real description at all. `description`'s own markdown links are extracted
+      // the same way any block's text is and bubbled up via `pendingDescriptionLinks` (this function
+      // has no `Store` to resolve them against itself) for `apeironNgn/folders.ts`'s
+      // `ingestFolderTree` to resolve once the whole tree write actually lands, keyed by this
+      // folder's own bare snowflake.
+      const frontmatterFields = parseFrontmatterFields(frontmatter);
+      readmeProps = Object.keys(frontmatterFields).length > 0
+        ? Object.entries(frontmatterFields).map(([key, value]) => carryForwardProp(existingByPath.get(path)?.props, key, value))
         : undefined;
+      const descriptionLinkCodes = collectLinkCodesFromText(frontmatterFields.description ?? '');
+      if (descriptionLinkCodes.length > 0) pendingDescriptionLinks.push({ blockId: folderId, codes: descriptionLinkCodes });
       // readmeChildren are relocated straight into FolderNode.children, never kept under a
       // persisted root block of their own — no `.parent` stamping needed here any more
       // (Aperas-apeironngn-design.md §5's `parent`/`PARENT_PRED` merge): `FolderNode.children = ...`

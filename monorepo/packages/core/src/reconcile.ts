@@ -141,6 +141,17 @@ function leafKey(node: any): string {
  * one forward would have produced — nothing is lost by not doing it, and there's no more silent,
  * text-independent override to accidentally clobber or accidentally preserve.
  *
+ * One real exception to that invariant, found live (issues/core.md, 2026-09-20): `astParser.ts`'s
+ * own fallback title for a block with no extractable lead-in term (`let title = blockId`) is *not*
+ * a function of the text at all — it's the block's own freshly-minted scratch id, assigned during
+ * this parse, before reconciliation ever runs. `newNode.blockId` gets overwritten with the old,
+ * carried-forward id two lines below; a `newNode.title` that was only ever mirroring its own
+ * about-to-be-discarded scratch id has to be re-pointed at the id it's actually keeping, or it's
+ * left naming a value that isn't this node's id at all — confirmed live corrupting `title` on every
+ * reconciled fallback-titled block, breaking `toPath()`'s slug-based addressing for each one, the
+ * exact same family as the already-fixed `ArtifactNode`-title corruption this doc tracks elsewhere.
+ *
+
  * `props` is different from `links`: it's *rebuilt from the fresh parse every time* (list
  * numbering, checkbox state — genuinely re-derived from the current document, not a separately
  * asserted fact), so the new value always wins, never the old one. What should survive is just
@@ -152,6 +163,10 @@ function leafKey(node: any): string {
  * unchanged from before — only ApeironNgn's `toReconcileShape()` populates a real id to carry.
  */
 function carryForwardFields(oldNode: any, newNode: any): void {
+  // Must run before the reassignment below: `newNode.blockId` here is still the fresh, about-to-
+  // be-discarded scratch id `astParser.ts` assigned during this parse — the one value a fallback
+  // title (`title === blockId`, no real lead-in found) could actually be mirroring.
+  if (newNode.title === newNode.blockId) newNode.title = oldNode.blockId;
   newNode.blockId = oldNode.blockId;
   if (oldNode.links) {
     newNode.links = oldNode.links;

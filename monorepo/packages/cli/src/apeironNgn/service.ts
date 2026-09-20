@@ -49,6 +49,7 @@ import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLA
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
 import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds } from '@aperas/core/apeironNgn/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/apeironNgn/linkIntegrity';
+import { runMigrateFrontmatter } from '@aperas/core/apeironNgn/artifacts';
 import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
 import { getRunDir, getSocketPath, markReady, clearLock } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
@@ -629,6 +630,13 @@ export function main(): void {
           return res;
         }
         return checkLinkIntegrity(store);
+      }
+      case 'migrateFrontmatter': {
+        if (req.reload) reloadStore();
+        const result = runMigrateFrontmatter(store);
+        dirty = true;
+        if (req.flush) flushIfDirty();
+        return result;
       }
       default:
         throw new Error(`ApeironNgn service: unknown op '${(req as { op?: string }).op}'`);

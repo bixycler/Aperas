@@ -48,7 +48,7 @@ import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIF
 import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
-import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, extractLangFromFrontmatter, extractAnchorNames, HEADING_TREE_ANCHOR_PROP, type ParsedBlockNode, type DocLang } from '../astParser';
+import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, extractLangFromFrontmatter, parseFrontmatterFields, collectLinkCodesFromText, extractAnchorNames, HEADING_TREE_ANCHOR_PROP, type ParsedBlockNode, type DocLang } from '../astParser';
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
@@ -733,13 +733,35 @@ export class ArtifactNode extends BlockNode {
     const content = readFileSync(join(getArtifactsDir(), artifactPath), 'utf-8');
     const { root: newRoot, frontmatter } = parseMarkdownTree(content);
     const now = new Date().toISOString();
-    // Carry the existing `frontmatter` StringProp's id forward when its value hasn't changed —
-    // without this, `mintEmbedded` mints a fresh one on every single ingestion regardless (the
-    // same "prop-id churn" bug class §4's rollout narrative already fixed for per-block props,
-    // just not yet for this artifact-level singular one).
-    const props = frontmatter !== undefined
-      ? [carryForwardProp(this.props as unknown as PropEntry[] | undefined, 'frontmatter', frontmatter)]
+    // Purely a rename-detection content fingerprint now (`matchLeftoverByAbstract`, `reconcile.ts`)
+    // — never the reader-facing abstract (discussion/core.md's 2026-09-20 redesign). No longer used
+    // to seed `description` either: tried once (a migration pass auto-populating `description` from
+    // this exact value for every artifact with no explicit frontmatter), reverted the same day —
+    // `text` is just whatever the first descendant with content happens to be, routinely not a real
+    // description at all (a `**Discussion**: [link]` pointer, say), so most of the corpus ended up
+    // with a `description` that was actively wrong, not merely a placeholder. `description` is
+    // author-opt-in only now: unset until someone actually writes one in frontmatter.
+    const text = extractAbstract(newRoot);
+    // One `StringProp` per frontmatter key, not one opaque blob — every key found is preserved,
+    // known or not, so a hand-authored field this engine doesn't yet recognize still round-trips
+    // through projection. Carries each existing prop's id forward when its own value hasn't
+    // changed, same "prop-id churn" fix §4's rollout narrative already applied elsewhere, just
+    // per-key here instead of per-block.
+    const frontmatterFields = parseFrontmatterFields(frontmatter);
+    const oldProps = this.props as unknown as PropEntry[] | undefined;
+    const props = Object.keys(frontmatterFields).length > 0
+      ? Object.entries(frontmatterFields).map(([key, value]) => carryForwardProp(oldProps, key, value))
       : undefined;
+    // `description`'s own markdown links, extracted the same way any block's text is
+    // (`collectLinkCodesFromText`) and keyed by this artifact's own bare snowflake — `resolveBlockLinks`
+    // (`apeironNgn/artifacts.ts`) unions this key set with `oldWikilinksByBlock`'s, which already
+    // captures this same key's *prior* wikilinks (collected below) — so a `description` edit that
+    // doesn't change a link's target reuses that `Link`'s id rather than reminting it. Scoped
+    // assumption: in the ordinary case (a heading/non-paragraph leading child), this artifact's own
+    // bare snowflake never separately appears as a `pendingLinks` key from body content, so this is
+    // the only entry for it — see `fullIdForKey`'s own doc comment (`apeironNgn/artifacts.ts`) for
+    // the matching resolver-side fix this depends on.
+    const descriptionLinkCodes = collectLinkCodesFromText(frontmatterFields.description ?? '');
 
     let finalRoot: ParsedBlockNode = newRoot;
     let reconciliation: ReconciliationStats | null = null;
@@ -754,6 +776,27 @@ export class ArtifactNode extends BlockNode {
     const hadContent = this.ingestedHash !== undefined;
     const oldLinkTargets = new Map<string, Set<string>>();
     const oldWikilinksByBlock = new Map<string, Array<{ id: string; target: string; positions: number[] }>>();
+    // Captured up front, ahead of the tombstone-confirmation gate below — frontmatter/`description`
+    // is applied unconditionally next, regardless of whether that gate ends up holding the *body*
+    // update back, so its own old-wikilink snapshot has to exist either way.
+    if (hadContent) {
+      collectLinkTargetsByBlock(this, oldLinkTargets);
+      collectOldWikilinksByBlock(this, oldWikilinksByBlock);
+    }
+
+    // Orthogonal to body-content reconciliation (never removes anything, so nothing here needs the
+    // tombstone-confirmation gate below) — applied unconditionally, before that gate might hold the
+    // body update back. Confirmed live this matters: an already-tombstoned child not filtered out of
+    // `toReconcileShape()`'s "old tree" side gets wrongly re-flagged as "would remove" by
+    // `reconcileTree` on every forced re-ingest (a pre-existing, unrelated corpus quirk — the
+    // "dead-container"/tombstone-blind-spot family issues/core.md already tracks) — without this,
+    // that quirk alone would have silently blocked frontmatter/`description` from ever landing on
+    // any artifact it happens to affect, for a completely unrelated reason.
+    this.props = props as unknown as ApeironNode[];
+    const descriptionPendingLinks: PendingLinkCodes[] = descriptionLinkCodes.length > 0
+      ? [{ blockId: this.key, codes: descriptionLinkCodes }]
+      : [];
+
     if (hadContent) {
       const oldTree = this.toReconcileShape();
       console.log(`[ApeironNgn Artifacts] Reconciling '${artifactPath}' against its previously ingested tree...`);
@@ -763,7 +806,7 @@ export class ArtifactNode extends BlockNode {
         return {
           blockCount: 0,
           reconciliation: stats,
-          pendingLinks: [],
+          pendingLinks: descriptionPendingLinks,
           oldLinkTargets,
           oldWikilinksByBlock,
           pendingConfirmation: tombstones.map((t) => ({ blockId: t.blockId, type: t.type, title: t.title })),
@@ -773,8 +816,6 @@ export class ArtifactNode extends BlockNode {
       reconciliation = stats;
       for (const tombstone of tombstones) applyTombstone(this.store, tombstone);
       console.log(`[ApeironNgn Artifacts] Reconciliation: ${stats.matched} matched, ${stats.moved} moved, ${stats.changed} changed, ${stats.added} added, ${stats.removed} removed.`);
-      collectLinkTargetsByBlock(this, oldLinkTargets);
-      collectOldWikilinksByBlock(this, oldWikilinksByBlock);
     }
 
     // `finalRoot` itself is never materialized as its own document any more — only its `children`
@@ -785,6 +826,7 @@ export class ArtifactNode extends BlockNode {
     // direct child's real `parent` straight to `this.id` as a side effect of the containment write.
 
     const pendingLinks = extractLinkCodes(finalRoot);
+    pendingLinks.push(...descriptionPendingLinks);
     const blockCount = (finalRoot.children ?? []).reduce((sum, c) => sum + countBlocks(c), 0);
     console.log(`[ApeironNgn Artifacts] Ingesting '${artifactPath}' as fractal tree (${blockCount} blocks)...`);
 
@@ -794,7 +836,6 @@ export class ArtifactNode extends BlockNode {
     rejectSlugPathCollisions(this.store, artifactPath, finalRoot.children ?? []);
 
     const title = basename(artifactPath);
-    const text = extractAbstract(newRoot);
 
     this.hydrateFromParsed(finalRoot);
 
@@ -1731,12 +1772,26 @@ function buildNodeItem(
     // `text`/`abstract` on the same line -- not one or the other. `node.text` is truncated here
     // (not just at ingest time) as a safety net for an ordinary BlockNode's own long paragraph,
     // which `extractAbstract`'s ingest-time truncation never touches (that's real authored content
-    // `kg:project` must reproduce exactly, not a derived preview).
+    // `kg:project` must reproduce exactly, not a derived preview). An `ArtifactNode`/`FolderNode`
+    // instead reads its own frontmatter `description` (discussion/core.md's 2026-09-20 redesign) —
+    // `.text` there is retired to a private rename-detection fingerprint, never shown to a reader —
+    // baked against `node.links` the same way, since `description`'s own links are now genuinely
+    // the container's own, not a copy with nothing to bake against.
     if (showAbstract) {
+      const kind = nodeKindFromId(id);
+      // Falls back to `.text` when `description` isn't set yet — every already-tracked artifact/
+      // folder gets one on its next ingest (`ingestFromDisk`/`buildFolderTree` both seed it from the
+      // old `extractAbstract` value when no explicit frontmatter `description:` exists), but this
+      // keeps a not-yet-reingested or migration-failed node showing *something* rather than nothing
+      // in the meantime — its own links won't be baked in that fallback case, same as before this
+      // redesign, not a regression.
+      const abstractSource = kind === 'ArtifactNode' || kind === 'FolderNode'
+        ? (getProp(node as unknown as HasProps, 'description') ?? (node.text as unknown as string | undefined))
+        : (node.text as unknown as string | undefined);
       abstract = isTextlessList
         ? `(no text of its own — see kg:unfold ${id})`
-        : node.text !== undefined
-          ? truncateForPreviewWithHint(bakeResolvedLinkIds(node.text as unknown as string, node.links as ApeironNode[] | undefined), id)
+        : abstractSource !== undefined
+          ? truncateForPreviewWithHint(bakeResolvedLinkIds(abstractSource, node.links as ApeironNode[] | undefined), id)
           : undefined;
     }
     tombstonedAt = (node as unknown as { tombstonedAt?: string }).tombstonedAt;
@@ -1787,8 +1842,14 @@ function buildLinkItem(
   if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return null;
   const targetTitle = targetNode.title ?? '<not found>';
   const targetDisplayLabel = displayLabel(targetId, targetNode);
-  const targetAbstract = targetNode.text !== undefined
-    ? truncateForPreviewWithHint(bakeResolvedLinkIds(targetNode.text as unknown as string, targetNode.links as ApeironNode[] | undefined), targetId)
+  // Same `description`-over-`.text` fallback as `buildNodeItem`'s own abstract, for the same
+  // reason — see its doc comment.
+  const targetKind = nodeKindFromId(targetId);
+  const targetAbstractSource = targetKind === 'ArtifactNode' || targetKind === 'FolderNode'
+    ? (getProp(targetNode as unknown as HasProps, 'description') ?? (targetNode.text as unknown as string | undefined))
+    : (targetNode.text as unknown as string | undefined);
+  const targetAbstract = targetAbstractSource !== undefined
+    ? truncateForPreviewWithHint(bakeResolvedLinkIds(targetAbstractSource, targetNode.links as ApeironNode[] | undefined), targetId)
     : undefined;
   const tombstonedAt = (targetNode as unknown as { tombstonedAt?: string }).tombstonedAt;
 

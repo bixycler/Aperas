@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import type { Store } from 'oxigraph';
 import { wrap, tombstoneLiveSubtree } from './node';
 import type { ArtifactNode, BlockNode, TreeNode, Link, ApeironNode, IngestResult } from './node';
-import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId } from './vocab';
+import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId, nodeExists } from './vocab';
 import { allIdsOfKind } from './dehydrate';
 import { resolveDeepPathDetail } from './resolveCreate';
 import { generateNodeId } from '../snowflake';
@@ -402,6 +402,21 @@ function positionsEqual(a: number[], b: number[]): boolean {
  * cleanup deletes whatever old wikilink `Link` isn't in that final set, i.e. one whose target
  * disappeared from this block's text entirely.
  */
+
+/** Every `PendingLinkCodes.blockId`/`oldWikilinksByBlock` key used to name an ordinary `BlockNode`
+ *  content leaf, so hardcoding the `BlockNode:` prefix was safe. `ArtifactNode`/`FolderNode` owning
+ *  real wikilinks of their own (discussion/core.md's 2026-09-20 frontmatter `description` redesign
+ *  — the container's own bare snowflake now legitimately appears as a `blockId` too) exposed the
+ *  assumption: snowflakes are globally unique across kinds, never reused, so trying each prefix in
+ *  turn and taking whichever actually exists resolves either shape correctly, with the by-far-most-
+ *  common case (`BlockNode`) checked first. */
+function fullIdForKey(store: Store, key: string): string {
+  if (nodeExists(store, `BlockNode:${key}`)) return `BlockNode:${key}`;
+  if (nodeExists(store, `ArtifactNode:${key}`)) return `ArtifactNode:${key}`;
+  if (nodeExists(store, `FolderNode:${key}`)) return `FolderNode:${key}`;
+  return `BlockNode:${key}`;
+}
+
 export function resolveBlockLinks(
   store: Store,
   pending: PendingLinkCodes[],
@@ -417,7 +432,7 @@ export function resolveBlockLinks(
   const blockIds = new Set([...codesByBlock.keys(), ...oldWikilinksByBlock.keys()]);
   for (const blockId of blockIds) {
     const codes = codesByBlock.get(blockId) ?? [];
-    const fullId = `BlockNode:${blockId}`;
+    const fullId = fullIdForKey(store, blockId);
     const block = wrap(store, fullId) as unknown as BlockNode;
     const basePath = block.toPath();
     const artifactPath = artifactPathOfBlock(block);
@@ -538,13 +553,47 @@ export function retryDanglingRefs(store: Store, force: boolean = false): { reing
   return { reingested, failed };
 }
 
+/** One-time migration (discussion/core.md's 2026-09-20 frontmatter-as-props redesign): re-runs
+ *  `ingestArtifact` for every live artifact with `bypassUnchangedCheck: true`, so each one's
+ *  existing single opaque `frontmatter` prop splits into per-key props (`description` among them,
+ *  now carrying real, bakeable `Link`s of its own) even though no file content on disk actually
+ *  changed — the same "force past the hash-skip without touching `ingestedHash`" mechanism
+ *  `retryDanglingRefs` above already uses. `force: false` is safe here: reconciling a file against
+ *  itself produces zero removed candidates, so the tombstone-confirmation gate never fires.
+ *  `FolderNode` needs no equivalent pass — `ingestFolderTree` already rebuilds its whole tree
+ *  unconditionally on every `kg:ingest`, no hash-skip to bypass, so the very next ordinary ingest
+ *  migrates every folder's frontmatter for free. */
+export function runMigrateFrontmatter(store: Store): { migrated: string[]; bodyHeldBack: string[]; failed: IngestFailure[] } {
+  const migrated: string[] = [];
+  const bodyHeldBack: string[] = [];
+  const failed: IngestFailure[] = [];
+  for (const id of allLiveIdsOfKind(store, 'ArtifactNode')) {
+    const artifact = wrap(store, id) as unknown as ArtifactNode;
+    const artifactPath = artifact.path as string;
+    try {
+      const result = ingestArtifact(store, artifactPath, false, true);
+      if (!result) continue;
+      // `description` lands either way (applied ahead of the tombstone-confirmation gate) — this
+      // distinguishes only whether the *body* reconciliation also went through, so an operator
+      // knows which paths still have an unrelated pre-existing reconciliation quirk to look at
+      // (`--force` on `kg:ingest <path>` applies it, once actually confirmed safe to).
+      (result.pendingConfirmation ? bodyHeldBack : migrated).push(artifactPath);
+    } catch (err: any) {
+      failed.push({ path: artifactPath, error: err?.message ?? String(err) });
+    }
+  }
+  return { migrated, bodyHeldBack, failed };
+}
+
 /** AST-parses and commits a tracked artifact into a fractal tree of BlockNodes, delegating the
  *  actual work to `ArtifactNode.ingestFromDisk` (`node.ts`) — this wrapper only finds the node and
  *  resolves the wikilinks it turned up, once its own tree write has finished.
  *
  *  `force` (Aperas-crud-design.md §14): passed straight through to `ingestFromDisk`. When it comes
- *  back with `pendingConfirmation` set, nothing was actually committed — no wikilinks to resolve
- *  either, since `pendingLinks` is empty in that case by construction.
+ *  back with `pendingConfirmation` set, the *body* write was held back — but `pendingLinks` isn't
+ *  empty even then any more (discussion/core.md's 2026-09-20 redesign): `description` is applied
+ *  unconditionally, ahead of the tombstone-confirmation gate (`ingestFromDisk`'s own doc comment),
+ *  so its own link codes still need resolving here regardless of which branch fired.
  *
  *  `bypassUnchangedCheck`: passed straight through to `ingestFromDisk` — see its own doc comment
  *  (`node.ts`); `retryDanglingRefs` below is the one caller that ever passes `true`. */
@@ -556,9 +605,6 @@ export function ingestArtifact(store: Store, artifactPath: string, force: boolea
   const record = wrap(store, existingId) as unknown as ArtifactNode;
   const result = record.ingestFromDisk(force, bypassUnchangedCheck);
   if (!result) return null;
-  if (result.pendingConfirmation) {
-    return { ...result, linkResolution: { resolved: 0, dangling: 0, changed: 0 } };
-  }
   const { pendingLinks, oldLinkTargets, oldWikilinksByBlock, ...rest } = result;
   const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, existingId);
   return { ...rest, linkResolution };

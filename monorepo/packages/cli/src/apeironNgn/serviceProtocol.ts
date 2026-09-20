@@ -125,7 +125,14 @@ export type ServiceRequest =
   | { op: 'profileCreateView'; name: string; profileHandle: string; flush: boolean; reload: boolean }
   | { op: 'profileListView'; name?: string; reload: boolean }
   | { op: 'profileRemoveView'; name: string; flush: boolean; reload: boolean }
-  | { op: 'checkLinks'; repair: boolean; reload: boolean; flush: boolean };
+  | { op: 'checkLinks'; repair: boolean; reload: boolean; flush: boolean }
+  // One-time migration (discussion/core.md's 2026-09-20 frontmatter-as-props redesign): re-runs
+  // `ArtifactNode.ingestFromDisk` for every live artifact with `bypassUnchangedCheck: true`, so the
+  // corpus's existing single opaque `frontmatter` prop splits into per-key props (`description`
+  // seeded from each artifact's current `.text`, since that was the reader-facing abstract until
+  // now) even though no file content actually changed. FolderNode needs no equivalent op —
+  // `ingestFolderTree` already rebuilds unconditionally on every `kg:ingest`, no hash-skip to bypass.
+  | { op: 'migrateFrontmatter'; reload: boolean; flush: boolean };
 
 // An unresolved divergence (see `flush`/`clobber` above) doesn't just fail the request that hit
 // it — it's recorded (`contentConflict`/`stateConflict` in `service.ts`) and attached to *every*

@@ -143,6 +143,11 @@ export function runUnfold(store: Store, pathArg: string, view: TreeView | null, 
       id,
       label: 'Link',
       title: `${link.predicate as unknown as string} → ${target?.id ?? '<no target>'}`,
+      // The breadcrumb is the *target*'s path, not the Link's own (a Link has none — same reason
+      // `resolveUnfoldRef` above can't route one through `resolveDeepPath`'s path-segment
+      // machinery): the target is what's actually being revealed here, same as its own line below
+      // getting the full/uncapped treatment while the Link's is just the `predicate → target` summary.
+      path: target ? target.toPath() : null,
       // Unfolding a Link reveals its target — that's the thing actually being unfolded here, same
       // as the plain-`TreeNode` branch below: its own line gets the full/uncapped treatment, and
       // its real children/links get listed one level deeper (not folded away into a bare count).
@@ -153,7 +158,7 @@ export function runUnfold(store: Store, pathArg: string, view: TreeView | null, 
   }
 
   const node = wrap(store, id) as unknown as TreeNode;
-  return { id, label: displayLabel(id, node), title: `${previewText(node, { full: true })}${tombstoneTag(node as unknown as { tombstonedAt?: string })}`, children: previewChildren(store, node, showTombstoned) };
+  return { id, label: displayLabel(id, node), path: node.toPath(), title: `${previewText(node, { full: true })}${tombstoneTag(node as unknown as { tombstonedAt?: string })}`, children: previewChildren(store, node, showTombstoned) };
 }
 
 export async function main(): Promise<void> {
@@ -196,6 +201,10 @@ export async function main(): Promise<void> {
   await ensureServiceRunning();
   const result = await request<ReturnType<typeof runUnfold>>({ op: 'unfold', ref: pathArg, viewRef, peek, showTombstoned, flush, reload });
 
+  // Same breadcrumb, same `aperas://tree/<path>` format, and the same omit-rather-than-print-broken
+  // posture as `kg:tree` (`kgTree.ts`) for whatever `toPath()` can't walk — one line for the node
+  // this unfold actually revealed, since everything printed below it is already relative to it.
+  if (result.path !== null) console.log(`aperas://tree/${result.path}`);
   console.log(`${result.id}  [${result.label}]  ${result.title}`);
   printUnfoldChildren(result.children, 1);
 }

@@ -2,16 +2,37 @@
   /* A deliberate, fixed dark theme rather than `color-scheme: light dark` + inherited UA
    * defaults — the popover contrast bug was exactly this: text color left to the browser's
    * light/dark guess while a component set its own background explicitly, so the pairing broke
-   * whenever the two disagreed. Every color below is explicit for the same reason. */
+   * whenever the two disagreed. Every color below is explicit for the same reason. Values match
+   * the Logseq UI (UniinfoNotes/logseq/custom.css) this app is read alongside day to day. */
   color-scheme: dark;
-  --bg: #2c313a;
-  --fg: #e6e8eb;
-  --fg-muted: #9aa1ab;
-  --border: #3a3f47;
-  --surface: #353b45;
-  --surface-hover: #404754;
+  --bg: #26292b;
+  --fg: #9ea4aa;
+  --fg-muted: #6b7278;
+  --border: #3a3d40;
+  --surface: #313538;
+  --surface-hover: #3b3f43;
   --accent: #5aa7ff;
   font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Screen is dark (above); print is always light, regardless of the browser's own "Background
+ * graphics" print option — that option only controls whether authored backgrounds are kept or
+ * discarded, and a discarded dark background left dark text without a light one to fall back to
+ * (the print contrast bug this replaces). Redeclaring every variable for light-on-white, plus
+ * `print-color-adjust: exact`, makes print correct either way that option is set. */
+@media print {
+  :root {
+    color-scheme: light;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+    --bg: #ffffff;
+    --fg: #1b1e21;
+    --fg-muted: #5b636c;
+    --border: #d7dade;
+    --surface: #f1f2f4;
+    --surface-hover: #e6e8eb;
+    --accent: #1a63c4;
+  }
 }
 
 body {

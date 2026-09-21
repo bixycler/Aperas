@@ -138,6 +138,27 @@ function Editor(props: { id: string; onSave: (text: string) => Promise<void>; on
   );
 }
 
+/** One id, one button — a node's own id and a `Link`'s own id are both just an `id` string to copy,
+ *  so this takes whichever's on hand rather than knowing which kind it is. Feedback is genuinely
+ *  needed here, unlike a click that already has a visible effect (the edit pencil's save, an
+ *  unfold's own expansion): a clipboard write has none, so it briefly swaps the icon instead of
+ *  leaving success silent. */
+function CopyIdButton(props: { id: string }) {
+  const [copied, setCopied] = createSignal(false);
+  const copy = (e: MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(props.id).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1000);
+    });
+  };
+  return (
+    <span class="fd-copy-btn" onClick={copy} title={`Copy id: ${props.id}`}>
+      {copied() ? '✅' : '📋'}
+    </span>
+  );
+}
+
 function Tags(props: { holder?: boolean; starred?: boolean; tombstonedAt?: string; hiddenCount?: number }) {
   return (
     <>
@@ -332,8 +353,9 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
                   <span class="fd-title"><Inline text={n.title} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></span>
                   <Tags holder={n.holder} starred={n.starred} tombstonedAt={n.tombstonedAt} hiddenCount={n.hiddenCount} />
                   <Show when={!editing()}>
-                    <span class="fd-edit-btn" onClick={(e) => { e.stopPropagation(); setEditing(true); }} title="Edit this node's own text">✎</span>
+                    <span class="fd-edit-btn" onClick={(e) => { e.stopPropagation(); setEditing(true); }} title="Edit this node's own text">✏️</span>
                   </Show>
+                  <CopyIdButton id={n.id} />
                   <Show when={n.backlinkCount > 0}>
                     <BacklinksBadge
                       nodeId={n.id} count={n.backlinkCount}
@@ -411,6 +433,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
           <div class="fd-line fd-dangling">
             <span class="fd-kind">🔗</span>
             <span class="fd-title">{l().predicate} — no target</span>
+            <CopyIdButton id={l().linkId} />
           </div>
         </Show>
 
@@ -426,6 +449,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
+            <CopyIdButton id={l().linkId} />
           </div>
           <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
         </Show>
@@ -444,6 +468,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
               <Inline text={l().targetTitle} onNavigate={props.onZoom} />
             </span>
             <Tags starred={l().starred} tombstonedAt={l().tombstonedAt} />
+            <CopyIdButton id={l().linkId} />
           </div>
           <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
           <Show when={l().zoomPath !== undefined}>
@@ -466,6 +491,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} />
             <span class="fd-tag">see {l().pointerTarget}</span>
+            <CopyIdButton id={l().linkId} />
           </div>
         </Show>
 
@@ -479,6 +505,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
             <span class="fd-tag">outside view</span>
+            <CopyIdButton id={l().linkId} />
           </div>
           <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
         </Show>

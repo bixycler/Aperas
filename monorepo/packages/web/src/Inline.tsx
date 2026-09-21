@@ -82,9 +82,9 @@ function LinkPopover(props: {
                 const node = n() as Extract<RenderNodeItem, { kind: 'node'; found: true }>;
                 return (
                   <>
-                    <div class="link-popover-title"><Inline text={node.title} onNavigate={() => {}} /></div>
+                    <div class="link-popover-title"><Inline text={node.title} onNavigate={() => { }} /></div>
                     <Show when={node.abstract !== undefined}>
-                      <div class="link-popover-abstract"><Inline text={node.abstract} onNavigate={() => {}} /></div>
+                      <div class="link-popover-abstract"><Inline text={node.abstract} onNavigate={() => { }} /></div>
                     </Show>
                     <Show when={node.hiddenCount > 0}>
                       <button
@@ -112,6 +112,7 @@ function NavigableLink(props: {
   const [rect, setRect] = createSignal<{ top: number; left: number }>();
   let anchorEl: HTMLAnchorElement | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  let openTimer: ReturnType<typeof setTimeout> | undefined;
 
   // The popover renders through a `<Portal>` (see `LinkPopover` below), so it is never a DOM
   // descendant of this wrapper span — leaving the anchor's own bounding box to move toward the
@@ -128,20 +129,36 @@ function NavigableLink(props: {
     cancelClose();
     closeTimer = setTimeout(() => setRect(undefined), 150);
   };
-  onCleanup(cancelClose);
+  const cancelOpen = () => {
+    if (openTimer === undefined) return;
+    clearTimeout(openTimer);
+    openTimer = undefined;
+  };
+  onCleanup(() => { cancelClose(); cancelOpen(); });
 
   const onEnter = () => {
     if (!anchorEl) return;
     cancelClose();
-    const r = anchorEl.getBoundingClientRect();
-    // `.link-popover` is `position: fixed`, which is already viewport-relative — exactly what
-    // `getBoundingClientRect()` returns. Adding `window.scrollY`/`scrollX` on top (as if this were
-    // `position: absolute` in document-flow coordinates) double-counted the scroll offset, planting
-    // the popover further below the link with every pixel the page had scrolled — confirmed live.
-    setRect({ top: r.bottom + 2, left: r.left });
+    cancelOpen();
+    // Opening is also delayed, not just closing — a pointer only passing through on its way
+    // elsewhere (e.g. reading down the list) used to trigger the popover on every link it crossed.
+    openTimer = setTimeout(() => {
+      openTimer = undefined;
+      if (!anchorEl) return;
+      const r = anchorEl.getBoundingClientRect();
+      // `.link-popover` is `position: fixed`, which is already viewport-relative — exactly what
+      // `getBoundingClientRect()` returns. Adding `window.scrollY`/`scrollX` on top (as if this were
+      // `position: absolute` in document-flow coordinates) double-counted the scroll offset, planting
+      // the popover further below the link with every pixel the page had scrolled — confirmed live.
+      setRect({ top: r.bottom + 2, left: r.left });
+    }, 600);
+  };
+  const onLeave = () => {
+    cancelOpen();
+    scheduleClose();
   };
   return (
-    <span class="inline-link-wrap" onMouseEnter={onEnter} onMouseLeave={scheduleClose}>
+    <span class="inline-link-wrap" onMouseEnter={onEnter} onMouseLeave={onLeave}>
       <a
         ref={anchorEl}
         class="inline-link"

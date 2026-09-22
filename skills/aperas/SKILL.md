@@ -17,7 +17,7 @@ description: >-
 
 # aperas
 
-Status: **v2.7** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v2.8** — four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` isn't published yet. Every command below (`aperas <verb> ...`) actually runs today as `npm run aperas -- <verb> ...` from `Aperas/monorepo/`. **Delete this note once `aperas` ships as a real installed binary** (see `AperasKG/artifacts/issues/packaging.md`'s Pending Tasks — the `bin` build).
 
@@ -93,6 +93,25 @@ They answer different questions, and the tool surface already carves them apart:
 
 Deep read takes the first two as a matter of course, and the third when the decision is harder than reading: editing, or an investigation whose scope has widened. **Deep write is inherently backward** — what a change breaks is only answerable from the citing side, so updating a block means checking its backlinks and forward links and updating what the change has made stale, not leaving them to rot.
 
+### Entering the corpus — two directions, and the gap is where they meet
+
+The three directions above move *from* a node. Acquiring the first one is its own decision, and the corpus has a gradient of its own to move along: the concern docs run `design` most abstract and `discussion` least, with `issues`, `planning` and `history` between. Both directions along it are legitimate, and they do different jobs.
+
+- **Top-down — frame, then zoom in.** `design/<concern>.md` for the settled shape, then `issues`/`history` for what is open and what already landed, then `discussion` for the reasoning trail, and only then the code. It narrows like a binary search, and what it buys is the frame: what the corpus *claims* about this area, and which facet you are actually in.
+- **Bottom-up — pinpoint, then zoom out.** A concrete identifier — a source filename, a symbol, an error string — grepped against the store lands you on the exact node in one step, where a top-down descent would still be choosing among forty Freeflow items. Then climb by following that node's own **forward links**, which usually run up the gradient: a lower block cites the higher one it realizes, while a higher block points down only where it speaks normatively. So a downward link met on the way up is the higher tier governing the lower, not a route further down. **Backlinks** are that same relation from the other end — what cites *this* node — and are how a design block's realizers below are found. Ancestors climb within one artifact only: they recover the surrounding thread, not the statement that governs it.
+
+Neither is a fallback for the other, and neither alone can find drift. **Drift is an absence as often as a contradiction — the design silent where the code has a rule, or asserting a rule the code has since replaced — and in both forms it is indistinguishable from agreement until both directions have been run and compared.** Descend only and you confirm the design; ascend only and you confirm the code, which is why a bottom-up fix is so often correct and still leaves the design a version behind. The finding is the discrepancy at the point the two meet, so a pinpointed node is not oriented until the climb has reached the tier that should govern it: for a code-shaped entry, upward does not stop when the block's meaning stabilizes — it stops at `design`.
+
+Confirmed live, once in each direction. A lead-in-term title-extraction fix traced cold out of `astParser.ts` worked correctly and revealed nothing, while `design/linking.md`'s own Lead-In Term Detection — documenting two checks where the code has three — was stale in exactly the clause the fix depended on. In the same session the reverse: `design/aperas-skill.md`'s Citation direction, read top-down, asserted a rule its own projection had replaced thirteen versions earlier, and was quoted back as current.
+
+```bash
+grep -n 'astParser.ts' AperasKG/Apeiron/BlockNode.jsonld  # pinpoint → candidate ids
+# a planning-tier hit cites the tier above it:
+#   "see [Lead-In Term Detection](../design/linking.md#id/BlockNode:00CDBYV4TG000)"
+aperas unfold BlockNode:00CDBYV4TG000                     # follow it up to design
+# two checks documented, three in the code — that difference is the finding
+```
+
 **Dense linking is the precondition for both.** Everything related gets linked, directly (A references B) or indirectly (a discussion node that talks about both). A sparsely linked graph gives deep read nothing to descend into and deep write nothing to follow. Linking is constitutive here, not tidiness.
 
 **A link is placed at the maturity the relationship has earned.** Writing means placing links, but not all of them direct and not all at once. A relationship that still needs judgment to state goes into a mediating discussion node citing both ends; one that has proven load-bearing becomes a direct citation between them. Reaching for a direct link too early asserts a dependency nobody has tested; leaving one mediated forever makes every traversal pay for the hop.
@@ -150,9 +169,12 @@ A task framed as "fix this bug in `reconcile.ts`" is not outside this skill. The
 ```bash
 grep -n 'reconcile.ts' AperasKG/Apeiron/BlockNode.jsonld   # candidate ids
 aperas unfold <id> --view <task>                           # then work them in the graph
+aperas unfold <design-block>                               # keep climbing — stop at design, not here
 ```
 
 What turns up changes the work: a root cause already identified, a fix already ordered, an approach already tried and rejected for a reason nobody is going to repeat to you.
+
+The third line is the half that gets dropped. A keyword lands you wherever it happens to match, which for a concrete identifier is nearly always `discussion` — the tier where concrete identifiers live. Stopping there gives you the reasoning trail and none of the settled rule, so whatever the code does reads as correct by default. Follow the landed node's forward links up until you reach `design`, and compare what it states against what the code does: that comparison is the only thing that can tell a gap from agreement (*Entering the corpus*, Orientation).
 
 **After**, record what the work found. A fix that lands with nothing written is invisible from every side that can be consulted, because doing the work and recording it are two separate acts and only the second is visible from inside (Philosophy, above).
 

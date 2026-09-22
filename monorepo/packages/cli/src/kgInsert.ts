@@ -218,8 +218,8 @@ export async function main(): Promise<void> {
       ],
       flags: [
         { name: '--base <path>', description: 'Base path deep-path resolution is relative to.' },
-        { name: '--after <anchor>', description: 'Position immediately after this sibling.' },
-        { name: '--before <anchor>', description: 'Position immediately before this sibling.' },
+        { name: '--after <anchor>', description: "Position immediately after <anchor>, becoming a child of <anchor>'s current parent — even if that's a different parent/artifact than the node has now. Cross-parent moves work this way; there is no separate move flag." },
+        { name: '--before <anchor>', description: "Position immediately before <anchor>, becoming a child of <anchor>'s current parent — even if that's a different parent/artifact than the node has now. Cross-parent moves work this way; there is no separate move flag." },
         { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
       ],

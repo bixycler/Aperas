@@ -803,12 +803,23 @@ export class ArtifactNode extends BlockNode {
       const { finalTree, tombstones, stats } = reconcileTree(oldTree, newRoot, now);
       if (tombstones.length > 0 && !force) {
         console.log(`[ApeironNgn Artifacts] '${artifactPath}' would remove ${tombstones.length} node(s) — held back pending confirmation (re-run with --force to apply).`);
+        // Scoped to this artifact's own key alone, matching `collectOldWikilinksByBlock`'s own
+        // contract: `pendingLinks` here is `descriptionPendingLinks` only (the body never got
+        // re-scanned by `extractLinkCodes` below, since that runs after this early return), so
+        // `oldLinkTargets`/`oldWikilinksByBlock` must cover that same population, not the whole
+        // artifact — handing back the full recursive maps collected above lets `resolveBlockLinks`'s
+        // key-union treat every untouched body block as "now has zero codes" and wipe its real
+        // `.links`. Found live, `design/treeview.md`, 2026-09-22 — the same scope-mismatch class
+        // already fixed for `kg:update --text-only` and `repairLinkIntegrity` (issues/linking.md's
+        // Open Issues (3)), missed here because this call site was never exercised until now.
+        const ownOldLinkTargets = new Map(oldLinkTargets.has(this.key) ? [[this.key, oldLinkTargets.get(this.key)!]] : []);
+        const ownOldWikilinksByBlock = new Map(oldWikilinksByBlock.has(this.key) ? [[this.key, oldWikilinksByBlock.get(this.key)!]] : []);
         return {
           blockCount: 0,
           reconciliation: stats,
           pendingLinks: descriptionPendingLinks,
-          oldLinkTargets,
-          oldWikilinksByBlock,
+          oldLinkTargets: ownOldLinkTargets,
+          oldWikilinksByBlock: ownOldWikilinksByBlock,
           pendingConfirmation: tombstones.map((t) => ({ blockId: t.blockId, type: t.type, title: t.title })),
         };
       }

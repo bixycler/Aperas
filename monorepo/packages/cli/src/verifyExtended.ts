@@ -58,6 +58,11 @@ const LINKING_TEXTONLY_PATH = `${DEMO_DIR}/linking-textonly-scope.md`;
 // Own fixture for step 21 (`aperas retype`) — a heading with a real child and a resolved link, plus
 // a second heading whose depth changes; distinct from every fixture above.
 const LINKING_RETYPE_PATH = `${DEMO_DIR}/linking-retype-scope.md`;
+// Own fixture for step 22 (`ArtifactNode.ingestFromDisk`'s tombstone-holdback scope-mismatch — a
+// third sibling of step 19/20's bug, on a call site those fixes never touched) — a citing paragraph
+// with a real resolved link, plus a separate paragraph removed between v1 and v2 specifically to
+// trip reconcile's tombstone-confirmation gate without `--force`.
+const LINKING_INGEST_HOLDBACK_PATH = `${DEMO_DIR}/linking-ingest-holdback-scope.md`;
 
 export async function runApeironNgnExtendedVerification(): Promise<void> {
   console.log("=================================================");
@@ -671,6 +676,66 @@ Body of the heading whose depth changes.
     if (!refusedBareHeading) throw new Error("Expected retype to refuse a bare 'heading' target type without a depth.");
     console.log(`   - refuses a no-op conversion and a depthless 'heading' target.`);
     console.log("   [✓] aperas retype verified successfully.\n");
+
+    console.log("22. Testing ArtifactNode.ingestFromDisk's tombstone-holdback path doesn't wipe an untouched sibling's wikilink (a third sibling of step 19/20's bug, on a call site that fix never touched)...");
+    writeFileSync(join(getArtifactsDir(), LINKING_INGEST_HOLDBACK_PATH), `# Ingest Holdback Scope
+
+## Target <a name='ingest-holdback-scope/target' class='aperas-anchor aperas-tree'></a>
+
+Content the citation points to.
+
+## Citing Paragraph
+
+A [citation](#ingest-holdback-scope/target) to the target above, which must survive an ingest that gets held back by an unrelated pending removal.
+
+## Removable Section
+
+This section is deleted between v1 and v2, purely to trip reconcile's tombstone-confirmation gate.
+`, 'utf-8');
+    trackArtifact(store, LINKING_INGEST_HOLDBACK_PATH);
+    ingestFolderTree(store);
+    ingestArtifact(store, LINKING_INGEST_HOLDBACK_PATH);
+    const holdbackArtifactId = findByExactPath(store, LINKING_INGEST_HOLDBACK_PATH);
+    if (!holdbackArtifactId) throw new Error(`Expected '${LINKING_INGEST_HOLDBACK_PATH}' to be tracked after ingestion.`);
+    const holdbackArtifact = wrap(store, holdbackArtifactId) as unknown as ArtifactNode;
+    const holdbackTarget = findHeadingByTitle(holdbackArtifact, 'Target');
+    if (!holdbackTarget) throw new Error(`Expected to find the 'Target' heading in '${LINKING_INGEST_HOLDBACK_PATH}'.`);
+    const holdbackCiting = findHeadingByTitle(holdbackArtifact, 'Citing Paragraph');
+    if (!holdbackCiting) throw new Error(`Expected to find the 'Citing Paragraph' heading in '${LINKING_INGEST_HOLDBACK_PATH}'.`);
+    const holdbackLinkBefore = ((wrap(store, holdbackCiting.id) as unknown as BlockNode).links as unknown as Array<{ id: string; target?: { id: string } }> ?? [])
+      .find((l) => l.target?.id === holdbackTarget.id);
+    if (!holdbackLinkBefore) throw new Error(`Expected 'Citing Paragraph' to carry a resolved Link to ${holdbackTarget.id}, got: ${JSON.stringify(wrap(store, holdbackCiting.id).links)}`);
+
+    // v2: remove 'Removable Section' entirely — reconcile now finds a genuine tombstone candidate,
+    // and re-ingesting without `--force` must hold the whole body update back pending confirmation,
+    // exactly the branch that used to wipe 'Citing Paragraph's untouched Link (design/treeview.md,
+    // found live 2026-09-22).
+    writeFileSync(join(getArtifactsDir(), LINKING_INGEST_HOLDBACK_PATH), `# Ingest Holdback Scope
+
+## Target <a name='ingest-holdback-scope/target' class='aperas-anchor aperas-tree'></a>
+
+Content the citation points to.
+
+## Citing Paragraph
+
+A [citation](#ingest-holdback-scope/target) to the target above, which must survive an ingest that gets held back by an unrelated pending removal.
+`, 'utf-8');
+    trackArtifact(store, LINKING_INGEST_HOLDBACK_PATH);
+    const holdbackResult = ingestArtifact(store, LINKING_INGEST_HOLDBACK_PATH);
+    if (!holdbackResult?.pendingConfirmation || holdbackResult.pendingConfirmation.length === 0) {
+      throw new Error(`Expected the second ingest to hold the body update back pending confirmation (a genuine tombstone candidate), got: ${JSON.stringify(holdbackResult)}`);
+    }
+    const holdbackCitingAfter = wrap(store, holdbackCiting.id) as unknown as BlockNode;
+    const holdbackLinkAfter = ((holdbackCitingAfter.links as unknown as Array<{ id: string; target?: { id: string } }>) ?? [])
+      .find((l) => l.target?.id === holdbackTarget.id);
+    if (!holdbackLinkAfter) {
+      throw new Error(`Expected the held-back ingest to leave 'Citing Paragraph's Link to ${holdbackTarget.id} in place, but '.links' is now: ${JSON.stringify(holdbackCitingAfter.links)}`);
+    }
+    if (holdbackLinkAfter.id !== holdbackLinkBefore.id) {
+      throw new Error(`Expected the Link id to survive the held-back ingest untouched (${holdbackLinkBefore.id}), but it's now ${holdbackLinkAfter.id}.`);
+    }
+    console.log(`   - A tombstone-holdback ingest (pending confirmation, no --force) left 'Citing Paragraph's Link ${holdbackLinkAfter.id} in place, unchanged.`);
+    console.log("   [✓] ArtifactNode.ingestFromDisk tombstone-holdback scope fix verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Extended Verification complete!");
   } finally {

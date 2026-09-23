@@ -104,6 +104,11 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   let title: string | undefined;
   let props: ParsedBlockNode['props'];
   let overflow: ParsedBlockNode[];
+  // True only for the single-parsed-item branch below (never for a real heading retitle, which
+  // has its own unconditional `props = firstChild.props` already) — gates whether `props` (built
+  // there from `firstChild`'s own non-ordering props, merged with `target`'s preserved
+  // `orderedList`/`startIndex`) is actually used downstream, instead of `oldShape.props` verbatim.
+  let singleItemAdopt = false;
   // Whichever branch below supplies `text`/`title` does so from a real parsed node (`firstChild`)
   // that may itself carry `linkCodes` for wikilinks inside that very text — captured separately
   // here since `text`/`title` themselves are plain strings once destructured out, with nowhere
@@ -127,15 +132,18 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     props = firstChild.props;
     overflow = firstChild.children ?? [];
     rootLinkCodes = firstChild.linkCodes;
-  } else if (firstChild?.type === 'paragraph') {
-    // A list directly following a paragraph adopts into it (astParser.ts's own adoption rule,
-    // §8) *regardless* of whether the paragraph sits under a heading/listItem container — this
-    // module's own top doc comment only checked the *text*-consuming rule (correctly root-exempt),
-    // not this separate one. Confirmed live: piping "paragraph\n\n- item\n- item" produced a
-    // single root child (the paragraph, with the list already adopted as its own `children`) —
-    // silently dropping the whole list on the floor when only `firstChild.text` was read here.
+  } else if (parsedChildren.length === 1) {
+    // A single parsed item — of *any* type, not only a bare paragraph — adopts its full state
+    // onto `target`: text, non-ordering props (`checked` in particular), its own nested children
+    // (a list directly following a paragraph, or nested under a listItem, already adopts into it
+    // — astParser.ts's own adoption rule, §8 — regardless of container, which is why this stays a
+    // single parsed child even when it carries a whole sub-list). Generalizes the old
+    // paragraph-only special case (discussion/aperas-skill.md's v2.10 delta): that left `checked`,
+    // and a genuinely-empty-text-with-children push, with no safe input at all — piping a bullet
+    // marker at a *paragraph*-only target fell into the `else` branch below and wiped `target`'s
+    // own text as an unintended side effect, confirmed live pushing a checkbox toggle.
     text = firstChild.text;
-    overflow = [...(firstChild.children ?? []), ...parsedChildren.slice(1)];
+    overflow = firstChild.children ?? [];
     rootLinkCodes = firstChild.linkCodes;
     // A non-heading target's own title is the lead-in term `astParser.ts` just re-derived from
     // this exact text (`extractLeadInTitle`, already run during `parseMarkdownTree` above) — read
@@ -154,8 +162,42 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     // is title-based) by re-deriving it from whatever paragraph text was pushed to the artifact
     // root's own leading-summary convention every concern doc's `ArtifactNode.text` uses.
     if (target.type !== 'heading' && kind !== 'ArtifactNode') {
-      title = firstChild.title;
+      // `extractLeadInTitle` never returns a genuinely absent title — with no lead-in it falls
+      // back to a throwaway id minted just for *this one parse* (astParser.ts's own `let title =
+      // blockId` default). Adopting that value verbatim would give `target` some other node's
+      // disposable, unrelated id as its title (confirmed live: a title-losing edit was silently
+      // doing exactly this before this check existed) — title is a derived field here, so once
+      // nothing can be derived the right fallback is `target`'s *own* id, the same
+      // "degrades to an id-fallback title" convention `retype` already documents, not a frozen
+      // copy of whatever the title happened to be before this edit.
+      title = firstChild.title === firstChild.blockId ? target.key : firstChild.title;
     }
+    // `orderedList`/`startIndex` are never adopted here, no matter which marker the piped item
+    // used: a lone parsed item always looks like the first item of its own list (astParser.ts's
+    // own convention for a standalone parse), so adopting them verbatim would silently turn an
+    // existing plain-continuation item into a spurious run-leader mid-run, splitting the render
+    // (discussion/aperas-skill.md's v2.10 delta). Every *other* existing prop — `checked` above
+    // all — is preserved whenever the parse doesn't itself address it: a bare-text edit (no
+    // bullet marker in the input at all, `firstChild.type !== 'listItem'`) parses to a plain
+    // paragraph with no `checked` key of its own, and naively adopting `firstChild.props`
+    // wholesale would silently clear an existing checkbox's state on every ordinary text-only
+    // edit (confirmed live: a follow-up bare-text update wiped a checkbox this same fix had just
+    // set). A bullet with no `[x]`/`[ ]` is different: choosing list syntax at all is itself the
+    // caller's deliberate statement about checkbox state, so `checked` is always addressed for a
+    // `listItem` `firstChild`, whether or not that syntax happened to include a checkbox marker —
+    // a bare `- text` (list syntax, no marker) clears an existing checkbox rather than preserving
+    // it, distinct from bare text (no list syntax at all), which never touches it.
+    const targetProps = (target.props as unknown as PropEntry[] | undefined) ?? [];
+    const firstChildProps = (firstChild.props as unknown as PropEntry[] | undefined) ?? [];
+    const firstChildKeys = new Set(firstChildProps.map((p) => p.key));
+    if (firstChild.type === 'listItem') firstChildKeys.add('checked');
+    const preserved = targetProps.filter(
+      (p) => p.key === 'orderedList' || p.key === 'startIndex' || !firstChildKeys.has(p.key)
+    );
+    const adopted = firstChildProps.filter((p) => p.key !== 'orderedList' && p.key !== 'startIndex');
+    const mergedProps = [...adopted, ...preserved];
+    props = mergedProps.length > 0 ? (mergedProps as unknown as ParsedBlockNode['props']) : undefined;
+    singleItemAdopt = true;
   } else {
     text = undefined;
     overflow = parsedChildren;
@@ -222,13 +264,14 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
 
   if (req.textOnly) {
     // `title` updates whenever a fresh one exists (heading retitle or non-heading re-derivation);
-    // `props` only during an actual heading retitle (`retitling`) — an ordinary text-only update on
-    // a non-heading target must never wipe an existing prop (a listItem's `orderedList`/
-    // `startIndex`) just because its re-derived title changed too.
+    // `props` only during an actual heading retitle or a single-item adopt (`retitling`/
+    // `singleItemAdopt`) — a plain multi-item overflow push must never wipe an existing prop (a
+    // listItem's `orderedList`/`startIndex`, or `checked`) just because its re-derived title
+    // changed too.
     if (title !== undefined) {
       target.title = title;
     }
-    if (retitling) {
+    if (retitling || singleItemAdopt) {
       target.props = props?.length ? (props as unknown as ApeironNode[]) : undefined;
     }
     // Extracted *before* `hydrateFromParsed` runs on any of `overflow` below — `extractLinkCodes`
@@ -254,17 +297,17 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
 
   // `props` defaults to `oldShape`'s own (preserving whatever `target` already had, e.g. a
   // heading's tree-anchor, or a listItem's `orderedList`/`startIndex`) unless an actual heading
-  // retitle (`retitling`) explicitly supplied a new value to replace it with — a non-heading
-  // title re-derivation was never asked to touch props, and `carryForwardFields`'s own prop-id-
-  // preservation only activates when both sides have props to compare in the first place (leaving
-  // it out here, as this used to, silently dropped it).
+  // retitle or a single-item adopt (`retitling`/`singleItemAdopt`) explicitly supplied a new value
+  // — a plain multi-item overflow push was never asked to touch props, and `carryForwardFields`'s
+  // own prop-id-preservation only activates when both sides have props to compare in the first
+  // place (leaving it out here, as this used to, silently dropped it).
   const newShape = {
     blockId: target.key,
     type: target.type,
     title: title ?? target.title,
     text,
     children: overflow,
-    props: retitling ? props : oldShape.props,
+    props: (retitling || singleItemAdopt) ? props : oldShape.props,
     linkCodes: rootLinkCodes,
   };
   const { finalTree, tombstones, stats } = reconcileTree(oldShape, newShape);

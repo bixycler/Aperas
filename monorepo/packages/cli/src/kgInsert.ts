@@ -141,24 +141,62 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
   // A lone piped `listItem` always parses as its own one-item list (`astParser.ts`'s
   // `convertChildren`), so it unconditionally comes out of the parse carrying its own
   // `orderedList`/`startIndex` — correct for a genuinely new list, wrong when it's landing right
-  // after a plain (no-props-of-its-own) `listItem` that's already a continuation of an existing
-  // run: the render-time boundary rule ("a next item's own explicit prop starts a new run") then
-  // reads the freshly-parsed prop as a second run starting immediately, and renders a spurious
-  // blank line before it (issues/list-consumption.md). Only the documented, confirmed-live shape
-  // is handled here — appending/inserting after an ordinary continuation item — not every possible
-  // position relative to a run; landing before an existing run's own leader is a materially
-  // different case (the new item would need to *take over* the leader role, not just avoid
-  // claiming one) and isn't attempted here.
+  // after an existing run: the render-time boundary rule ("a next item's own explicit prop starts
+  // a new run") then reads the freshly-parsed prop as a second run starting immediately, and
+  // renders a spurious blank line before it (issues/list-consumption.md). Scoped to appending at
+  // the end of an existing run only — not every possible position; a real middle-of-the-list
+  // insertion still needs the parent-plus-complete-list renumbering route
+  // (discussion/aperas-skill.md's v2.10 delta).
   if (topLevel.length === 1 && topLevel[0].type === 'listItem') {
     const siblings = parent.treeChildren;
-    const precedingId = anchorId === undefined
-      ? siblings[siblings.length - 1]?.id
+    const precedingIdx = anchorId === undefined
+      ? siblings.length - 1
       : side === 'after'
-        ? anchorId
-        : siblings[siblings.findIndex((s) => s.id === anchorId) - 1]?.id;
-    if (precedingId !== undefined) {
-      const preceding = wrap(store, precedingId) as unknown as BlockNode;
-      if (preceding.type === 'listItem' && getProp(preceding as unknown as HasProps, 'orderedList') === undefined) {
+        ? siblings.findIndex((s) => s.id === anchorId)
+        : siblings.findIndex((s) => s.id === anchorId) - 1;
+    const preceding = precedingIdx >= 0 ? (wrap(store, siblings[precedingIdx].id) as unknown as BlockNode) : undefined;
+    if (preceding?.type === 'listItem') {
+      // Walk back to this run's leader — the nearest listItem (`preceding` itself, or an earlier
+      // sibling) carrying its own explicit `orderedList` prop; every real run has one, minted by
+      // `convertChildren` for whichever item started it.
+      let leaderIdx = precedingIdx;
+      while (leaderIdx > 0) {
+        const candidate = wrap(store, siblings[leaderIdx].id) as unknown as BlockNode;
+        if (candidate.type !== 'listItem' || getProp(candidate as unknown as HasProps, 'orderedList') !== undefined) break;
+        leaderIdx--;
+      }
+      const leader = wrap(store, siblings[leaderIdx].id) as unknown as HasProps;
+      const leaderOrdered = getProp(leader, 'orderedList');
+      // Only treat this as *continuing* that run when the piped item's own freshly-parsed shape
+      // actually matches it — landing next to an unordered run with a piped `1. ...` (or the
+      // reverse) means a new, different-shaped run is genuinely starting right there, not
+      // continuing the old one; stripping its props then would silently make a real ordered item
+      // render as an unordered continuation (or vice versa). Confirmed live: a fresh `1. ...` item
+      // landing after an unordered run's own continuation item lost its ordering entirely before
+      // this guard existed.
+      const pipedOrdered = getProp(topLevel[0] as unknown as HasProps, 'orderedList');
+      if (pipedOrdered !== leaderOrdered) {
+        // Different shape — leave the freshly-parsed props exactly as they are.
+      } else if (leaderOrdered === 'false') {
+        // Unordered run — no number to validate, so it's safe to strip whether landing next to
+        // the leader itself or one of its plain continuations (this used to only cover the
+        // continuation case).
+        topLevel[0].props = (topLevel[0].props ?? []).filter((p: PropEntry) => p.key !== 'orderedList' && p.key !== 'startIndex');
+      } else if (leaderOrdered === 'true') {
+        // Ordered run — the expected next number is the leader's own `startIndex` plus how many
+        // items separate `preceding` from the leader (1 if `preceding` *is* the leader, 2 for its
+        // immediate successor, and so on). A match strips the piped item's props, making it a
+        // clean continuation; a mismatch is refused rather than silently discarded (this used to
+        // never check the piped number at all).
+        const leaderStart = Number(getProp(leader, 'startIndex') ?? '1');
+        const expectedNext = leaderStart + (precedingIdx - leaderIdx) + 1;
+        const pipedNext = Number(getProp(topLevel[0] as unknown as HasProps, 'startIndex') ?? '1');
+        if (pipedNext !== expectedNext) {
+          throw new Error(
+            `Appending to this ordered list expected item number ${expectedNext} (continuing the existing run) — got ${pipedNext}. ` +
+            `Pipe the correct next number, or use 'aperas update' on the list's parent heading with the complete, renumbered list for anything but a plain append.`
+          );
+        }
         topLevel[0].props = (topLevel[0].props ?? []).filter((p: PropEntry) => p.key !== 'orderedList' && p.key !== 'startIndex');
       }
     }

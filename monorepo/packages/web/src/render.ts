@@ -37,7 +37,7 @@ export type RenderNodeItem = RenderNodeItemFound | RenderNodeItemNotFound;
 
 export interface RenderLinkItem {
   kind: 'link';
-  linkId: string;
+  id: string;
   depth: number;
   predicate: string;
   targetId?: string;

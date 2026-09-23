@@ -1663,7 +1663,7 @@ export type RenderNodeItem = RenderNodeItemNotFound | RenderNodeItemFound;
  *  elsewhere — `[*see <path>]`), `outside-view` (an upward jump, §13.3). */
 export interface RenderLinkItem {
   kind: 'link';
-  linkId: string;
+  id: string;
   depth: number;
   predicate: string;
   targetId?: string;
@@ -1854,7 +1854,7 @@ function buildLinkItem(
   const targetId = (link.target as unknown as TreeNode | undefined)?.id;
   const predicate = (link.predicate as unknown as string) ?? '';
   if (!targetId) {
-    return { kind: 'link', linkId, depth, predicate, mode: 'no-target', children: [] };
+    return { kind: 'link', id: linkId, depth, predicate, mode: 'no-target', children: [] };
   }
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
   if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return null;
@@ -1880,7 +1880,7 @@ function buildLinkItem(
     // they're always all emitted) this position's `hiddenCount` is never omitted when the target
     // has any real content of its own.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
   }
   const canon = zs.canonical.get(targetId);
   const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
@@ -1905,7 +1905,7 @@ function buildLinkItem(
       if (item) children.push(item);
     }
     return {
-      kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText,
+      kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText,
       mode: 'expanded', starred: starred.has(linkId), zoomPath, tombstonedAt, children,
     };
   }
@@ -1916,10 +1916,10 @@ function buildLinkItem(
     // at — unlike `home`/`link`, `upward` never claims a position anywhere). Flat, non-recursing
     // reference instead, same shape as a rule-a preview, tagged to explain why it stops here.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
   }
   const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
-  return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
+  return { kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
 }
 
 /** `RenderItem`'s text serializer — the sole remaining consumer of the string format `buildNodeItem`/
@@ -1951,11 +1951,11 @@ function toText(items: RenderItem[], lines: string[]): void {
     }
     // item.kind === 'link'
     const tomb = item.tombstonedAt ? '  (tombstoned)' : '';
-    const head = `${indent}${item.linkId}  [Link]  ${item.predicate} → ${item.targetId}  `;
+    const head = `${indent}${item.id}  [Link]  ${item.predicate} → ${item.targetId}  `;
     const preview = item.abstract !== undefined ? `${item.targetTitle}  ║  ${item.abstract}` : (item.targetTitle ?? '');
     switch (item.mode) {
       case 'no-target':
-        lines.push(`${indent}${item.linkId}  [Link]  ${item.predicate}  <no target>`);
+        lines.push(`${indent}${item.id}  [Link]  ${item.predicate}  <no target>`);
         break;
       case 'preview': {
         const foldTag = (item.hiddenCount ?? 0) > 0 ? `  [+${item.hiddenCount}]` : '';

@@ -1,4 +1,5 @@
 import { createSignal, createResource, createEffect, onCleanup, For, Show, createMemo } from 'solid-js';
+import { createStore, reconcile } from 'solid-js/store';
 import FolderDiv from './FolderDiv';
 import type { TreeResponse, ViewInfo } from './render';
 import './App.css';
@@ -64,6 +65,20 @@ export default function App() {
     () => ({ apex: apex(), view: view(), tick: refreshTick() }),
     (params) => fetchTree(params),
   );
+
+  // `<For>` (in `FolderDiv`) reconciles by object reference, and a plain `createResource` hands back
+  // a brand-new object graph on every poll — new references top to bottom, even when nothing
+  // changed. Without this store, `<For>` can't tell an unchanged node from a new one and tears down
+  // and remounts the entire tree every `POLL_INTERVAL_MS`, dropping any open inline editor mid-edit
+  // (discussion/webapp.md's Freeflow entry on this dates the finding). `reconcile` merges each poll's
+  // response into `treeStore` by `id`, preserving reference identity for anything unchanged so `<For>`
+  // only remounts what actually differs.
+  const [treeStore, setTreeStore] = createStore<TreeResponse>({ path: null, tree: null });
+  createEffect(() => {
+    if (tree.error) return;
+    const data = tree.latest;
+    if (data) setTreeStore(reconcile(data, { key: 'id' }));
+  });
 
   // Cheap stopgap for the missing tick channel (Slice 4, planning/webapp.md): no push exists yet
   // to tell this tab an external `aperas fold`/`unfold`/CLI write changed the store, so poll for it
@@ -194,7 +209,7 @@ export default function App() {
       </nav>
 
       <main class="tree">
-        <Show when={!tree.error && tree.latest?.tree} fallback={!tree.loading && !tree.error && <p class="status">Nothing here — the apex itself may be hidden.</p>}>
+        <Show when={!tree.error && treeStore.tree} fallback={!tree.loading && !tree.error && <p class="status">Nothing here — the apex itself may be hidden.</p>}>
           {(root) => (
             <FolderDiv
               item={root()} view={view()} onZoom={onZoom} onFold={onFold} onEdit={onEdit}

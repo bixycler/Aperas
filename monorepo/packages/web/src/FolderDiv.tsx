@@ -511,8 +511,8 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
         open={l().mode === 'expanded'}
         hasStem={hasChildren()}
         onToggle={
-          l().mode === 'preview' ? () => props.onFold(l().linkId, 'unfold')
-          : l().mode === 'expanded' ? () => props.onFold(l().linkId, 'fold')
+          l().mode === 'preview' ? () => props.onFold(l().id, 'unfold')
+          : l().mode === 'expanded' ? () => props.onFold(l().id, 'fold')
           : undefined
         }
       />
@@ -521,7 +521,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
           <div class="fd-line fd-dangling">
             <span class="fd-kind">🔗</span>
             <span class="fd-title">{l().predicate} — no target</span>
-            <CopyIdButton id={l().linkId} />
+            <CopyIdButton id={l().id} />
           </div>
         </Show>
 
@@ -530,14 +530,14 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             class="fd-line fd-preview"
             onClick={(e) => {
               if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!);
-              else props.onFold(l().linkId, 'unfold');
+              else props.onFold(l().id, 'unfold');
             }}
             title="Click to unfold · ctrl-click to zoom in"
           >
             <LinkKind targetDisplayLabel={l().targetDisplayLabel} />
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
-            <CopyIdButton id={l().linkId} />
+            <CopyIdButton id={l().id} />
           </div>
           <LinkAbstract text={l().text ?? l().abstract} onNavigate={props.onZoom} />
         </Show>
@@ -547,7 +547,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             class="fd-line"
             onClick={(e) => {
               if ((e.ctrlKey || e.metaKey) && l().targetId) props.onZoom(l().targetId!);
-              else props.onFold(l().linkId, 'fold');
+              else props.onFold(l().id, 'fold');
             }}
             title="Click to fold · ctrl-click to zoom in"
           >
@@ -556,7 +556,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
               <Inline text={l().targetTitle} onNavigate={props.onZoom} />
             </span>
             <Tags starred={l().starred} tombstonedAt={l().tombstonedAt} />
-            <CopyIdButton id={l().linkId} />
+            <CopyIdButton id={l().id} />
           </div>
           <LinkAbstract text={l().text ?? l().abstract} onNavigate={props.onZoom} />
           <Show when={l().zoomPath !== undefined}>
@@ -579,7 +579,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} />
             <span class="fd-tag">see {l().pointerTarget}</span>
-            <CopyIdButton id={l().linkId} />
+            <CopyIdButton id={l().id} />
           </div>
         </Show>
 
@@ -593,7 +593,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <span class="fd-title fd-link-text fd-link-title"><Inline text={l().targetTitle} onNavigate={props.onZoom} /></span>
             <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
             <span class="fd-tag">outside view</span>
-            <CopyIdButton id={l().linkId} />
+            <CopyIdButton id={l().id} />
           </div>
           <LinkAbstract text={l().text ?? l().abstract} onNavigate={props.onZoom} />
         </Show>

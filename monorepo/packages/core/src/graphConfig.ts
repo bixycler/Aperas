@@ -34,6 +34,8 @@ export interface GraphConfig {
    *  relative to the config file's own directory) or a URL, verbatim; `undefined` for a root
    *  graph (e.g. the corp level) with nothing above it. Not walked or dereferenced here. */
   parent?: string;
+  /** Human-readable display name for this graph (e.g. the webapp's `<h1>` and page title). */
+  name?: string;
   /** Where `aperas.config.json` itself was found — mostly for diagnostics/error messages. */
   configPath: string;
 }
@@ -45,6 +47,7 @@ export interface GraphConfig {
 interface RawGraphConfig {
   graph: string | { apeiron: string; artifacts: string };
   parent?: string;
+  name?: string;
 }
 
 function isUrl(value: string): boolean {
@@ -100,7 +103,9 @@ export function resolveGraphConfig(startDir: string = process.cwd()): GraphConfi
     ? undefined
     : (isUrl(raw.parent) ? raw.parent : resolve(configDir, raw.parent));
 
-  return { apeironRoot, artifactsRoot, parent, configPath };
+  const name = typeof raw.name === 'string' ? raw.name : undefined;
+
+  return { apeironRoot, artifactsRoot, parent, name, configPath };
 }
 
 /** The fallback graph root when no `aperas.config.json` is found anywhere above the caller — this
@@ -144,4 +149,36 @@ export function resolveEffectiveArtifactsRoot(startDir?: string): string {
   if (process.env.APERAS_ARTIFACTS_ROOT) return process.env.APERAS_ARTIFACTS_ROOT;
   const config = resolveGraphConfig(startDir);
   return config ? config.artifactsRoot : resolve(resolveFallbackGraphRoot(), 'artifacts');
+}
+
+/**
+ * This graph's display name (`aperas.config.json`'s "name" field), or `undefined` if none is
+ * configured. Checks `APERAS_GRAPH_NAME` first, same as the two root resolvers above — and for the
+ * same reason: `service.ts`'s production HTTP listener calls this with no `startDir` from *inside*
+ * the long-lived service process, whose own cwd is wherever the packaged binary happens to be
+ * installed, never the graph's directory. Without the env var, this would silently resolve some
+ * *other* graph's name (or this repo's own fallback) rather than the one the service is actually
+ * bound to — confirmed live, serving a throwaway test graph reported "AperasKG" until this was
+ * added. `bindAndSpawn` (`kgService.ts`) resolves it once, correctly, from *its own* cwd (the same
+ * place `apeironRoot`/`artifactsRoot` are resolved from) and passes it through `spawnService`.
+ *
+ * The ancestor walk alone isn't enough as a fallback, either: this repo's own dev checkout has no
+ * `aperas.config.json` reachable by walking up from a typical `monorepo/`-rooted cwd, since
+ * `AperasKG/` sits beside `monorepo/`, not above it (`resolveFallbackGraphRoot`'s own doc comment).
+ * So when the walk finds nothing, this also checks directly beside the hardcoded fallback root —
+ * the one place a config for *this* checkout could actually be sitting.
+ */
+export function resolveEffectiveGraphName(startDir?: string): string | undefined {
+  if (process.env.APERAS_GRAPH_NAME) return process.env.APERAS_GRAPH_NAME;
+  const config = resolveGraphConfig(startDir);
+  if (config) return config.name;
+
+  const fallbackConfigPath = join(resolveFallbackGraphRoot(), CONFIG_FILENAME);
+  if (!existsSync(fallbackConfigPath)) return undefined;
+  try {
+    const raw = JSON.parse(readFileSync(fallbackConfigPath, 'utf-8')) as RawGraphConfig;
+    return typeof raw.name === 'string' ? raw.name : undefined;
+  } catch {
+    return undefined;
+  }
 }

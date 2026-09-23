@@ -1,6 +1,7 @@
 import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderItem, BacklinkEntry } from './render';
+import { apiFetch } from './apiFetch';
 import Inline from './Inline';
 import MermaidDiagram, { isMermaidCode } from './MermaidDiagram';
 import MarkdownTable, { isMarkdownTable } from './MarkdownTable';
@@ -113,7 +114,7 @@ function Editor(props: { id: string; onSave: (text: string) => Promise<void>; on
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string>();
 
-  fetch(`/api/show?id=${encodeURIComponent(props.id)}`)
+  apiFetch(`/api/show?id=${encodeURIComponent(props.id)}`)
     .then((r) => r.json())
     .then((doc) => { setText(doc.text ?? ''); setLoading(false); })
     .catch((err) => { setError(err instanceof Error ? err.message : String(err)); setLoading(false); });
@@ -194,7 +195,7 @@ function BacklinksPopover(props: {
   );
   let el: HTMLDivElement | undefined;
 
-  fetch(`/api/backlinks?id=${encodeURIComponent(props.nodeId)}`)
+  apiFetch(`/api/backlinks?id=${encodeURIComponent(props.nodeId)}`)
     .then((r) => r.json())
     .then((body: BacklinkEntry[]) => setEntries(body))
     .catch((err) => setError(err instanceof Error ? err.message : String(err)));

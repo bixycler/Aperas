@@ -12,9 +12,9 @@
  * did as its own first half, just without the respawn after.
  */
 
-import { readLock, isProcessAlive, clearLock, claimLock } from './apeironNgn/serviceLock';
+import { readLock, isProcessAlive, clearLock, claimLock, resolveHttpPort } from './apeironNgn/serviceLock';
 import { ping, spawnService, waitForReady } from './apeironNgn/serviceClient';
-import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot } from '@aperas/core/graphConfig';
+import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot, resolveEffectiveGraphName } from '@aperas/core/graphConfig';
 import { wantsHelp, printHelp } from './kgHelp';
 
 function sleep(ms: number): Promise<void> {
@@ -33,15 +33,19 @@ async function bindAndSpawn(): Promise<{ apeironRoot: string; artifactsRoot: str
   const cwd = process.cwd();
   const apeironRoot = resolveEffectiveApeironRoot(cwd);
   const artifactsRoot = resolveEffectiveArtifactsRoot(cwd);
-  if (claimLock(apeironRoot, artifactsRoot) !== 'claimed') {
+  const graphName = resolveEffectiveGraphName(cwd);
+  const httpPort = resolveHttpPort();
+  if (claimLock(apeironRoot, artifactsRoot, httpPort) !== 'claimed') {
     throw new Error('Another `aperas service start`/`restart` appears to be in progress — try again shortly.');
   }
-  spawnService(apeironRoot, artifactsRoot);
+  spawnService(apeironRoot, artifactsRoot, httpPort, graphName);
   await waitForReady();
   return { apeironRoot, artifactsRoot };
 }
 
-async function runStart(): Promise<void> {
+/** Exported for `kgServe.ts` ("aperas serve"): its own "ensure a service is running, bound to the
+ *  current graph, start one if not" need is exactly this function's existing behavior. */
+export async function runStart(): Promise<void> {
   if (await ping()) {
     const lock = readLock();
     console.log(`[ApeironNgn kg:service] Already running (pid ${lock?.pid ?? '?'}), bound to ${lock ? describeBinding(lock.apeironRoot, lock.artifactsRoot) : '?'}.`);

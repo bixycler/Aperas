@@ -113,8 +113,14 @@ export async function waitForReady(): Promise<void> {
  *    bundle itself — it's the only entrypoint that exists once built) with plain `node` and the
  *    hidden `--__service` flag `aperas.ts`'s own `main()` checks for first, before normal verb
  *    dispatch. */
-export function spawnService(apeironRoot: string, artifactsRoot: string): void {
-  const env = { ...process.env, APERAS_APEIRON_ROOT: apeironRoot, APERAS_ARTIFACTS_ROOT: artifactsRoot };
+export function spawnService(apeironRoot: string, artifactsRoot: string, httpPort: number, graphName?: string): void {
+  const env = {
+    ...process.env,
+    APERAS_APEIRON_ROOT: apeironRoot,
+    APERAS_ARTIFACTS_ROOT: artifactsRoot,
+    APERAS_HTTP_PORT: String(httpPort),
+    ...(graphName ? { APERAS_GRAPH_NAME: graphName } : {}),
+  };
   const serviceEntry = resolve(__dirname, 'service.ts');
   // apeironNgn -> src -> cli -> packages -> monorepo root, where `tsx` (a root devDependency,
   // hoisted by the workspace) actually lives.

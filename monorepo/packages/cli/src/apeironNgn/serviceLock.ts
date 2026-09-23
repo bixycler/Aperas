@@ -7,6 +7,7 @@
  */
 
 import { existsSync, mkdirSync, openSync, writeSync, closeSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -24,6 +25,10 @@ export interface LockInfo {
    *  "already running, bound to X" status line — nothing reads it back to re-derive a path. */
   apeironRoot: string;
   artifactsRoot: string;
+  /** The production HTTP+auth listener's port (discussion/webapp.md's "Transport"/"Auth for the
+   *  in-service listener") — carried here so `aperas serve` (`kgServe.ts`) can print the right URL
+   *  without re-deriving the port itself. */
+  httpPort: number;
 }
 
 /** Fixed, well-known location for the lock file and socket — independent of both `process.cwd()`
@@ -47,6 +52,17 @@ export function getSocketPath(): string {
   return resolve(getRunDir(), 'apeironngn.sock');
 }
 
+export function getTokenPath(): string {
+  return resolve(getRunDir(), 'apeironngn.token');
+}
+
+/** The production HTTP+auth listener's port — `APERAS_HTTP_PORT` if set, else a fixed default.
+ *  Resolved once by `bindAndSpawn` (`kgService.ts`) at claim time and threaded through to
+ *  `spawnService` so the claiming invocation and the service it spawns always agree. */
+export function resolveHttpPort(): number {
+  return Number(process.env.APERAS_HTTP_PORT) || 4173;
+}
+
 function ensureRunDir(): void {
   const dir = getRunDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -64,7 +80,7 @@ export function readLock(): LockInfo | null {
  *  service when multiple `aperas service start`/`restart` invocations race. `apeironRoot`/
  *  `artifactsRoot` are whatever the claiming invocation just resolved from its own
  *  `process.cwd()`, recorded here so they survive into `markReady()`'s own rewrite below. */
-export function claimLock(apeironRoot: string, artifactsRoot: string): 'claimed' | 'exists' {
+export function claimLock(apeironRoot: string, artifactsRoot: string, httpPort: number): 'claimed' | 'exists' {
   ensureRunDir();
   let fd: number;
   try {
@@ -73,7 +89,7 @@ export function claimLock(apeironRoot: string, artifactsRoot: string): 'claimed'
     if (err.code === 'EEXIST') return 'exists';
     throw err;
   }
-  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'starting', apeironRoot, artifactsRoot };
+  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'starting', apeironRoot, artifactsRoot, httpPort };
   writeSync(fd, JSON.stringify(info));
   closeSync(fd);
   return 'claimed';
@@ -83,10 +99,31 @@ export function claimLock(apeironRoot: string, artifactsRoot: string): 'claimed'
  *  its own real pid (the claimer may have been a short-lived CLI process, not the service) and the
  *  same roots it was actually bound to (`apeironNgn/service.ts`'s own `main()`, not re-resolved
  *  here). */
-export function markReady(apeironRoot: string, artifactsRoot: string): void {
+export function markReady(apeironRoot: string, artifactsRoot: string, httpPort: number): void {
   ensureRunDir();
-  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'ready', apeironRoot, artifactsRoot };
+  const info: LockInfo = { pid: process.pid, socketPath: getSocketPath(), startedAt: new Date().toISOString(), status: 'ready', apeironRoot, artifactsRoot, httpPort };
   writeFileSync(getLockPath(), JSON.stringify(info));
+}
+
+/** Generates a fresh per-run token and writes it to the run directory at mode 0600 — the trust
+ *  anchor for the production HTTP+auth listener (discussion/webapp.md's "Auth for the in-service
+ *  listener"). Called once, at service startup, alongside `claimLock`/`markReady`; the returned
+ *  value is what the listener itself keeps in memory for `timingSafeEqual` comparisons, but it is
+ *  still written to disk (mode 0600, same trust boundary as the lock/socket) so the token's
+ *  existence and permissions can be verified independently of the listener that consumes it. */
+export function writeToken(): string {
+  ensureRunDir();
+  const token = randomBytes(32).toString('hex');
+  writeFileSync(getTokenPath(), token, { mode: 0o600 });
+  return token;
+}
+
+export function readToken(): string | null {
+  try {
+    return readFileSync(getTokenPath(), 'utf-8');
+  } catch {
+    return null;
+  }
 }
 
 export function isProcessAlive(pid: number): boolean {
@@ -108,7 +145,7 @@ export function isLockStale(lock: LockInfo): boolean {
 }
 
 export function clearLock(): void {
-  for (const p of [getLockPath(), getSocketPath()]) {
+  for (const p of [getLockPath(), getSocketPath(), getTokenPath()]) {
     try {
       unlinkSync(p);
     } catch (err: any) {

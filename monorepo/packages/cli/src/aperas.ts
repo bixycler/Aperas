@@ -44,6 +44,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   retype: { description: "Change an existing block's type (heading depth included) in place, preserving its identity — refactoring/migration only.", load: () => import('./kgRetype') },
   profile: { description: 'Create/list/remove a Profile and the TreeViews it owns.', load: () => import('./kgProfile') },
   service: { description: 'Direct control over the shared ApeironNgn service process.', load: () => import('./kgService') },
+  serve: { description: 'Start (or reuse) the ApeironNgn service for the current graph and print the URL of its webapp.', load: () => import('./kgServe') },
   flush: { description: 'Force an immediate sync of the ApeironNgn store out to the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgFlush') },
   reload: { description: 'Discard the in-memory ApeironNgn store and rehydrate it from the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgReload') },
   identity: { description: "Show or set this machine's identity.json (currently just machineNumber).", load: () => import('./kgIdentity') },

@@ -42,8 +42,10 @@
  */
 
 import { createServer, type Socket } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { unlinkSync, readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
@@ -51,9 +53,26 @@ import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/apeironNgn/linkIntegrity';
 import { runMigrateFrontmatter } from '@aperas/core/apeironNgn/artifacts';
 import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { getRunDir, getSocketPath, markReady, clearLock } from './serviceLock';
+import { getRunDir, getSocketPath, markReady, clearLock, writeToken, resolveHttpPort } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
+import { handleApiRoute, readRequestBody } from './apiRoutes';
+import { checkAuth, allowedOrigins } from './listenerAuth';
+import { serveStatic } from './staticServe';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** The webapp's built static assets — bundled alongside the CLI binary (Slice 16's `build.mjs`
+ *  step) at `dist/web/`, sibling to the bundle itself, so this just works the same way whether
+ *  `service.ts` is running from source under `tsx` or inlined into the packaged bundle (every
+ *  module's `import.meta.url` collapses to the same bundle file's own location once esbuild
+ *  flattens everything into one file — the built path is checked first for exactly that reason).
+ *  In dev, falls back to `packages/web/dist`, built separately via `vite build` in that package. */
+function resolveWebRoot(): string {
+  const builtPath = resolve(__dirname, 'web');
+  if (existsSync(builtPath)) return builtPath;
+  return resolve(__dirname, '..', '..', '..', 'web', 'dist'); // apeironNgn -> src -> cli -> packages -> web/dist
+}
 import { runTrack, runReverseTrack } from '../kgTrack';
 import { runIngest } from '../kgIngest';
 import { runUnfold } from '../kgUnfold';
@@ -130,6 +149,11 @@ export function main(): void {
   // here re-derives cwd itself.
   const contentDir = getApeironExportDir();
   const artifactsDir = getArtifactsDir();
+
+  // Per-run trust anchor for the production HTTP+auth listener below (discussion/webapp.md's
+  // "Auth for the in-service listener") — fresh every service start, same as the socket itself.
+  const httpToken = writeToken();
+  const httpPort = resolveHttpPort();
 
   let { store, quadCount, duplicateIds: initDuplicateIds } = rehydrateStore(contentDir);
   logService(`[ApeironNgn service] Rehydrated ${quadCount} quad(s) from ${contentDir}.`);
@@ -420,6 +444,7 @@ export function main(): void {
     clearInterval(stateFlushTimer);
     clearTimeout(idleTimer);
     server.close();
+    httpServer.close();
     enqueue(() => {
       // Same GC pass as `reloadStore`/`clobberFlush` (see `reloadStore`'s own comment) — shutdown
       // is the other half of the "gone at next startup" boundary: whatever's pruned here is what
@@ -682,6 +707,73 @@ export function main(): void {
     process.exit(1);
   });
 
+  // The production HTTP+auth listener (discussion/webapp.md's "Transport"/"Auth for the in-service
+  // listener") — an addition beside the unix socket above, never a replacement for it: CLI callers
+  // keep using the socket exactly as they do today. In-process, so `/api/*` calls `handle()`
+  // directly rather than round-tripping through the socket the way a separate process (the old dev
+  // bridge) has to. Reachable, in principle, by any page open in the user's browser the moment it
+  // binds a TCP port — the auth checks below (`listenerAuth.ts`) are what keep that safe, not the
+  // network.
+  const webRoot = resolveWebRoot();
+  const httpServer = createHttpServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://127.0.0.1:${httpPort}`);
+    const origin = req.headers.origin;
+
+    if (req.method === 'OPTIONS') {
+      // Restrictive preflight: only ever grants the one origin this listener actually serves.
+      // A hostile cross-origin page's own preflight gets no such grant, so the browser never sends
+      // its real request at all — the actual point of the custom `X-Aperas-Token` header.
+      if (origin && allowedOrigins(httpPort).includes(origin)) {
+        res.setHeader('access-control-allow-origin', origin);
+        res.setHeader('access-control-allow-headers', 'X-Aperas-Token, Content-Type');
+        res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+      }
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
+    const isApi = url.pathname.startsWith('/api/');
+    const auth = checkAuth(
+      { host: req.headers.host, origin, 'x-aperas-token': req.headers['x-aperas-token'] as string | undefined },
+      { token: httpToken, port: httpPort },
+      isApi,
+    );
+    if (!auth.ok) {
+      res.statusCode = auth.status;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: auth.error }));
+      return;
+    }
+    if (origin) res.setHeader('access-control-allow-origin', origin); // same-origin calls never need this; kept for symmetry with the preflight above
+
+    if (isApi) {
+      const { status, body } = await handleApiRoute(
+        url.pathname, url.searchParams, req.method ?? 'GET',
+        () => readRequestBody(req),
+        (r) => handle(r),
+      );
+      res.statusCode = status;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(body));
+      return;
+    }
+
+    const asset = await serveStatic(webRoot, url.pathname, httpToken);
+    if (!asset) {
+      res.statusCode = 404;
+      res.end('Not found');
+      return;
+    }
+    res.statusCode = asset.status;
+    for (const [key, value] of Object.entries(asset.headers)) res.setHeader(key, value);
+    res.end(asset.body);
+  });
+  httpServer.on('error', (err) => {
+    console.error('[ApeironNgn service] HTTP listener error:', err);
+    process.exit(1);
+  });
+
   process.on('SIGTERM', () => shutdown(0));
   process.on('SIGINT', () => shutdown(0));
 
@@ -692,7 +784,8 @@ export function main(): void {
     if (err.code !== 'ENOENT') throw err;
   }
   server.listen(socketPath, () => {
-    markReady(contentDir, artifactsDir);
+    httpServer.listen(httpPort, '127.0.0.1');
+    markReady(contentDir, artifactsDir, httpPort);
     resetIdleTimer();
     // Deliberately *after* `markReady`, and queued rather than run inline: `waitForReady` gives a
     // starting service 5s, and this sweep costs ~0.6s of that budget on an idle machine and more

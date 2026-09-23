@@ -8,17 +8,25 @@
  * dependency) — never touching this package's own dev-mode `package.json`/`exports` (still
  * pointing at `.ts` source for the workspace, unaffected by any of this).
  *
+ * Also builds `packages/web` (`vite build`) and copies its `dist/` to `dist/web/`, sibling to the
+ * CLI bundle itself (Slice 16, planning/webapp.md) — `aperas serve`'s production listener
+ * (`service.ts#resolveWebRoot`) looks there first, so the packaged binary can serve the webapp with
+ * no separate install step. Web build failures are fatal here, same as a CLI build failure: a
+ * package with no webapp in it isn't the self-contained artifact this script promises.
+ *
  * Run via `node packages/cli/build.mjs` (or `npm run build:aperas` from the repo root).
  */
 
 import { build } from 'esbuild';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, cpSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliDir = __dirname;
 const distDir = join(cliDir, 'dist');
+const webDir = join(cliDir, '..', 'web');
 
 const cliPkg = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf-8'));
 const corePkg = JSON.parse(readFileSync(join(cliDir, '..', 'core', 'package.json'), 'utf-8'));
@@ -39,6 +47,11 @@ await build({
   logLevel: 'info',
 });
 chmodSync(join(distDir, 'aperas.js'), 0o755);
+
+console.log('[build:aperas] Building packages/web (vite build)...');
+execFileSync('npm', ['run', 'build'], { cwd: webDir, stdio: 'inherit' });
+cpSync(join(webDir, 'dist'), join(distDir, 'web'), { recursive: true });
+console.log(`[build:aperas] Copied ${join(webDir, 'dist')} -> ${join(distDir, 'web')}`);
 
 const distPkg = {
   name: 'aperas',

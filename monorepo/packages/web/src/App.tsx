@@ -1,12 +1,19 @@
 import { createSignal, createResource, createEffect, onCleanup, For, Show, createMemo } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import FolderDiv from './FolderDiv';
-import type { TreeResponse, ViewInfo } from './render';
+import type { GraphInfo, TreeResponse, ViewInfo } from './render';
+import { apiFetch } from './apiFetch';
 import './App.css';
 
 async function fetchViews(): Promise<ViewInfo[]> {
-  const res = await fetch('/api/views');
+  const res = await apiFetch('/api/views');
   if (!res.ok) throw new Error(`/api/views: ${res.status}`);
+  return res.json();
+}
+
+async function fetchGraphInfo(): Promise<GraphInfo> {
+  const res = await apiFetch('/api/graph');
+  if (!res.ok) throw new Error(`/api/graph: ${res.status}`);
   return res.json();
 }
 
@@ -17,7 +24,7 @@ let cachedTreeResponse: TreeResponse | null = null;
 async function fetchTree(params: { apex: string; view: string }): Promise<TreeResponse> {
   const url = `/api/tree?path=${encodeURIComponent(params.apex)}&view=${encodeURIComponent(params.view)}`;
   const key = `${params.apex}::${params.view}`;
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   const text = await res.text();
   if (!res.ok) {
     let msg = `/api/tree: ${res.status}`;
@@ -36,14 +43,14 @@ async function fetchTree(params: { apex: string; view: string }): Promise<TreeRe
 
 async function postFold(ref: string, view: string, action: 'unfold' | 'fold'): Promise<void> {
   const url = `/api/fold?ref=${encodeURIComponent(ref)}&view=${encodeURIComponent(view)}&action=${action}`;
-  const res = await fetch(url, { method: 'POST' });
+  const res = await apiFetch(url, { method: 'POST' });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error ?? `/api/fold: ${res.status}`);
 }
 
 /** Slice 8's shallow write — the one edit Phase 1 supports: a node's own text, nothing else. */
 async function postUpdate(id: string, text: string): Promise<void> {
-  const res = await fetch(`/api/update?id=${encodeURIComponent(id)}`, { method: 'POST', body: text });
+  const res = await apiFetch(`/api/update?id=${encodeURIComponent(id)}`, { method: 'POST', body: text });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error ?? `/api/update: ${res.status}`);
 }
@@ -61,6 +68,11 @@ export default function App() {
   const [refreshTick, setRefreshTick] = createSignal(0);
 
   const [views] = createResource(fetchViews);
+  const [graphInfo] = createResource(fetchGraphInfo);
+  createEffect(() => {
+    const name = graphInfo()?.name;
+    document.title = name ? `${name} | Aperas` : 'Aperas';
+  });
   const [tree, { refetch }] = createResource(
     () => ({ apex: apex(), view: view(), tick: refreshTick() }),
     (params) => fetchTree(params),
@@ -165,7 +177,7 @@ export default function App() {
   return (
     <div class="app">
       <header class="app-header">
-        <h1>Aperas</h1>
+        <h1>{graphInfo()?.name ?? 'Aperas'}</h1>
         <select
           ref={selectEl}
           id="view-picker"

@@ -66,6 +66,10 @@ export interface ViewInfo {
   profile: string;
 }
 
+export interface GraphInfo {
+  name: string | null;
+}
+
 /** Mirror of `@aperas/cli/kgBacklinks`'s own `BacklinkEntry` — same duplication rationale as this
  * file's header comment, one level removed: `cli` isn't `core`, but it still isn't browser-safe. */
 export interface BacklinkEntry {

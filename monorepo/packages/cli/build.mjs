@@ -53,6 +53,8 @@ execFileSync('npm', ['run', 'build'], { cwd: webDir, stdio: 'inherit' });
 cpSync(join(webDir, 'dist'), join(distDir, 'web'), { recursive: true });
 console.log(`[build:aperas] Copied ${join(webDir, 'dist')} -> ${join(distDir, 'web')}`);
 
+cpSync(join(cliDir, 'README.md'), join(distDir, 'README.md'));
+
 const distPkg = {
   name: 'aperas',
   version: cliPkg.version,

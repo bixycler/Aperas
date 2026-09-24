@@ -26,6 +26,7 @@ interface CommandSpec {
 }
 
 const COMMANDS: Record<string, CommandSpec> = {
+  init: { description: 'Bootstrap a brand-new graph in the current directory: aperas.config.json, an empty Apeiron/ store, and an artifacts/ tree.', load: () => import('./kgInit') },
   track: { description: 'Register/refresh ArtifactNodes for tracked files.', load: () => import('./kgTrack') },
   ingest: { description: "AST-parse and commit changed tracked artifacts' fractal trees, then rebuild the FolderNode structural tree.", load: () => import('./kgIngest') },
   project: { description: "Serialize a tracked ArtifactNode/FolderNode's tree back to Markdown.", load: () => import('./kgProject') },
@@ -48,6 +49,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   flush: { description: 'Force an immediate sync of the ApeironNgn store out to the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgFlush') },
   reload: { description: 'Discard the in-memory ApeironNgn store and rehydrate it from the AperasKG/Apeiron/ mirror on disk.', load: () => import('./kgReload') },
   identity: { description: "Show or set this machine's identity.json (currently just machineNumber).", load: () => import('./kgIdentity') },
+  skill: { description: "Install this package's bundled skills (aperas, kg-doc-ingest) into an agent's skill directory.", load: () => import('./kgSkill') },
   'check-links': { description: 'Run a drift-style link integrity sweep comparing stored .links against live block text.', load: () => import('./kgCheckLinks') },
   'migrate-frontmatter': { description: "One-time migration: split every ArtifactNode's opaque frontmatter prop into per-key props (description, lang, ...).", load: () => import('./kgMigrateFrontmatter') },
 };

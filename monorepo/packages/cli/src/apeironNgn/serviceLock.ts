@@ -58,9 +58,16 @@ export function getTokenPath(): string {
 
 /** The production HTTP+auth listener's port — `APERAS_HTTP_PORT` if set, else a fixed default.
  *  Resolved once by `bindAndSpawn` (`kgService.ts`) at claim time and threaded through to
- *  `spawnService` so the claiming invocation and the service it spawns always agree. */
+ *  `spawnService` so the claiming invocation and the service it spawns always agree.
+ *
+ *  `2736` follows the same phone-keypad-spelling convention as the dev bridge's own fixed ports
+ *  (`packages/web/vite.config.ts`'s `2737`/`2734`, spelling "aper"/"apei") rather than an unrelated
+ *  tool's default — spells "apeo" (2=A, 7=P, 3=E, 6=O), from Ape[ras] + [Apei]o[n], since this
+ *  listener serves both projects' own webapp against the Apeiron store. Deliberately distinct from
+ *  the dev ports so a dev server and a served instance can run side by side against the same graph
+ *  without colliding. */
 export function resolveHttpPort(): number {
-  return Number(process.env.APERAS_HTTP_PORT) || 4173;
+  return Number(process.env.APERAS_HTTP_PORT) || 2736;
 }
 
 function ensureRunDir(): void {

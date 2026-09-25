@@ -18,9 +18,13 @@
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import type { Root, Code, Table, Blockquote } from 'mdast';
 
-const processor = unified().use(remarkParse).use(remarkGfm);
+// `remark-math` on top of GFM: `$…$` → `inlineMath`, `$$…$$` → `math` (rendered lazily via `KatexMath.tsx`).
+// `singleTilde: false`: only `~~x~~` strikes — a single `~` is "approximately"/a range/`~/` here,
+// and GFM's default struck `range 5~10 and 20~30` into "5<del>10 and 20</del>30".
+const processor = unified().use(remarkParse).use(remarkGfm, { singleTilde: false }).use(remarkMath);
 
 export function parseMarkdown(text: string): Root {
   return processor.parse(text) as Root;

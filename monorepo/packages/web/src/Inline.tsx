@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, type JSX } from 'solid-js';
+import { For, Show, Suspense, createSignal, lazy, onCleanup, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderNodeItem, TreeResponse } from './render';
 import { apiFetch } from './apiFetch';
@@ -25,11 +25,22 @@ import type { RootContent, PhrasingContent } from 'mdast';
  * in this package uses — rather than a bespoke tokenizer of its own; see that module's doc comment
  * for why. Whatever GFM/CommonMark recognizes as inline content (including constructs this
  * component never explicitly names, e.g. autolinks) renders correctly by construction; only a
- * handful of node types too exotic to be worth a real fallback (footnote references, inline math)
+ * handful of node types too exotic to be worth a real fallback (e.g. footnote references)
  * degrade to their own plain-text contents.
  */
 
-const ID_FRAGMENT_RE = /#(?:.*\/)?id\/((?:BlockNode|ArtifactNode|FolderNode):[A-Za-z0-9]+)/;
+const KatexMath = lazy(() => import('./KatexMath'));
+
+function MathNode(props: { tex: string; display?: boolean }) {
+  const raw = props.display ? `$$${props.tex}$$` : `$${props.tex}$`;
+  return (
+    <Suspense fallback={<code class="fd-math-loading">{raw}</code>}>
+      <KatexMath tex={props.tex} display={props.display} />
+    </Suspense>
+  );
+}
+
+const ID_FRAGMENT_RE =/#(?:.*\/)?id\/((?:BlockNode|ArtifactNode|FolderNode):[A-Za-z0-9]+)/;
 const BR_RE = /^<br\s*\/?>$/i;
 
 export interface InlineProps {
@@ -190,7 +201,7 @@ function NavigableLink(props: {
 }
 
 /** Recursively extracts plain text from a node this renderer has no explicit case for (e.g. a
- *  footnote reference or inline math, from a GFM extension this app doesn't otherwise use) — so an
+ *  footnote reference, from a GFM extension this app doesn't otherwise use) — so an
  *  unrecognized construct degrades to visible text instead of silently vanishing, the same
  *  "anything else passes through as literal text" contract the old regex tokenizer had. */
 export function plainTextOf(node: RootContent | PhrasingContent): string {
@@ -219,6 +230,8 @@ export function renderInline(
         return <del>{renderInline(node.children, onNavigate, popover)}</del>;
       case 'inlineCode':
         return <code>{node.value}</code>;
+      case 'inlineMath':
+        return <MathNode tex={node.value} />;
       case 'break':
         return <br />;
       case 'html':
@@ -247,6 +260,7 @@ export default function Inline(props: InlineProps): JSX.Element {
     root.children.forEach((child, i) => {
       if (i > 0) out.push(<>{'\n\n'}</>);
       if (child.type === 'paragraph') out.push(...renderInline(child.children, props.onNavigate, props.popover));
+      else if (child.type === 'math') out.push(<MathNode tex={child.value} display />);
       else out.push(<>{plainTextOf(child)}</>);
     });
     return out;

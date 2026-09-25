@@ -12,9 +12,11 @@
     "@aperas/core": "*",
     "clsx": "^2.1.1",
     "highlight.js": "^11.12.0",
+    "katex": "^0.16.47",
     "lucide-solid": "^1.34.0",
     "mermaid": "^12.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
     "solid-js": "^1.9.15",
     "unified": "^11.0.5"

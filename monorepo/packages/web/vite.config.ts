@@ -36,6 +36,11 @@ function aperasDevApiProxy() {
 
 export default defineConfig({
   plugins: [solid(), aperasDevApiProxy()],
+  // Only lazy-loaded Mermaid internals exceed Vite's 500kB default (elk ~1.46MB is one GWT-compiled
+  // file, not splittable); the entry chunk is what the real budget watches.
+  build: {
+    chunkSizeWarningLimit: 1500,
+  },
   server: {
     port: 2737,
     proxy: {

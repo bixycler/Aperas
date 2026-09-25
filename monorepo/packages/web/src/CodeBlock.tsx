@@ -58,13 +58,9 @@ hljs.registerLanguage('diff', diff);
 hljs.registerLanguage('graphql', graphql);
 hljs.registerLanguage('plaintext', plaintext);
 
-const ALIASES: Record<string, string> = {
-  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
-  sh: 'bash', shell: 'bash', zsh: 'bash', md: 'markdown', text: 'plaintext', txt: 'plaintext',
-  py: 'python', yml: 'yaml', html: 'xml', xhtml: 'xml', svg: 'xml',
-  'c++': 'cpp', cc: 'cpp', cxx: 'cpp', cs: 'csharp', docker: 'dockerfile',
-  toml: 'ini', patch: 'diff', gql: 'graphql',
-};
+// Each grammar declares its own aliases (`sh`/`zsh` → bash, `ts`/`tsx`, `py`, `yml`, …), resolved by
+// `hljs.getLanguage` itself. `shell` is hljs's separate console-session grammar, not registered here.
+const ALIASES: Record<string, string> = { shell: 'bash' };
 
 /** Stored code nodes contain their original Markdown fence — `classifyBlock` (`./markdown`) already
  *  parses that fence via `remark-gfm`, the same parser that decided this was a code block in the

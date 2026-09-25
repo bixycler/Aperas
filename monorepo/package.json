@@ -7,6 +7,8 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "npm --workspace @aperas/web run dev",
+    "build:web": "npm --workspace @aperas/web run build",
     "aperas": "tsx packages/cli/src/aperas.ts",
     "build:aperas": "node packages/cli/build.mjs",
     "verify": "tsx packages/cli/src/verify.ts",

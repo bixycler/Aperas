@@ -9,12 +9,28 @@ async function fetchViews(): Promise<ViewInfo[]> {
   return res.json();
 }
 
+let lastTreeKey = '';
+let lastTreeJson = '';
+let cachedTreeResponse: TreeResponse | null = null;
+
 async function fetchTree(params: { apex: string; view: string }): Promise<TreeResponse> {
   const url = `/api/tree?path=${encodeURIComponent(params.apex)}&view=${encodeURIComponent(params.view)}`;
+  const key = `${params.apex}::${params.view}`;
   const res = await fetch(url);
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error ?? `/api/tree: ${res.status}`);
-  return body;
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = `/api/tree: ${res.status}`;
+    try { msg = JSON.parse(text).error ?? msg; } catch {}
+    throw new Error(msg);
+  }
+  if (key === lastTreeKey && text === lastTreeJson && cachedTreeResponse !== null) {
+    return cachedTreeResponse;
+  }
+  lastTreeKey = key;
+  lastTreeJson = text;
+  const parsed = JSON.parse(text) as TreeResponse;
+  cachedTreeResponse = parsed;
+  return parsed;
 }
 
 async function postFold(ref: string, view: string, action: 'unfold' | 'fold'): Promise<void> {

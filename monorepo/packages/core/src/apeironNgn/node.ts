@@ -1629,6 +1629,8 @@ export interface RenderNodeItemFound {
    *  actually computed — a genuinely-unfolded/listed node with no `text` of its own still omits it,
    *  exactly like the old inline `abstract !== undefined` check did. */
   abstract?: string;
+  /** Complete stored text with original line breaks and indentation intact for structured consumers. */
+  text?: string;
   isTextlessList: boolean;
   /** `unfolded` (tier 1, genuinely unfolded, regardless of parent), `listed` (tier 2, parent
    *  qualifies) both carry `abstract`; `title-only` (tier 3, bare breadcrumb) never does. */
@@ -1673,6 +1675,7 @@ export interface RenderLinkItem {
   /** `preview`/`expanded` only — the pointer branch stays title-only by design (a cross-reference
    *  note, not a content preview). */
   abstract?: string;
+  text?: string;
   mode: 'no-target' | 'preview' | 'expanded' | 'pointer' | 'outside-view';
   /** `preview`/`outside-view` only. */
   hiddenCount?: number;
@@ -1766,6 +1769,7 @@ function buildNodeItem(
   let title = '';
   let isTextlessList = false;
   let abstract: string | undefined;
+  let fullText: string | undefined;
   let holder = false;
   let star = false;
   let tombstonedAt: string | undefined;
@@ -1799,10 +1803,13 @@ function buildNodeItem(
       const abstractSource = kind === 'ArtifactNode' || kind === 'FolderNode'
         ? (getProp(node as unknown as HasProps, 'description') ?? (node.text as unknown as string | undefined))
         : (node.text as unknown as string | undefined);
+      if (abstractSource !== undefined) {
+        fullText = bakeResolvedLinkIds(abstractSource, node.links as ApeironNode[] | undefined);
+      }
       abstract = isTextlessList
         ? `(no text of its own — see kg:unfold ${id})`
-        : abstractSource !== undefined
-          ? truncateForPreviewWithHint(bakeResolvedLinkIds(abstractSource, node.links as ApeironNode[] | undefined), id)
+        : fullText !== undefined
+          ? truncateForPreviewWithHint(fullText, id)
           : undefined;
     }
     tombstonedAt = (node as unknown as { tombstonedAt?: string }).tombstonedAt;
@@ -1826,7 +1833,7 @@ function buildNodeItem(
 
   return {
     kind: 'node', id, depth, found: true, hidden,
-    displayLabel: displayLabelStr, title, abstract, isTextlessList,
+    displayLabel: displayLabelStr, title, abstract, text: fullText, isTextlessList,
     tier: isGenuinelyUnfolded ? 'unfolded' : showAbstract ? 'listed' : 'title-only',
     holder, starred: star, tombstonedAt, hiddenCount, truncated, backlinkCount, children,
   };
@@ -1859,8 +1866,11 @@ function buildLinkItem(
   const targetAbstractSource = targetKind === 'ArtifactNode' || targetKind === 'FolderNode'
     ? (getProp(targetNode as unknown as HasProps, 'description') ?? (targetNode.text as unknown as string | undefined))
     : (targetNode.text as unknown as string | undefined);
-  const targetAbstract = targetAbstractSource !== undefined
-    ? truncateForPreviewWithHint(bakeResolvedLinkIds(targetAbstractSource, targetNode.links as ApeironNode[] | undefined), targetId)
+  const targetFullText = targetAbstractSource !== undefined
+    ? bakeResolvedLinkIds(targetAbstractSource, targetNode.links as ApeironNode[] | undefined)
+    : undefined;
+  const targetAbstract = targetFullText !== undefined
+    ? truncateForPreviewWithHint(targetFullText, targetId)
     : undefined;
   const tombstonedAt = (targetNode as unknown as { tombstonedAt?: string }).tombstonedAt;
 
@@ -1870,7 +1880,7 @@ function buildLinkItem(
     // they're always all emitted) this position's `hiddenCount` is never omitted when the target
     // has any real content of its own.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
   }
   const canon = zs.canonical.get(targetId);
   const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
@@ -1895,7 +1905,7 @@ function buildLinkItem(
       if (item) children.push(item);
     }
     return {
-      kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract,
+      kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText,
       mode: 'expanded', starred: starred.has(linkId), zoomPath, tombstonedAt, children,
     };
   }
@@ -1906,7 +1916,7 @@ function buildLinkItem(
     // at — unlike `home`/`link`, `upward` never claims a position anywhere). Flat, non-recursing
     // reference instead, same shape as a rule-a preview, tagged to explain why it stops here.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
   }
   const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
   return { kind: 'link', linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };

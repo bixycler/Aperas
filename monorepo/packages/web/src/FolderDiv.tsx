@@ -2,6 +2,10 @@ import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderItem, BacklinkEntry } from './render';
 import Inline from './Inline';
+import MermaidDiagram, { isMermaidCode } from './MermaidDiagram';
+import MarkdownTable, { isMarkdownTable } from './MarkdownTable';
+import CodeBlock from './CodeBlock';
+import MarkdownQuote, { isMarkdownQuote } from './MarkdownQuote';
 
 /**
  * `FolderDiv` — first Solid pass at the fold/unfold/zoom/edit mechanics discussion/webapp.md
@@ -47,6 +51,8 @@ const KIND_GLYPH: Record<string, string> = {
   ArtifactNode: '📄',
   heading: '§',
   paragraph: '¶',
+  code: '💻',
+  table: '📊',
 };
 function kindGlyph(displayLabel: string | undefined): string | undefined {
   return displayLabel ? KIND_GLYPH[displayLabel] : undefined;
@@ -326,6 +332,32 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
           const isOpen = n.tier === 'unfolded';
           const [editing, setEditing] = createSignal(false);
           const hasChildren = () => !n.truncated && n.children.length > 0;
+          const contentText = () => n.text ?? n.abstract;
+          const isMermaid = () => {
+            const txt = contentText();
+            return txt ? isMermaidCode(txt) : false;
+          };
+          const isTable = () => {
+            if (n.displayLabel === 'table') return true;
+            const txt = contentText();
+            return txt ? isMarkdownTable(txt) : false;
+          };
+          const isCode = () => {
+            if (n.displayLabel === 'code') return true;
+            const txt = contentText();
+            return txt ? txt.trim().startsWith('```') : false;
+          };
+          const isQuote = () => n.displayLabel === 'blockquote' || isMarkdownQuote(contentText() ?? '');
+          const titleText = () => {
+            if (n.displayLabel === 'code' && n.title === n.id) {
+              return isMermaid() ? 'Mermaid Diagram' : 'Code Block';
+            }
+            if ((n.displayLabel === 'table' || isTable()) && n.title === n.id) {
+              return 'Table';
+            }
+            if (n.displayLabel === 'blockquote' && n.title === n.id) return 'Quote';
+            return n.title;
+          };
           return (
             <div class="fd-node" data-node-id={n.id}>
               {/* Arrow and stem are one unit (`Gutter`) sharing this fixed-width column, so the stem
@@ -350,7 +382,7 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
                   <Show when={kindGlyph(n.displayLabel)}>
                     {(glyph) => <span class="fd-kind">{glyph()}</span>}
                   </Show>
-                  <span class="fd-title"><Inline text={n.title} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></span>
+                  <span class="fd-title"><Inline text={titleText()} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></span>
                   <Tags holder={n.holder} starred={n.starred} tombstonedAt={n.tombstonedAt} hiddenCount={n.hiddenCount} />
                   <Show when={!editing()}>
                     <span class="fd-edit-btn" onClick={(e) => { e.stopPropagation(); setEditing(true); }} title="Edit this node's own text">✏️</span>
@@ -366,8 +398,45 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
                 <Show when={editing()}>
                   <Editor id={n.id} onSave={(text) => props.onEdit(n.id, text)} onCancel={() => setEditing(false)} />
                 </Show>
-                <Show when={!editing() && n.tier !== 'title-only' && n.abstract !== undefined}>
-                  <div class="fd-abstract"><Inline text={n.abstract} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></div>
+                <Show when={!editing() && n.tier !== 'title-only' && contentText() !== undefined}>
+                  <Show
+                    when={isMermaid()}
+                    fallback={
+                      <Show
+                        when={isTable()}
+                        fallback={
+                          <Show
+                            when={isCode()}
+                            fallback={
+                              <Show
+                                when={isQuote()}
+                                fallback={<div class="fd-abstract"><Inline text={contentText()} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></div>}
+                              >
+                                <div class="fd-abstract"><MarkdownQuote source={contentText()!} onNavigate={props.onZoom} popover={{ view: props.view, onFold: props.onFold }} /></div>
+                              </Show>
+                            }
+                          >
+                            <div class="fd-abstract">
+                              <CodeBlock source={contentText()!} />
+                            </div>
+                          </Show>
+                        }
+                      >
+                        <div class="fd-abstract">
+                          <MarkdownTable
+                            markdown={contentText()!}
+                            id={n.id}
+                            onNavigate={props.onZoom}
+                            popover={{ view: props.view, onFold: props.onFold }}
+                          />
+                        </div>
+                      </Show>
+                    }
+                  >
+                    <div class="fd-abstract">
+                      <MermaidDiagram code={contentText()!} id={n.id} />
+                    </div>
+                  </Show>
                 </Show>
                 <Show when={n.isTextlessList}>
                   <div class="fd-abstract fd-muted">(no text of its own)</div>
@@ -402,9 +471,28 @@ function PassthroughChildren(props: FolderDivProps & { item: Extract<RenderItem,
  * normal node's own text renders in, not the link-highlighted title color, so a link preview reads
  * as "a title, then its actual body text" rather than one long highlighted run. */
 function LinkAbstract(props: { text?: string; onNavigate: (id: string) => void }) {
+  const isMermaid = () => props.text ? isMermaidCode(props.text) : false;
+  const isTable = () => props.text ? isMarkdownTable(props.text) : false;
+  const isQuote = () => isMarkdownQuote(props.text ?? '');
   return (
     <Show when={props.text !== undefined}>
-      <div class="fd-abstract"><Inline text={props.text} onNavigate={props.onNavigate} /></div>
+      <Show
+        when={isMermaid()}
+        fallback={
+          <Show
+            when={isTable()}
+            fallback={
+              <Show when={isQuote()} fallback={<div class="fd-abstract"><Inline text={props.text} onNavigate={props.onNavigate} /></div>}>
+                <div class="fd-abstract"><MarkdownQuote source={props.text!} onNavigate={props.onNavigate} /></div>
+              </Show>
+            }
+          >
+            <div class="fd-abstract"><MarkdownTable markdown={props.text!} onNavigate={props.onNavigate} /></div>
+          </Show>
+        }
+      >
+        <div class="fd-abstract"><MermaidDiagram code={props.text!} /></div>
+      </Show>
     </Show>
   );
 }
@@ -451,7 +539,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <Tags tombstonedAt={l().tombstonedAt} hiddenCount={l().hiddenCount} />
             <CopyIdButton id={l().linkId} />
           </div>
-          <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
+          <LinkAbstract text={l().text ?? l().abstract} onNavigate={props.onZoom} />
         </Show>
 
         <Show when={l().mode === 'expanded'}>
@@ -470,7 +558,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <Tags starred={l().starred} tombstonedAt={l().tombstonedAt} />
             <CopyIdButton id={l().linkId} />
           </div>
-          <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
+          <LinkAbstract text={l().text ?? l().abstract} onNavigate={props.onZoom} />
           <Show when={l().zoomPath !== undefined}>
             <div class="fd-breadcrumb">aperas://tree/{l().zoomPath}</div>
           </Show>
@@ -507,7 +595,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
             <span class="fd-tag">outside view</span>
             <CopyIdButton id={l().linkId} />
           </div>
-          <LinkAbstract text={l().abstract} onNavigate={props.onZoom} />
+          <LinkAbstract text={l().text ?? l().abstract} onNavigate={props.onZoom} />
         </Show>
       </div>
     </div>

@@ -16,6 +16,7 @@ export interface RenderNodeItemFound {
   displayLabel: string;
   title: string;
   abstract?: string;
+  text?: string;
   isTextlessList: boolean;
   tier: 'unfolded' | 'listed' | 'title-only';
   holder: boolean;
@@ -43,6 +44,7 @@ export interface RenderLinkItem {
   targetTitle?: string;
   targetDisplayLabel?: string;
   abstract?: string;
+  text?: string;
   mode: 'no-target' | 'preview' | 'expanded' | 'pointer' | 'outside-view';
   hiddenCount?: number;
   starred?: boolean;

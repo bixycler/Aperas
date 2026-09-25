@@ -25,7 +25,7 @@ import type { RenderNodeItem, TreeResponse } from './render';
 
 const ID_FRAGMENT_RE = /#(?:.*\/)?id\/((?:BlockNode|ArtifactNode|FolderNode):[A-Za-z0-9]+)/;
 
-const TOKEN_RE = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*([^*]+?)\*/g;
+const TOKEN_RE = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*([^*]+?)\*|(<br\s*\/?>)/gi;
 
 export interface InlineProps {
   text: string | undefined;
@@ -183,7 +183,7 @@ function NavigableLink(props: {
 export default function Inline(props: InlineProps): JSX.Element {
   const parts = () => {
     const text = props.text ?? '';
-    const out: Array<{ kind: 'text' | 'bold' | 'code' | 'italic' | 'link'; content: string; href?: string; targetId?: string }> = [];
+    const out: Array<{ kind: 'text' | 'bold' | 'code' | 'italic' | 'link' | 'break'; content: string; href?: string; targetId?: string }> = [];
     let cursor = 0;
     TOKEN_RE.lastIndex = 0;
     for (const m of text.matchAll(TOKEN_RE)) {
@@ -195,6 +195,7 @@ export default function Inline(props: InlineProps): JSX.Element {
         const idMatch = ID_FRAGMENT_RE.exec(href);
         out.push({ kind: 'link', content: m[3], href, targetId: idMatch?.[1] });
       } else if (m[5] !== undefined) out.push({ kind: 'italic', content: m[5] });
+      else if (m[6] !== undefined) out.push({ kind: 'break', content: '' });
       cursor = m.index! + m[0].length;
     }
     if (cursor < text.length) out.push({ kind: 'text', content: text.slice(cursor) });
@@ -208,6 +209,7 @@ export default function Inline(props: InlineProps): JSX.Element {
           case 'bold': return <strong>{p.content}</strong>;
           case 'code': return <code>{p.content}</code>;
           case 'italic': return <em>{p.content}</em>;
+          case 'break': return <br />;
           case 'link':
             return p.targetId ? <NavigableLink content={p.content} targetId={p.targetId} href={p.href!} onNavigate={props.onNavigate} popover={props.popover} /> : (
               <span class="inline-link inline-link-inert" title={`${p.href} (no resolvable id — can't navigate)`}>{p.content}</span>

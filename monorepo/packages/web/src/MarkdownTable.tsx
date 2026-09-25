@@ -1,87 +1,20 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
-import Inline from './Inline';
+import { renderInline, plainTextOf } from './Inline';
+import { classifyBlock } from './markdown';
+import type { Table } from 'mdast';
 
-export function splitTableRow(row: string): string[] {
-  let line = row.trim();
-  if (line.startsWith('|')) line = line.slice(1);
-  if (line.endsWith('|') && !line.endsWith('\\|')) line = line.slice(0, -1);
-
-  const cells: string[] = [];
-  let current = '';
-  let inCodeSpan = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    const prev = i > 0 ? line[i - 1] : '';
-
-    if (char === '`' && prev !== '\\') {
-      inCodeSpan = !inCodeSpan;
-      current += char;
-    } else if (char === '|' && !inCodeSpan && prev !== '\\') {
-      cells.push(current.trim());
-      current = '';
-    } else if (char === '|' && prev === '\\') {
-      current = current.slice(0, -1) + '|';
-    } else {
-      current += char;
-    }
-  }
-  cells.push(current.trim());
-  return cells;
+/** Tab/newline inside a cell's own text would otherwise corrupt the TSV's row/column structure —
+ *  collapsed to a single space, same as a spreadsheet's own paste-as-TSV would do. */
+function tableToTsv(table: Table): string {
+  const cellText = (cell: Table['children'][number]['children'][number]) =>
+    cell.children.map(plainTextOf).join('').replace(/[\t\n]+/g, ' ').trim();
+  return table.children.map((row) => row.children.map(cellText).join('\t')).join('\n');
 }
 
-export function parseAlignment(cell: string): 'left' | 'center' | 'right' | undefined {
-  const trimmed = cell.trim();
-  const startsWithColon = trimmed.startsWith(':');
-  const endsWithColon = trimmed.endsWith(':');
-  if (startsWithColon && endsWithColon) return 'center';
-  if (endsWithColon) return 'right';
-  if (startsWithColon) return 'left';
-  return undefined;
-}
-
-export function isDelimiterRow(line: string): boolean {
-  const cells = splitTableRow(line);
-  if (cells.length === 0) return false;
-  return cells.every((c) => /^\s*:?-+:?\s*$/.test(c));
-}
-
-export function isMarkdownTable(raw: string): boolean {
-  if (!raw) return false;
-  const lines = raw.trim().split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length < 2) return false;
-  if (!lines[0].includes('|')) return false;
-  return isDelimiterRow(lines[1]);
-}
-
-export interface ParsedTableData {
-  headers: string[];
-  alignments: ('left' | 'center' | 'right' | undefined)[];
-  rows: string[][];
-}
-
-export function parseMarkdownTable(markdown: string): ParsedTableData | null {
-  const lines = markdown.trim().split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length < 2) return null;
-  if (!isDelimiterRow(lines[1])) return null;
-
-  const rawHeaders = splitTableRow(lines[0]);
-  const alignments = splitTableRow(lines[1]).map(parseAlignment);
-  const rawRows = lines.slice(2).map((l) => splitTableRow(l));
-
-  const colCount = Math.max(rawHeaders.length, ...rawRows.map((r) => r.length));
-  const headers = [...rawHeaders];
-  while (headers.length < colCount) headers.push('');
-
-  while (alignments.length < colCount) alignments.push(undefined);
-
-  const rows = rawRows.map((row) => {
-    const r = [...row];
-    while (r.length < colCount) r.push('');
-    return r;
-  });
-
-  return { headers, alignments, rows };
+/** `true` only when the *entire* text is one GFM table — see `./markdown`'s doc comment for why a
+ *  stored block's own text is never really "some prose, then a table" at this layer. */
+export function isMarkdownTable(text: string): boolean {
+  return classifyBlock(text).kind === 'table';
 }
 
 export interface MarkdownTableProps {
@@ -92,27 +25,40 @@ export interface MarkdownTableProps {
 }
 
 export default function MarkdownTable(props: MarkdownTableProps): JSX.Element {
-  const tableData = () => parseMarkdownTable(props.markdown);
+  const tableNode = () => {
+    const c = classifyBlock(props.markdown);
+    return c.kind === 'table' ? c.node : null;
+  };
   const [showSource, setShowSource] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
 
-  const copyMarkdown = (e: MouseEvent) => {
+  // View-based: the rendered "Table" view copies as TSV (pastes straight into a spreadsheet), the
+  // "Source" view copies the original Markdown (pastes into another Markdown document) — copying
+  // the format of whichever view is actually on screen, not always the same one regardless.
+  const copyTable = (e: MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(props.markdown.trim()).then(() => {
+    const table = tableNode();
+    const text = showSource() || !table ? props.markdown.trim() : tableToTsv(table);
+    navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     });
   };
+
+  const onNavigate = props.onNavigate ?? (() => {});
+  const headerRow = (table: Table) => table.children[0];
+  const dataRows = (table: Table) => table.children.slice(1);
+  const align = (table: Table, idx: number) => table.align?.[idx] ?? 'left';
 
   return (
     <div class="fd-table-wrapper" onClick={(e) => e.stopPropagation()}>
       <div class="fd-table-toolbar">
         <div class="fd-table-header-info">
           <span class="fd-table-badge">📊 Table</span>
-          <Show when={tableData()}>
-            {(data) => (
+          <Show when={tableNode()}>
+            {(table) => (
               <span class="fd-table-stats">
-                ({data().rows.length} {data().rows.length === 1 ? 'row' : 'rows'}, {data().headers.length} cols)
+                ({dataRows(table()).length} {dataRows(table()).length === 1 ? 'row' : 'rows'}, {headerRow(table()).children.length} cols)
               </span>
             )}
           </Show>
@@ -132,7 +78,7 @@ export default function MarkdownTable(props: MarkdownTableProps): JSX.Element {
           >
             Source
           </button>
-          <button class="fd-btn-small" onClick={copyMarkdown} title="Copy Markdown table">
+          <button class="fd-btn-small" onClick={copyTable} title={showSource() ? 'Copy as Markdown' : 'Copy as TSV (paste into a spreadsheet)'}>
             {copied() ? 'Copied ✓' : 'Copy'}
           </button>
         </div>
@@ -146,49 +92,35 @@ export default function MarkdownTable(props: MarkdownTableProps): JSX.Element {
 
       <Show when={!showSource()}>
         <Show
-          when={tableData()}
+          when={tableNode()}
           fallback={
             <pre class="fd-code-block fd-table-source">
               <code>{props.markdown.trim()}</code>
             </pre>
           }
         >
-          {(data) => (
+          {(table) => (
             <div class="fd-table-container">
               <table class="fd-table">
                 <thead>
                   <tr>
-                    <For each={data().headers}>
-                      {(header, idx) => (
-                        <th
-                          class="fd-table-th"
-                          style={{ 'text-align': data().alignments[idx()] ?? 'left' }}
-                        >
-                          <Inline
-                            text={header}
-                            onNavigate={props.onNavigate ?? (() => {})}
-                            popover={props.popover}
-                          />
+                    <For each={headerRow(table()).children}>
+                      {(cell, idx) => (
+                        <th class="fd-table-th" style={{ 'text-align': align(table(), idx()) }}>
+                          {renderInline(cell.children, onNavigate, props.popover)}
                         </th>
                       )}
                     </For>
                   </tr>
                 </thead>
                 <tbody>
-                  <For each={data().rows}>
+                  <For each={dataRows(table())}>
                     {(row) => (
                       <tr class="fd-table-tr">
-                        <For each={row}>
+                        <For each={row.children}>
                           {(cell, idx) => (
-                            <td
-                              class="fd-table-td"
-                              style={{ 'text-align': data().alignments[idx()] ?? 'left' }}
-                            >
-                              <Inline
-                                text={cell}
-                                onNavigate={props.onNavigate ?? (() => {})}
-                                popover={props.popover}
-                              />
+                            <td class="fd-table-td" style={{ 'text-align': align(table(), idx()) }}>
+                              {renderInline(cell.children, onNavigate, props.popover)}
                             </td>
                           )}
                         </For>

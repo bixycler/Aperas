@@ -2,31 +2,35 @@ import { For, Show, createSignal, onCleanup, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderNodeItem, TreeResponse } from './render';
 import { apiFetch } from './apiFetch';
+import { parseMarkdown } from './markdown';
+import type { RootContent, PhrasingContent } from 'mdast';
 
 /**
- * Renders a stored block's own prose (`title`/`text`) as inline markdown — bold, code, italics, and
- * links — instead of the raw literal syntax `aperas tree`'s plain-text output leaves untouched (a
- * CLI has no reason to parse it; a UI does). This is the "marker" half of discussion/webapp.md's
- * Settled "links render at two sites sharing one identity": the link's own text, right here inline,
- * is the click target — no separate superscript, matching the decision to drop one.
+ * Renders a stored block's own prose (`title`/`text`) as inline markdown — bold, italics, code,
+ * strikethrough, and links — instead of the raw literal syntax `aperas tree`'s plain-text output
+ * leaves untouched (a CLI has no reason to parse it; a UI does). This is the "marker" half of
+ * discussion/webapp.md's Settled "links render at two sites sharing one identity": the link's own
+ * text, right here inline, is the click target — no separate superscript, matching the decision to
+ * drop one.
  *
  * A link only becomes clickable when its `href` carries a same-corpus `id/<Kind>:<snowflake>`
  * anchor (design/linking.md's Anchors section — the form every internal reference in this corpus
  * has carried since the anchor-cleanup pass) — extracted and used directly as the new apex, the
- * same direct-id tier `resolveDeepPath`/`aperas tree <path>` already special-cases, so no new
- * resolution logic exists here, just a regex pulling the id back out of an href this corpus already
- * writes. A legacy slug-path-only anchor (rare; the compatibility form design/linking.md's Anchors
- * section describes as pre-ingestion-only) has no id to extract and renders as plain, inert text —
- * a real gap, not silently faked as a working link.
+ * same direct-id tier `resolveDeepPath`/`aperas tree <path>` already special-cases. A legacy
+ * slug-path-only anchor (rare; the compatibility form design/linking.md's Anchors section describes
+ * as pre-ingestion-only) has no id to extract and renders as plain, inert text — a real gap, not
+ * silently faked as a working link.
  *
- * Deliberately not a general markdown renderer: only the constructs actually seen in this corpus's
- * prose (`**bold**`, `` `code` ``, single `*italic*`, `[text](href)`) are recognized; anything else
- * passes through as literal text, same as today.
+ * Parses via `./markdown`'s shared `remark-gfm` processor — the same one every other rendering site
+ * in this package uses — rather than a bespoke tokenizer of its own; see that module's doc comment
+ * for why. Whatever GFM/CommonMark recognizes as inline content (including constructs this
+ * component never explicitly names, e.g. autolinks) renders correctly by construction; only a
+ * handful of node types too exotic to be worth a real fallback (footnote references, inline math)
+ * degrade to their own plain-text contents.
  */
 
 const ID_FRAGMENT_RE = /#(?:.*\/)?id\/((?:BlockNode|ArtifactNode|FolderNode):[A-Za-z0-9]+)/;
-
-const TOKEN_RE = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*([^*]+?)\*|(<br\s*\/?>)/gi;
+const BR_RE = /^<br\s*\/?>$/i;
 
 export interface InlineProps {
   text: string | undefined;
@@ -111,7 +115,7 @@ function LinkPopover(props: {
 }
 
 function NavigableLink(props: {
-  content: string; targetId: string; href: string; onNavigate: (id: string) => void;
+  content: JSX.Element; targetId: string; href: string; onNavigate: (id: string) => void;
   popover?: { view: string; onFold: (ref: string, action: 'unfold' | 'fold') => void };
 }) {
   const [rect, setRect] = createSignal<{ top: number; left: number }>();
@@ -185,43 +189,68 @@ function NavigableLink(props: {
   );
 }
 
+/** Recursively extracts plain text from a node this renderer has no explicit case for (e.g. a
+ *  footnote reference or inline math, from a GFM extension this app doesn't otherwise use) — so an
+ *  unrecognized construct degrades to visible text instead of silently vanishing, the same
+ *  "anything else passes through as literal text" contract the old regex tokenizer had. */
+export function plainTextOf(node: RootContent | PhrasingContent): string {
+  if ('value' in node && typeof node.value === 'string') return node.value;
+  if ('children' in node && Array.isArray(node.children)) return node.children.map(plainTextOf).join('');
+  return '';
+}
+
+/** Exported so a component that already holds a parsed AST fragment of its own (a table cell, a
+ *  blockquote's content) can render it directly, rather than re-serializing back to a string and
+ *  paying for a second parse of text this module's own caller already parsed once. */
+export function renderInline(
+  nodes: PhrasingContent[],
+  onNavigate: (id: string) => void,
+  popover: InlineProps['popover'],
+): JSX.Element[] {
+  return nodes.map((node): JSX.Element => {
+    switch (node.type) {
+      case 'text':
+        return <>{node.value}</>;
+      case 'strong':
+        return <strong>{renderInline(node.children, onNavigate, popover)}</strong>;
+      case 'emphasis':
+        return <em>{renderInline(node.children, onNavigate, popover)}</em>;
+      case 'delete':
+        return <del>{renderInline(node.children, onNavigate, popover)}</del>;
+      case 'inlineCode':
+        return <code>{node.value}</code>;
+      case 'break':
+        return <br />;
+      case 'html':
+        return BR_RE.test(node.value.trim()) ? <br /> : <>{node.value}</>;
+      case 'link': {
+        const content = renderInline(node.children, onNavigate, popover);
+        const idMatch = ID_FRAGMENT_RE.exec(node.url);
+        return idMatch ? (
+          <NavigableLink content={content} targetId={idMatch[1]} href={node.url} onNavigate={onNavigate} popover={popover} />
+        ) : (
+          <span class="inline-link inline-link-inert" title={`${node.url} (no resolvable id — can't navigate)`}>{content}</span>
+        );
+      }
+      default:
+        return <>{plainTextOf(node)}</>;
+    }
+  });
+}
+
 export default function Inline(props: InlineProps): JSX.Element {
   const parts = () => {
     const text = props.text ?? '';
-    const out: Array<{ kind: 'text' | 'bold' | 'code' | 'italic' | 'link' | 'break'; content: string; href?: string; targetId?: string }> = [];
-    let cursor = 0;
-    TOKEN_RE.lastIndex = 0;
-    for (const m of text.matchAll(TOKEN_RE)) {
-      if (m.index! > cursor) out.push({ kind: 'text', content: text.slice(cursor, m.index) });
-      if (m[1] !== undefined) out.push({ kind: 'bold', content: m[1] });
-      else if (m[2] !== undefined) out.push({ kind: 'code', content: m[2] });
-      else if (m[3] !== undefined) {
-        const href = m[4];
-        const idMatch = ID_FRAGMENT_RE.exec(href);
-        out.push({ kind: 'link', content: m[3], href, targetId: idMatch?.[1] });
-      } else if (m[5] !== undefined) out.push({ kind: 'italic', content: m[5] });
-      else if (m[6] !== undefined) out.push({ kind: 'break', content: '' });
-      cursor = m.index! + m[0].length;
-    }
-    if (cursor < text.length) out.push({ kind: 'text', content: text.slice(cursor) });
+    if (!text) return [] as JSX.Element[];
+    const root = parseMarkdown(text);
+    const out: JSX.Element[] = [];
+    root.children.forEach((child, i) => {
+      if (i > 0) out.push(<>{'\n\n'}</>);
+      if (child.type === 'paragraph') out.push(...renderInline(child.children, props.onNavigate, props.popover));
+      else out.push(<>{plainTextOf(child)}</>);
+    });
     return out;
   };
 
-  return (
-    <For each={parts()}>
-      {(p) => {
-        switch (p.kind) {
-          case 'bold': return <strong>{p.content}</strong>;
-          case 'code': return <code>{p.content}</code>;
-          case 'italic': return <em>{p.content}</em>;
-          case 'break': return <br />;
-          case 'link':
-            return p.targetId ? <NavigableLink content={p.content} targetId={p.targetId} href={p.href!} onNavigate={props.onNavigate} popover={props.popover} /> : (
-              <span class="inline-link inline-link-inert" title={`${p.href} (no resolvable id — can't navigate)`}>{p.content}</span>
-            );
-          default: return <>{p.content}</>;
-        }
-      }}
-    </For>
-  );
+  return <For each={parts()}>{(p) => p}</For>;
 }

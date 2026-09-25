@@ -1,93 +1,126 @@
-import { For } from 'solid-js';
+import { createSignal } from 'solid-js';
+import hljs from 'highlight.js/lib/core';
+import bash from 'highlight.js/lib/languages/bash';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import json from 'highlight.js/lib/languages/json';
+import markdown from 'highlight.js/lib/languages/markdown';
+import rust from 'highlight.js/lib/languages/rust';
+import python from 'highlight.js/lib/languages/python';
+import yaml from 'highlight.js/lib/languages/yaml';
+import css from 'highlight.js/lib/languages/css';
+import scss from 'highlight.js/lib/languages/scss';
+import xml from 'highlight.js/lib/languages/xml';
+import sql from 'highlight.js/lib/languages/sql';
+import go from 'highlight.js/lib/languages/go';
+import java from 'highlight.js/lib/languages/java';
+import c from 'highlight.js/lib/languages/c';
+import cpp from 'highlight.js/lib/languages/cpp';
+import csharp from 'highlight.js/lib/languages/csharp';
+import dockerfile from 'highlight.js/lib/languages/dockerfile';
+import ini from 'highlight.js/lib/languages/ini';
+import diff from 'highlight.js/lib/languages/diff';
+import graphql from 'highlight.js/lib/languages/graphql';
+import plaintext from 'highlight.js/lib/languages/plaintext';
+import { classifyBlock } from './markdown';
 
 interface CodeBlockProps {
   source: string;
 }
 
-interface CodeToken {
-  text: string;
-  kind?: 'comment' | 'string' | 'number' | 'keyword' | 'type' | 'function' | 'constant';
-}
-
-const KEYWORDS: Record<string, Set<string>> = {
-  java: new Set('abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while var record sealed permits yield'.split(' ')),
-  javascript: new Set('async await break case catch class const continue debugger default delete do else export extends false finally for from function if import in instanceof let new null of return static super switch this throw true try typeof undefined var void while yield'.split(' ')),
-  python: new Set('and as assert async await break class continue def del elif else except False finally for from global if import in is lambda nonlocal not or pass raise return True try while with yield None self'.split(' ')),
-  bash: new Set('case do done elif else esac fi for function if in select then until while'.split(' ')),
-  sql: new Set('all alter and as asc between by case create cross database delete desc distinct drop else end exists false from full group having in inner insert into is join left like limit not null offset on or order outer primary references right select set table then true union unique update values when where with'.split(' ')),
-};
+// Registered per-language (not the ~190-language `highlight.js` barrel — see `Inline.tsx`'s sibling
+// reasoning for `mermaid`'s own diagram-type chunks). `bash`/`javascript`/`typescript`/`json`/
+// `markdown`/`rust` are confirmed live in this corpus (`grep`'d: bash 36, markdown 12, json 12, ts 8,
+// javascript 4, rust 2); the rest are a deliberately broader set of ~20 common languages, added
+// ahead of need rather than one at a time as each first appears — small per-language cost (each is
+// its own self-contained module, none import a sibling grammar as a base), worth it to avoid the
+// "wrong grammar's coloring" failure mode `highlightToHtml`'s own fallback below exists for.
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('scss', scss);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('sql', sql);
+hljs.registerLanguage('go', go);
+hljs.registerLanguage('java', java);
+hljs.registerLanguage('c', c);
+hljs.registerLanguage('cpp', cpp);
+hljs.registerLanguage('csharp', csharp);
+hljs.registerLanguage('dockerfile', dockerfile);
+hljs.registerLanguage('ini', ini);
+hljs.registerLanguage('diff', diff);
+hljs.registerLanguage('graphql', graphql);
+hljs.registerLanguage('plaintext', plaintext);
 
 const ALIASES: Record<string, string> = {
-  js: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript',
-  py: 'python', sh: 'bash', shell: 'bash', zsh: 'bash',
-  mysql: 'sql', postgres: 'sql', postgresql: 'sql',
-  kotlin: 'java', c: 'java', cpp: 'java', 'c++': 'java', cs: 'java', csharp: 'java',
+  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+  sh: 'bash', shell: 'bash', zsh: 'bash', md: 'markdown', text: 'plaintext', txt: 'plaintext',
+  py: 'python', yml: 'yaml', html: 'xml', xhtml: 'xml', svg: 'xml',
+  'c++': 'cpp', cc: 'cpp', cxx: 'cpp', cs: 'csharp', docker: 'dockerfile',
+  toml: 'ini', patch: 'diff', gql: 'graphql',
 };
 
-/** Stored code nodes contain their original Markdown fence and list indentation. */
+/** Stored code nodes contain their original Markdown fence — `classifyBlock` (`./markdown`) already
+ *  parses that fence via `remark-gfm`, the same parser that decided this was a code block in the
+ *  first place, giving `{lang, value}` directly rather than hand-detecting the fence markers and
+ *  re-deriving the dedented body from scratch. Falls back to the raw source, fenceless, for text
+ *  that doesn't parse as a single code block (defensive only — every real call site already
+ *  confirmed this via `classifyBlock` before rendering `CodeBlock` at all). */
 export function parseCodeBlock(source: string): { code: string; language: string } {
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
-  const first = lines.findIndex((line) => line.trim() !== '');
-  let language = '';
-  let body = lines;
-
-  if (first >= 0) {
-    const opening = /^[ \t]*(`{3,}|~{3,})([^\n]*)$/.exec(lines[first]);
-    if (opening) {
-      const marker = opening[1][0];
-      const minimumLength = opening[1].length;
-      const last = lines.findLastIndex((line) => line.trim() !== '');
-      const closing = lines[last]?.trim() ?? '';
-      if (last > first && closing.length >= minimumLength && [...closing].every((char) => char === marker)) {
-        language = opening[2].trim().split(/\s+/)[0]?.replace(/^\{\.?|\}$/g, '').toLowerCase() ?? '';
-        body = lines.slice(first + 1, last);
-      }
-    }
-  }
-
-  while (body.length && body[0].trim() === '') body.shift();
-  while (body.length && body[body.length - 1].trim() === '') body.pop();
-  const indent = body.reduce((minimum, line) => line.trim() === ''
-    ? minimum
-    : Math.min(minimum, /^[ \t]*/.exec(line)![0].length), Infinity);
-  const code = body.map((line) => line.slice(Number.isFinite(indent) ? indent : 0)).join('\n');
-  return { code, language };
+  const c = classifyBlock(source);
+  if (c.kind === 'code') return { code: c.node.value, language: (c.node.lang ?? '').toLowerCase() };
+  if (c.kind === 'mermaid') return { code: c.code, language: 'mermaid' };
+  return { code: source.trim(), language: '' };
 }
 
-export function highlight(code: string, language: string): CodeToken[] {
+/** `innerHTML` on the result — same trust boundary `MermaidDiagram.tsx` already accepts for its own
+ *  SVG output: the source is this app's own registered `highlight.js` grammars running over this
+ *  corpus's own stored text, not third-party/user-supplied markup. */
+const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>]/g, (c) => HTML_ESCAPES[c]);
+}
+
+/** A language this corpus's code fences don't currently use (not registered — see the list above)
+ *  renders as plain, unhighlighted text. `hljs.highlightAuto` was tried first, but it only ever
+ *  guesses *among the registered languages* — confirmed live, a Python snippet got confidently
+ *  mislabeled "bash" and had `return` colored as a bash builtin, which is worse than no highlighting
+ *  at all. Plain text degrades honestly; a wrong grammar's coloring doesn't. */
+export function highlightToHtml(code: string, language: string): string {
   const lang = ALIASES[language] ?? language;
-  const comment = lang === 'python' || lang === 'bash'
-    ? '#[^\\n]*'
-    : lang === 'sql'
-      ? '--[^\\n]*|\\/\\*[\\s\\S]*?(?:\\*\\/|$)'
-      : '\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?(?:\\*\\/|$)';
-  const pattern = new RegExp(`${comment}|"(?:\\\\.|[^"\\\\])*"?|'(?:\\\\.|[^'\\\\])*'?|\x60(?:\\\\.|[^\x60\\\\])*\x60?|\\b(?:0x[\\da-fA-F]+|\\d+(?:\\.\\d+)?)\\b|\\b[A-Za-z_$][\\w$]*\\b`, 'g');
-  const tokens: CodeToken[] = [];
-  let cursor = 0;
-  for (const match of code.matchAll(pattern)) {
-    const index = match.index!;
-    if (index > cursor) tokens.push({ text: code.slice(cursor, index) });
-    const value = match[0];
-    let kind: CodeToken['kind'];
-    if (value.startsWith('//') || value.startsWith('/*') || value.startsWith('#') || (lang === 'sql' && value.startsWith('--'))) kind = 'comment';
-    else if (/^["'`]/.test(value)) kind = 'string';
-    else if (/^(?:0x|\d)/.test(value)) kind = 'number';
-    else if (['true', 'false', 'null', 'undefined', 'True', 'False', 'None'].includes(value)) kind = 'constant';
-    else if (KEYWORDS[lang]?.has(lang === 'sql' ? value.toLowerCase() : value)) kind = 'keyword';
-    else if (/^[A-Z]/.test(value)) kind = 'type';
-    else if (/^\s*\(/.test(code.slice(index + value.length))) kind = 'function';
-    tokens.push({ text: value, kind });
-    cursor = index + value.length;
-  }
-  if (cursor < code.length) tokens.push({ text: code.slice(cursor) });
-  return tokens;
+  if (hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+  return escapeHtml(code);
 }
 
 export default function CodeBlock(props: CodeBlockProps) {
   const parsed = () => parseCodeBlock(props.source);
+  const [copied, setCopied] = createSignal(false);
+
+  const copyCode = (e: MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(parsed().code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    });
+  };
+
   return (
-    <pre class="fd-code-block"><code><For each={highlight(parsed().code, parsed().language)}>
-      {(token) => token.kind ? <span class={`fd-syntax-${token.kind}`}>{token.text}</span> : token.text}
-    </For></code></pre>
+    <div class="fd-code-wrapper" onClick={(e) => e.stopPropagation()}>
+      <div class="fd-code-toolbar">
+        <span class="fd-code-badge">💻 {parsed().language || 'Code'}</span>
+        <div class="fd-code-actions">
+          <button class="fd-btn-small" onClick={copyCode} title="Copy code">
+            {copied() ? 'Copied ✓' : 'Copy'}
+          </button>
+        </div>
+      </div>
+      <pre class="fd-code-block"><code innerHTML={highlightToHtml(parsed().code, parsed().language)} /></pre>
+    </div>
   );
 }

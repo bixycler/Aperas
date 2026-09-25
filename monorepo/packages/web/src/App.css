@@ -285,23 +285,25 @@
   font-family: inherit;
 }
 .fd-code-block { tab-size: 2; }
-.fd-syntax-comment { color: #85a66b; }
-.fd-syntax-string { color: #d9a66f; }
-.fd-syntax-number, .fd-syntax-constant { color: #b7a0e3; }
-.fd-syntax-keyword { color: #c89ae2; }
-.fd-syntax-type { color: #75c7d8; }
-.fd-syntax-function { color: #8ab8f3; }
+/* highlight.js's own class names (`hljs-*`), styled to the same palette the old hand-rolled
+ * highlighter used — swapped for real per-language grammars, not a new color scheme. */
+.hljs-comment, .hljs-quote { color: #85a66b; }
+.hljs-string, .hljs-regexp { color: #d9a66f; }
+.hljs-number, .hljs-literal { color: #b7a0e3; }
+.hljs-keyword, .hljs-built_in, .hljs-section, .hljs-bullet { color: #c89ae2; }
+.hljs-type, .hljs-attr, .hljs-symbol { color: #75c7d8; }
+.hljs-title, .hljs-attribute { color: #8ab8f3; }
 
 @media print {
-  .fd-syntax-comment { color: #466634; }
-  .fd-syntax-string { color: #8d4e16; }
-  .fd-syntax-number, .fd-syntax-constant { color: #663d9c; }
-  .fd-syntax-keyword { color: #7d308f; }
-  .fd-syntax-type { color: #116374; }
-  .fd-syntax-function { color: #1d579d; }
+  .hljs-comment, .hljs-quote { color: #466634; }
+  .hljs-string, .hljs-regexp { color: #8d4e16; }
+  .hljs-number, .hljs-literal { color: #663d9c; }
+  .hljs-keyword, .hljs-built_in, .hljs-section, .hljs-bullet { color: #7d308f; }
+  .hljs-type, .hljs-attr, .hljs-symbol { color: #116374; }
+  .hljs-title, .hljs-attribute { color: #1d579d; }
 }
 
-.fd-mermaid-container {
+.fd-mermaid-container, .fd-code-wrapper {
   margin: 0.5rem 0 0.8rem;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -309,7 +311,7 @@
   overflow: hidden;
 }
 
-.fd-mermaid-toolbar {
+.fd-mermaid-toolbar, .fd-code-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -319,15 +321,25 @@
   font-size: 0.8em;
 }
 
-.fd-mermaid-badge {
+.fd-mermaid-badge, .fd-code-badge {
   font-weight: 600;
   opacity: 0.8;
   color: var(--accent);
 }
 
-.fd-mermaid-actions {
+.fd-mermaid-actions, .fd-code-actions {
   display: flex;
   gap: 0.3rem;
+}
+
+/* A code block shown inside its own `.fd-code-wrapper` toolbar gets its outer chrome from the
+ * wrapper, not from `.fd-code-block`'s own (self-contained) border/margin/background — same
+ * relationship `.fd-mermaid-source`/table's own "Source" view already have to `.fd-code-block`. */
+.fd-code-wrapper .fd-code-block {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .fd-btn-small {

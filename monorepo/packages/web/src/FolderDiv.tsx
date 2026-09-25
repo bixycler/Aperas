@@ -1,17 +1,17 @@
-import { For, Show, Suspense, createSignal, createEffect, onCleanup, lazy } from 'solid-js';
+import { For, Show, Suspense, createSignal, createEffect, createMemo, onCleanup, lazy } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderItem, BacklinkEntry } from './render';
 import { apiFetch } from './apiFetch';
 import Inline from './Inline';
-import { isMermaidCode } from './mermaidDetect';
-import MarkdownTable, { isMarkdownTable } from './MarkdownTable';
+import { classifyBlock } from './markdown';
+import MarkdownTable from './MarkdownTable';
 import CodeBlock from './CodeBlock';
-import MarkdownQuote, { isMarkdownQuote } from './MarkdownQuote';
+import MarkdownQuote from './MarkdownQuote';
 
 /** Lazy: `MermaidDiagram.tsx`'s `import mermaid from 'mermaid'` pulls in ~2MB of transitive
  *  dependencies (elk, cytoscape, katex, one chunk per diagram type) that a corpus with no Mermaid
- *  blocks should never make a browser fetch. `isMermaidCode` lives in the separate, mermaid-free
- *  `./mermaidDetect` specifically so checking "is this a Mermaid block?" never drags this in. */
+ *  blocks should never make a browser fetch. Checking "is this a Mermaid block?" (`classifyBlock`,
+ *  `./markdown`) never touches `mermaid` itself, so that check alone never drags this in. */
 const MermaidDiagram = lazy(() => import('./MermaidDiagram'));
 
 /**
@@ -340,21 +340,18 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
           const [editing, setEditing] = createSignal(false);
           const hasChildren = () => !n.truncated && n.children.length > 0;
           const contentText = () => n.text ?? n.abstract;
-          const isMermaid = () => {
+          // Parsed once per render via the shared `remark-gfm` processor (`./markdown`), not
+          // re-sniffed separately per candidate kind — `n.displayLabel` (the graph's own authoritative
+          // stored type) still takes priority where it applies; the parse is the fallback for cases
+          // it doesn't cover (e.g. a `paragraph`-kind node whose full text happens to be a table).
+          const classification = createMemo(() => {
             const txt = contentText();
-            return txt ? isMermaidCode(txt) : false;
-          };
-          const isTable = () => {
-            if (n.displayLabel === 'table') return true;
-            const txt = contentText();
-            return txt ? isMarkdownTable(txt) : false;
-          };
-          const isCode = () => {
-            if (n.displayLabel === 'code') return true;
-            const txt = contentText();
-            return txt ? txt.trim().startsWith('```') : false;
-          };
-          const isQuote = () => n.displayLabel === 'blockquote' || isMarkdownQuote(contentText() ?? '');
+            return txt ? classifyBlock(txt) : undefined;
+          });
+          const isMermaid = () => classification()?.kind === 'mermaid';
+          const isTable = () => n.displayLabel === 'table' || classification()?.kind === 'table';
+          const isCode = () => n.displayLabel === 'code' || classification()?.kind === 'code';
+          const isQuote = () => n.displayLabel === 'blockquote' || classification()?.kind === 'quote';
           const titleText = () => {
             if (n.displayLabel === 'code' && n.title === n.id) {
               return isMermaid() ? 'Mermaid Diagram' : 'Code Block';
@@ -480,9 +477,10 @@ function PassthroughChildren(props: FolderDivProps & { item: Extract<RenderItem,
  * normal node's own text renders in, not the link-highlighted title color, so a link preview reads
  * as "a title, then its actual body text" rather than one long highlighted run. */
 function LinkAbstract(props: { text?: string; onNavigate: (id: string) => void }) {
-  const isMermaid = () => props.text ? isMermaidCode(props.text) : false;
-  const isTable = () => props.text ? isMarkdownTable(props.text) : false;
-  const isQuote = () => isMarkdownQuote(props.text ?? '');
+  const classification = createMemo(() => (props.text ? classifyBlock(props.text) : undefined));
+  const isMermaid = () => classification()?.kind === 'mermaid';
+  const isTable = () => classification()?.kind === 'table';
+  const isQuote = () => classification()?.kind === 'quote';
   return (
     <Show when={props.text !== undefined}>
       <Show

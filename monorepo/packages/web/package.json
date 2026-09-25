@@ -11,9 +11,13 @@
   "dependencies": {
     "@aperas/core": "*",
     "clsx": "^2.1.1",
+    "highlight.js": "^11.12.0",
     "lucide-solid": "^1.34.0",
     "mermaid": "^12.0.0",
-    "solid-js": "^1.9.15"
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "solid-js": "^1.9.15",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@aperas/cli": "*",

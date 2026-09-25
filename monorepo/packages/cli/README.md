@@ -49,7 +49,9 @@ aperas skill install
 
 Copies `aperas` and `kg-doc-ingest` into `./.claude/skills/` (or `~/.claude/skills/`
 with `--global`) so an agent working in this project picks up the discipline
-automatically.
+automatically. Pass `--host <name>` for a different agent host's own convention —
+`claude` (default), `agents` (Antigravity), `codex`, `cursor`, or `opencode` —
+installing to that host's own `.<name>/skills/` instead.
 
 ## Commands
 

@@ -19,6 +19,11 @@ import { wantsHelp, printHelp } from './kgHelp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILLS = ['aperas', 'kg-doc-ingest'];
+// Every host below expects the same `<dot-dir>/skills/<name>/SKILL.md` layout Claude Code does —
+// confirmed for `.claude`/`.agents` (this repo's own `.agents/skills/` mirrors `.claude/skills/`
+// verbatim, one already proven to work for Antigravity), assumed but unverified for the rest.
+const HOSTS = ['claude', 'agents', 'codex', 'cursor', 'opencode'] as const;
+type Host = (typeof HOSTS)[number];
 
 function resolveSkillsRoot(): string {
   const builtPath = resolve(__dirname, 'skills');
@@ -29,7 +34,13 @@ function resolveSkillsRoot(): string {
 function runInstall(rawArgs: string[]): void {
   const global = rawArgs.includes('--global');
   const force = rawArgs.includes('--force');
-  const targetDir = global ? join(homedir(), '.claude', 'skills') : join(process.cwd(), '.claude', 'skills');
+  const hostFlagIdx = rawArgs.indexOf('--host');
+  const hostArg = hostFlagIdx >= 0 ? rawArgs[hostFlagIdx + 1] : 'claude';
+  if (!(HOSTS as readonly string[]).includes(hostArg)) {
+    throw new Error(`--host must be one of: ${HOSTS.join(', ')} (got '${hostArg}').`);
+  }
+  const dotDir = `.${hostArg as Host}`;
+  const targetDir = global ? join(homedir(), dotDir, 'skills') : join(process.cwd(), dotDir, 'skills');
 
   const skillsRoot = resolveSkillsRoot();
   mkdirSync(targetDir, { recursive: true });
@@ -53,12 +64,13 @@ export async function main(): Promise<void> {
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "Install this package's bundled skills (aperas, kg-doc-ingest) into an agent's skill directory, so it knows how to work the CLI's graph correctly.",
-      usage: 'aperas skill install [--global] [--force]',
+      usage: 'aperas skill install [--host claude|agents|codex|cursor|opencode] [--global] [--force]',
       args: [
-        { name: 'install', description: 'Copy the bundled skills into a .claude/skills/ directory.' },
+        { name: 'install', description: 'Copy the bundled skills into a <host>/skills/ directory.' },
       ],
       flags: [
-        { name: '--global', description: "Install to ~/.claude/skills/ instead of ./.claude/skills/ (the current directory's project-level skills)." },
+        { name: '--host <name>', description: 'Which agent host to install for — claude (default), agents (Antigravity), codex, cursor, or opencode. Selects the .<name>/ directory.' },
+        { name: '--global', description: "Install to ~/.<host>/skills/ instead of ./.<host>/skills/ (the current directory's project-level skills)." },
         { name: '--force', description: 'Overwrite an already-installed skill of the same name.' },
       ],
     });
@@ -66,7 +78,7 @@ export async function main(): Promise<void> {
   }
   const [subcommand, ...rest] = rawArgs;
   if (subcommand === 'install') return runInstall(rest);
-  console.error('Usage: aperas skill install [--global] [--force]');
+  console.error('Usage: aperas skill install [--host claude|agents|codex|cursor|opencode] [--global] [--force]');
   process.exit(1);
 }
 

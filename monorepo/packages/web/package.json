@@ -12,11 +12,12 @@
     "@aperas/core": "*",
     "clsx": "^2.1.1",
     "lucide-solid": "^1.34.0",
+    "mermaid": "^12.0.0",
     "solid-js": "^1.9.15"
   },
   "devDependencies": {
+    "@aperas/cli": "*",
     "vite": "^8.2.2",
-    "vite-plugin-solid": "^2.11.14",
-    "@aperas/cli": "*"
+    "vite-plugin-solid": "^2.11.14"
   }
 }

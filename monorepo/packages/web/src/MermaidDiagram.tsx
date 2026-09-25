@@ -1,5 +1,6 @@
 import { createSignal, createEffect, Show } from 'solid-js';
 import mermaid from 'mermaid';
+import { cleanMermaidCode } from './mermaidDetect';
 
 let mermaidInitialized = false;
 function ensureMermaidInitialized() {
@@ -20,26 +21,6 @@ function ensureMermaidInitialized() {
     securityLevel: 'loose',
   });
   mermaidInitialized = true;
-}
-
-export function cleanMermaidCode(raw: string): string {
-  let text = raw.trim();
-  if (text.startsWith('```mermaid')) {
-    text = text.slice('```mermaid'.length);
-  } else if (text.startsWith('```')) {
-    text = text.slice(3);
-  }
-  if (text.endsWith('```')) {
-    text = text.slice(0, -3);
-  }
-  return text.trim();
-}
-
-export function isMermaidCode(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.startsWith('```mermaid')) return true;
-  const firstLine = cleanMermaidCode(trimmed).split('\n')[0]?.trim() ?? '';
-  return /^(flowchart|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie|gitGraph|quadrantChart|xychart-beta|graph)\b/.test(firstLine);
 }
 
 export interface MermaidDiagramProps {

@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderNodeItem, TreeResponse } from './render';
+import { apiFetch } from './apiFetch';
 
 /**
  * Renders a stored block's own prose (`title`/`text`) as inline markdown — bold, code, italics, and
@@ -51,9 +52,13 @@ function LinkPopover(props: {
   const [preview, setPreview] = createSignal<RenderNodeItem | null>();
   const [error, setError] = createSignal<string>();
 
-  fetch(`/api/tree?path=${encodeURIComponent(props.targetId)}&view=${encodeURIComponent(props.view)}&depth=0`)
-    .then((r) => r.json())
-    .then((body: TreeResponse) => setPreview(body.tree))
+  apiFetch(`/api/tree?path=${encodeURIComponent(props.targetId)}&view=${encodeURIComponent(props.view)}&depth=0`)
+    .then(async (r) => {
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error ?? `/api/tree: ${r.status}`);
+      return body as TreeResponse;
+    })
+    .then((body) => setPreview(body.tree))
     .catch((err) => setError(err instanceof Error ? err.message : String(err)));
 
   // Portaled to `document.body` (below) rather than positioned relative to the hovered link's own

@@ -1,12 +1,18 @@
-import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
+import { For, Show, Suspense, createSignal, createEffect, onCleanup, lazy } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { RenderItem, BacklinkEntry } from './render';
 import { apiFetch } from './apiFetch';
 import Inline from './Inline';
-import MermaidDiagram, { isMermaidCode } from './MermaidDiagram';
+import { isMermaidCode } from './mermaidDetect';
 import MarkdownTable, { isMarkdownTable } from './MarkdownTable';
 import CodeBlock from './CodeBlock';
 import MarkdownQuote, { isMarkdownQuote } from './MarkdownQuote';
+
+/** Lazy: `MermaidDiagram.tsx`'s `import mermaid from 'mermaid'` pulls in ~2MB of transitive
+ *  dependencies (elk, cytoscape, katex, one chunk per diagram type) that a corpus with no Mermaid
+ *  blocks should never make a browser fetch. `isMermaidCode` lives in the separate, mermaid-free
+ *  `./mermaidDetect` specifically so checking "is this a Mermaid block?" never drags this in. */
+const MermaidDiagram = lazy(() => import('./MermaidDiagram'));
 
 /**
  * `FolderDiv` — first Solid pass at the fold/unfold/zoom/edit mechanics discussion/webapp.md
@@ -435,7 +441,9 @@ function NodeRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'no
                     }
                   >
                     <div class="fd-abstract">
-                      <MermaidDiagram code={contentText()!} id={n.id} />
+                      <Suspense fallback={<div class="status fd-mermaid-loading">Loading diagram renderer…</div>}>
+                        <MermaidDiagram code={contentText()!} id={n.id} />
+                      </Suspense>
                     </div>
                   </Show>
                 </Show>
@@ -492,7 +500,11 @@ function LinkAbstract(props: { text?: string; onNavigate: (id: string) => void }
           </Show>
         }
       >
-        <div class="fd-abstract"><MermaidDiagram code={props.text!} /></div>
+        <div class="fd-abstract">
+          <Suspense fallback={<div class="status fd-mermaid-loading">Loading diagram renderer…</div>}>
+            <MermaidDiagram code={props.text!} />
+          </Suspense>
+        </div>
       </Show>
     </Show>
   );

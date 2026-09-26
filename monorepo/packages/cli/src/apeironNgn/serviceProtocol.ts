@@ -13,9 +13,9 @@
  *  carrying the same unresolved conflict (those carry only the "what diverged" description in
  *  `conflict.content`/`conflict.state`, deliberately without this repeated inline each time). */
 export const CONFLICT_RESOLUTION_HINT =
-  "Resolve with: npm run kg:flush -- --clobber (keep this service's pending local changes, overwrite disk) or " +
-  "npm run kg:reload -- --discard (keep disk's current content, drop the pending local changes) — note the " +
-  "'--' before the flag, required by npm itself.";
+  "Resolve with: npm run aperas -- flush --clobber (keep this service's pending local changes, overwrite disk) or " +
+  "npm run aperas -- reload --discard (keep disk's current content, drop the pending local changes) — note the " +
+  "'--' before the verb, required by npm itself.";
 
 export type ServiceRequest =
   | { op: 'ping' }

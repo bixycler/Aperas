@@ -57,12 +57,12 @@ export async function main(): Promise<void> {
     note = ` (${gcParts.join(', ')})`;
   }
 
-  console.log(`[ApeironNgn kg:flush] Flushed${note}.`);
+  console.log(`[aperas flush] Flushed${note}.`);
 }
 
 if (process.argv[1]?.endsWith('kgFlush.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:flush] Failed:', err.message || err);
+    console.error('[aperas flush] Failed:', err.message || err);
     process.exit(1);
   });
 }

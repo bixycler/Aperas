@@ -23,12 +23,12 @@ export async function main(): Promise<void> {
   await runStart();
   const lock = readLock();
   if (!lock) throw new Error('Service did not report a lock after starting — this should not happen.');
-  console.log(`[ApeironNgn kg:serve] Open http://127.0.0.1:${lock.httpPort} in a browser.`);
+  console.log(`[aperas serve] Open http://127.0.0.1:${lock.httpPort} in a browser.`);
 }
 
 if (process.argv[1]?.endsWith('kgServe.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:serve] Failed:', err.message || err);
+    console.error('[aperas serve] Failed:', err.message || err);
     process.exit(1);
   });
 }

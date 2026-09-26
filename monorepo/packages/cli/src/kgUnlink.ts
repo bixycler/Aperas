@@ -41,15 +41,15 @@ export async function main(): Promise<void> {
     flush,
   });
   if (!removed) {
-    console.log(`[ApeironNgn kg:unlink] No manual link from '${blockRef}' to '${targetRef}' found.`);
+    console.log(`[aperas unlink] No manual link from '${blockRef}' to '${targetRef}' found.`);
     process.exit(1);
   }
-  console.log(`[ApeironNgn kg:unlink] Removed the manual link from '${blockRef}' to '${targetRef}'.`);
+  console.log(`[aperas unlink] Removed the manual link from '${blockRef}' to '${targetRef}'.`);
 }
 
 if (process.argv[1]?.endsWith('kgUnlink.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:unlink] Failed:', err.message || err);
+    console.error('[aperas unlink] Failed:', err.message || err);
     process.exit(1);
   });
 }

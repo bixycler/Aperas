@@ -64,7 +64,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgShow.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:show] Failed:', err.message || err);
+    console.error('[aperas show] Failed:', err.message || err);
     process.exit(1);
   });
 }

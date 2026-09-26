@@ -41,7 +41,7 @@ export async function main(): Promise<void> {
 
   console.log(`[ApeironNgn migrate-frontmatter] Migrated ${result.migrated.length} artifact(s).`);
   if (result.bodyHeldBack.length > 0) {
-    console.warn(`[ApeironNgn migrate-frontmatter] description landed on ${result.bodyHeldBack.length} more, but their body reconciliation is held back by a pre-existing, unrelated issue (see 'kg:ingest <path> --force' once confirmed safe):`);
+    console.warn(`[ApeironNgn migrate-frontmatter] description landed on ${result.bodyHeldBack.length} more, but their body reconciliation is held back by a pre-existing, unrelated issue (see 'aperas ingest <path> --force' once confirmed safe):`);
     for (const p of result.bodyHeldBack) console.warn(`  • ${p}`);
   }
   if (result.failed.length > 0) {

@@ -75,7 +75,7 @@ function warnIfCodeStale(res: ServiceResponse): void {
   if (!result?.codeFingerprint) return;
   const current = computeCodeFingerprint();
   if (result.codeFingerprint !== current) {
-    console.error(`[ApeironNgn service] Running code is stale (fingerprint ${result.codeFingerprint} vs. current ${current} on disk) — a source change since this service started won't take effect until it's restarted. Run: kg:service restart`);
+    console.error(`[ApeironNgn service] Running code is stale (fingerprint ${result.codeFingerprint} vs. current ${current} on disk) — a source change since this service started won't take effect until it's restarted. Run: aperas service restart`);
   }
 }
 

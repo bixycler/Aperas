@@ -54,12 +54,12 @@ export async function main(): Promise<void> {
 
   await ensureServiceRunning();
   const result = await request<ReturnType<typeof runFold>>({ op: 'fold', ref: pathArg, viewRef, flush, reload });
-  console.log(`[ApeironNgn kg:fold] Folded ${result.id}.`);
+  console.log(`[aperas fold] Folded ${result.id}.`);
 }
 
 if (process.argv[1]?.endsWith('kgFold.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:fold] Failed:', err.message || err);
+    console.error('[aperas fold] Failed:', err.message || err);
     process.exit(1);
   });
 }

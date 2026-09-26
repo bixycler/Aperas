@@ -294,13 +294,13 @@ export async function main(): Promise<void> {
   for (const line of result.lines) console.log(line);
   const links = result.linkResolution;
   if (links && links.resolved + links.dangling > 0) {
-    console.log(`[ApeironNgn kg:insert]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
+    console.log(`[aperas insert]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
   }
 }
 
 if (process.argv[1]?.endsWith('kgInsert.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:insert] Failed:', err.message || err);
+    console.error('[aperas insert] Failed:', err.message || err);
     process.exit(1);
   });
 }

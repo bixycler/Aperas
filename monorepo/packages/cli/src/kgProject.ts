@@ -149,7 +149,7 @@ export async function main(): Promise<void> {
   let result = await request<ReturnType<typeof runProject>>({ op: 'project', path, dryRun, force, flush, reload });
 
   if ('conflict' in result) {
-    console.log(`\n[ApeironNgn kg:project] '${path}' has changed on disk since this artifact/folder's last known content (a hand-edit, an external tool, or it was never read from disk at all) — projecting now would overwrite it.`);
+    console.log(`\n[aperas project] '${path}' has changed on disk since this artifact/folder's last known content (a hand-edit, an external tool, or it was never read from disk at all) — projecting now would overwrite it.`);
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const lines = createLineReader(rl);
     process.stdout.write('Overwrite anyway? [yes/NO]: ');
@@ -159,7 +159,7 @@ export async function main(): Promise<void> {
     if (answer === 'yes' || answer === 'y') {
       result = await request<ReturnType<typeof runProject>>({ op: 'project', path, dryRun, force: true, flush, reload: false });
     } else {
-      console.log('[ApeironNgn kg:project] Skipped — nothing was written. Re-run with --force, or answer yes, to overwrite.');
+      console.log('[aperas project] Skipped — nothing was written. Re-run with --force, or answer yes, to overwrite.');
       return;
     }
   }
@@ -183,13 +183,13 @@ export async function main(): Promise<void> {
     // write silently failed.
     mkdirSync(dirname(targetFile), { recursive: true });
     writeFileSync(targetFile, markdown, 'utf-8');
-    console.log(`[ApeironNgn kg:project] Projected '${path}' to '${targetFile}'.`);
+    console.log(`[aperas project] Projected '${path}' to '${targetFile}'.`);
   }
 }
 
 if (process.argv[1]?.endsWith('kgProject.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:project] Failed:', err.message || err);
+    console.error('[aperas project] Failed:', err.message || err);
     process.exit(1);
   });
 }

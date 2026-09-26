@@ -89,7 +89,7 @@ export async function main(): Promise<void> {
   await ensureServiceRunning();
   const candidates = await request<ReturnType<typeof runLinkCandidates>>({ op: 'linkCandidates', pathArg, recursive, all, reload });
   if (candidates.length === 0) {
-    console.log('[ApeironNgn kg:link] No blocks to prompt for links in scope.');
+    console.log('[aperas link] No blocks to prompt for links in scope.');
     return;
   }
 
@@ -123,12 +123,12 @@ export async function main(): Promise<void> {
     }
   }
   rl.close();
-  console.log(`[ApeironNgn kg:link] Added ${addedLinks} link(s) across ${linkedBlocks} block(s).`);
+  console.log(`[aperas link] Added ${addedLinks} link(s) across ${linkedBlocks} block(s).`);
 }
 
 if (process.argv[1]?.endsWith('kgLink.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:link] Failed:', err.message || err);
+    console.error('[aperas link] Failed:', err.message || err);
     process.exit(1);
   });
 }

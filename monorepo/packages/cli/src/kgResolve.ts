@@ -86,12 +86,12 @@ export async function main(): Promise<void> {
 
   if (rest.length === 0) {
     console.error('Usage: aperas resolve [--base <path>] <path> [<path>...]');
-    console.error('       kg:resolve -- [--base <path>] --create-holder <path> --titles <title> [<title>...]');
+    console.error('       aperas resolve [--base <path>] --create-holder <path> --titles <title> [<title>...]');
     process.exit(1);
   }
 
   if (createHolder && rest.length !== 1) {
-    console.error('[ApeironNgn kg:resolve] --create-holder takes exactly one <path> (Aperas-deep-path-resolution-design.md §1).');
+    console.error('[aperas resolve] --create-holder takes exactly one <path> (Aperas-deep-path-resolution-design.md §1).');
     process.exit(1);
   }
 
@@ -102,7 +102,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgResolve.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:resolve] Failed:', err.message || err);
+    console.error('[aperas resolve] Failed:', err.message || err);
     process.exit(1);
   });
 }

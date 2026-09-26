@@ -69,21 +69,21 @@ type IngestResponse = Awaited<ReturnType<typeof runIngest>>;
 
 function printCommitted(ingested: Array<IngestResponse['ingested'][number]>, result: IngestResponse): void {
   if (ingested.length === 0) {
-    console.log('[ApeironNgn kg:ingest] No artifacts required ingestion.');
+    console.log('[aperas ingest] No artifacts required ingestion.');
   } else {
     for (const r of ingested) {
       const recon = r.reconciliation;
       const reconSummary = recon ? ` (reconciled: ${recon.matched} matched, ${recon.moved} moved, ${recon.changed} changed, ${recon.added} added, ${recon.removed} removed)` : '';
-      console.log(`[ApeironNgn kg:ingest] Ingested '${r.path}' fractal tree (${r.blockCount} blocks)${reconSummary}.`);
+      console.log(`[aperas ingest] Ingested '${r.path}' fractal tree (${r.blockCount} blocks)${reconSummary}.`);
       const links = r.linkResolution;
       if (links.resolved + links.dangling > 0) {
-        console.log(`[ApeironNgn kg:ingest]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
+        console.log(`[aperas ingest]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
       }
     }
   }
-  console.log(`[ApeironNgn kg:ingest] Rebuilt FolderNode structural tree (${result.folderCount} folder(s), ${result.renamed} renamed, ${result.removed} removed).`);
+  console.log(`[aperas ingest] Rebuilt FolderNode structural tree (${result.folderCount} folder(s), ${result.renamed} renamed, ${result.removed} removed).`);
   if (result.retriedDanglingRefs.length > 0) {
-    console.log(`[ApeironNgn kg:ingest] Re-resolved links in ${result.retriedDanglingRefs.length} artifact(s) whose own text didn't change but a target they reference just did: ${result.retriedDanglingRefs.join(', ')}.`);
+    console.log(`[aperas ingest] Re-resolved links in ${result.retriedDanglingRefs.length} artifact(s) whose own text didn't change but a target they reference just did: ${result.retriedDanglingRefs.join(', ')}.`);
   }
 }
 
@@ -97,7 +97,7 @@ export async function main(): Promise<void> {
         { name: '<path>...', description: "Files or directories to ingest, tracking each one first if it isn't tracked yet. Omit to sweep every already-tracked artifact." },
       ],
       flags: [
-        { name: '--track', description: "Run a kg:track refresh against the same paths first (or a full sweep, given none) — without it, an on-disk edit to an already-tracked file is invisible to ingestion until something else re-reads it." },
+        { name: '--track', description: "Run an aperas track refresh against the same paths first (or a full sweep, given none) — without it, an on-disk edit to an already-tracked file is invisible to ingestion until something else re-reads it." },
         { name: '--force', description: "Apply every removal this run would otherwise hold back for confirmation, without prompting. Use for non-interactive/scripted runs (e.g. a git hook)." },
         { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
@@ -115,19 +115,19 @@ export async function main(): Promise<void> {
 
   if (result.trackResult) {
     for (const p of result.trackResult.skippedReadmes) {
-      console.warn(`[ApeironNgn kg:ingest] '${p}' is a README — it's absorbed into its FolderNode, not tracked as an ordinary artifact. Skipping.`);
+      console.warn(`[aperas ingest] '${p}' is a README — it's absorbed into its FolderNode, not tracked as an ordinary artifact. Skipping.`);
     }
     const extra = result.trackResult.renamed !== undefined ? `, ${result.trackResult.renamed} renamed, ${result.trackResult.removed} removed` : '';
-    console.log(`[ApeironNgn kg:ingest] Tracked ${result.trackResult.trackedCount} artifact(s), skipped ${result.trackResult.skippedCount} unchanged${extra}.`);
+    console.log(`[aperas ingest] Tracked ${result.trackResult.trackedCount} artifact(s), skipped ${result.trackResult.skippedCount} unchanged${extra}.`);
   }
   for (const p of result.untracked) {
-    console.warn(`[ApeironNgn kg:ingest] '${p}' is not tracked yet — skipping (run kg:track, or pass --track, or pass it directly to kg:ingest).`);
+    console.warn(`[aperas ingest] '${p}' is not tracked yet — skipping (run aperas track, or pass --track, or pass it directly to aperas ingest).`);
   }
   // One file failing mid-batch no longer aborts the rest — every other file in this run still
   // ingested (or was attempted), and this is the full account of what didn't (issues/core.md's
   // "multi-artifact kg:ingest isn't transactional").
   for (const f of result.failed) {
-    console.warn(`[ApeironNgn kg:ingest] '${f.path}' failed to ingest — ${f.error}`);
+    console.warn(`[aperas ingest] '${f.path}' failed to ingest — ${f.error}`);
   }
 
   const pendingArtifacts = result.ingested.filter((r) => r.pendingConfirmation);
@@ -135,7 +135,7 @@ export async function main(): Promise<void> {
   const pendingTrackedRemovals = result.trackResult?.pendingRemovals ?? [];
 
   if (!force && (pendingArtifacts.length > 0 || result.pendingFolderRemovals.length > 0 || pendingTrackedRemovals.length > 0)) {
-    console.log('\n[ApeironNgn kg:ingest] The following would be permanently removed:');
+    console.log('\n[aperas ingest] The following would be permanently removed:');
     for (const r of pendingArtifacts) {
       console.log(`  '${r.path}':`);
       const preview = r.pendingConfirmation!.slice(0, 10);
@@ -161,7 +161,7 @@ export async function main(): Promise<void> {
     if (answer === 'yes' || answer === 'y') {
       result = await request<IngestResponse>({ op: 'ingest', paths, flush, reload: false, track: false, force: true });
     } else {
-      console.log('[ApeironNgn kg:ingest] Skipped — nothing was removed. Re-run with --force, or answer yes, to apply.');
+      console.log('[aperas ingest] Skipped — nothing was removed. Re-run with --force, or answer yes, to apply.');
       printCommitted(committedArtifacts, result);
       return;
     }
@@ -172,7 +172,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgIngest.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:ingest] Failed:', err.message || err);
+    console.error('[aperas ingest] Failed:', err.message || err);
     process.exit(1);
   });
 }

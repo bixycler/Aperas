@@ -222,7 +222,7 @@ function printUnfoldChildren(entries: ReturnType<typeof runUnfold>['children'], 
 
 if (process.argv[1]?.endsWith('kgUnfold.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:unfold] Failed:', err.message || err);
+    console.error('[aperas unfold] Failed:', err.message || err);
     process.exit(1);
   });
 }

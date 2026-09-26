@@ -172,7 +172,7 @@ export async function main(): Promise<void> {
         process.exit(1);
       }
       const { id } = await request<ReturnType<typeof runProfileCreate>>({ op: 'profileCreate', handle, name, kind, flush, reload });
-      console.log(`[ApeironNgn kg:profile] Created '${handle}' (${id}).`);
+      console.log(`[aperas profile] Created '${handle}' (${id}).`);
       return;
     }
     case 'list': {
@@ -180,7 +180,7 @@ export async function main(): Promise<void> {
       const result = await request<ReturnType<typeof runProfileList>>({ op: 'profileList', handle, reload });
       if ('profiles' in result) {
         if (result.profiles.length === 0) {
-          console.log('[ApeironNgn kg:profile] No profiles yet.');
+          console.log('[aperas profile] No profiles yet.');
           return;
         }
         for (const p of result.profiles) {
@@ -201,10 +201,10 @@ export async function main(): Promise<void> {
       }
       const { removed, viewsRemoved } = await request<ReturnType<typeof runProfileRemove>>({ op: 'profileRemove', handle, flush, reload });
       if (!removed) {
-        console.log(`[ApeironNgn kg:profile] No profile '${handle}' found.`);
+        console.log(`[aperas profile] No profile '${handle}' found.`);
         process.exit(1);
       }
-      console.log(`[ApeironNgn kg:profile] Removed '${handle}' (and ${viewsRemoved} view(s) it owned).`);
+      console.log(`[aperas profile] Removed '${handle}' (and ${viewsRemoved} view(s) it owned).`);
       return;
     }
     case 'create-view': {
@@ -214,7 +214,7 @@ export async function main(): Promise<void> {
         process.exit(1);
       }
       const { id } = await request<ReturnType<typeof runProfileCreateView>>({ op: 'profileCreateView', name, profileHandle, flush, reload });
-      console.log(`[ApeironNgn kg:profile] Created view '${name}' (${id}) under profile '${profileHandle}'.`);
+      console.log(`[aperas profile] Created view '${name}' (${id}) under profile '${profileHandle}'.`);
       return;
     }
     case 'list-view': {
@@ -222,7 +222,7 @@ export async function main(): Promise<void> {
       const result = await request<ReturnType<typeof runProfileListView>>({ op: 'profileListView', name, reload });
       if ('views' in result) {
         if (result.views.length === 0) {
-          console.log('[ApeironNgn kg:profile] No views yet.');
+          console.log('[aperas profile] No views yet.');
           return;
         }
         for (const v of result.views) {
@@ -242,10 +242,10 @@ export async function main(): Promise<void> {
       }
       const { removed } = await request<ReturnType<typeof runProfileRemoveView>>({ op: 'profileRemoveView', name, flush, reload });
       if (!removed) {
-        console.log(`[ApeironNgn kg:profile] No view '${name}' found.`);
+        console.log(`[aperas profile] No view '${name}' found.`);
         process.exit(1);
       }
-      console.log(`[ApeironNgn kg:profile] Removed view '${name}'.`);
+      console.log(`[aperas profile] Removed view '${name}'.`);
       return;
     }
     default:
@@ -256,7 +256,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgProfile.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:profile] Failed:', err.message || err);
+    console.error('[aperas profile] Failed:', err.message || err);
     process.exit(1);
   });
 }

@@ -123,7 +123,7 @@ export async function main(): Promise<void> {
         { name: '<path>...', description: 'Files or directories under AperasKG/artifacts/ to track (a directory tracks everything under it recursively). Omit to sweep every file under AperasKG/artifacts/.' },
       ],
       flags: [
-        { name: '--reverse', description: "Report which real ArtifactNode/FolderNode subtrees have graph-side content not yet reflected on disk, instead of tracking disk files. Read-only — writes nothing, run kg:project to actually catch disk up." },
+        { name: '--reverse', description: "Report which real ArtifactNode/FolderNode subtrees have graph-side content not yet reflected on disk, instead of tracking disk files. Read-only — writes nothing, run aperas project to actually catch disk up." },
         { name: '--force', description: "Apply every removal a full sweep (no <path>...) would otherwise hold back for confirmation, without prompting. Use for non-interactive/scripted runs (e.g. a git hook)." },
         { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
@@ -137,19 +137,19 @@ export async function main(): Promise<void> {
     await ensureServiceRunning();
     const result = await request<ReverseTrackResult>({ op: 'trackReverse', reload });
     if (result.neverProjected.length === 0 && result.changed.length === 0 && result.staleOnDisk.length === 0) {
-      console.log('[ApeironNgn kg:track --reverse] Everything is projected and up to date.');
+      console.log('[aperas track --reverse] Everything is projected and up to date.');
       return;
     }
     if (result.neverProjected.length > 0) {
-      console.log('[ApeironNgn kg:track --reverse] Never projected (kg:project has never written these):');
+      console.log('[aperas track --reverse] Never projected (aperas project has never written these):');
       for (const e of result.neverProjected) console.log(`  [${e.kind}] '${e.path}'`);
     }
     if (result.changed.length > 0) {
-      console.log('[ApeironNgn kg:track --reverse] Changed since last projection:');
+      console.log('[aperas track --reverse] Changed since last projection:');
       for (const e of result.changed) console.log(`  [${e.kind}] '${e.path}'`);
     }
     if (result.staleOnDisk.length > 0) {
-      console.log('[ApeironNgn kg:track --reverse] Removed in-graph but still on disk (kg:project never deletes — remove manually if intended):');
+      console.log('[aperas track --reverse] Removed in-graph but still on disk (aperas project never deletes — remove manually if intended):');
       for (const p of result.staleOnDisk) console.log(`  '${p}'`);
     }
     return;
@@ -163,12 +163,12 @@ export async function main(): Promise<void> {
   let result = await request<TrackResult>({ op: 'track', paths, flush, reload, force });
 
   for (const p of result.skippedReadmes) {
-    console.warn(`[ApeironNgn kg:track] '${p}' is a README — it's absorbed into its FolderNode, not tracked as an ordinary artifact. Skipping.`);
+    console.warn(`[aperas track] '${p}' is a README — it's absorbed into its FolderNode, not tracked as an ordinary artifact. Skipping.`);
   }
 
   const pendingRemovals = result.pendingRemovals ?? [];
   if (!force && pendingRemovals.length > 0) {
-    console.log('\n[ApeironNgn kg:track] The following would be permanently removed (no matching file found on disk):');
+    console.log('\n[aperas track] The following would be permanently removed (no matching file found on disk):');
     for (const p of pendingRemovals) console.log(`  '${p}'`);
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -181,17 +181,17 @@ export async function main(): Promise<void> {
     if (answer === 'yes' || answer === 'y') {
       result = await request<TrackResult>({ op: 'track', paths, flush, reload: false, force: true });
     } else {
-      console.log('[ApeironNgn kg:track] Skipped — nothing was removed. Re-run with --force, or answer yes, to apply.');
+      console.log('[aperas track] Skipped — nothing was removed. Re-run with --force, or answer yes, to apply.');
     }
   }
 
   const extra = result.renamed !== undefined ? `, ${result.renamed} renamed, ${result.removed} removed` : '';
-  console.log(`[ApeironNgn kg:track] Tracked ${result.trackedCount} artifact(s), skipped ${result.skippedCount} unchanged${extra}.`);
+  console.log(`[aperas track] Tracked ${result.trackedCount} artifact(s), skipped ${result.skippedCount} unchanged${extra}.`);
 }
 
 if (process.argv[1]?.endsWith('kgTrack.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:track] Failed:', err.message || err);
+    console.error('[aperas track] Failed:', err.message || err);
     process.exit(1);
   });
 }

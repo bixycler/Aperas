@@ -289,7 +289,7 @@ export async function main(): Promise<void> {
 
   await ensureServiceRunning();
   const r = await request<RetypeResult>({ op: 'retype', path, base, to, flush, reload });
-  console.log(`[ApeironNgn kg:retype] ${r.id}: ${r.fromType} -> ${r.toType}`);
+  console.log(`[aperas retype] ${r.id}: ${r.fromType} -> ${r.toType}`);
   console.log(`  was: ${r.fromTitle}`);
   console.log(`  now: ${r.toTitle}`);
   if (r.toText !== undefined) {
@@ -307,7 +307,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgRetype.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:retype] Failed:', err.message || err);
+    console.error('[aperas retype] Failed:', err.message || err);
     process.exit(1);
   });
 }

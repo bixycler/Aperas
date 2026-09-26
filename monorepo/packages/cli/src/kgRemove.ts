@@ -77,12 +77,12 @@ export async function main(): Promise<void> {
 
   await ensureServiceRunning();
   const { id } = await request<ReturnType<typeof runRemove>>({ op: 'remove', path, base, flush, reload });
-  console.log(`[ApeironNgn kg:remove] Tombstoned '${path}' (${id}).`);
+  console.log(`[aperas remove] Tombstoned '${path}' (${id}).`);
 }
 
 if (process.argv[1]?.endsWith('kgRemove.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:remove] Failed:', err.message || err);
+    console.error('[aperas remove] Failed:', err.message || err);
     process.exit(1);
   });
 }

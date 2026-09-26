@@ -73,7 +73,7 @@ export async function main(): Promise<void> {
   await ensureServiceRunning();
   const entries = await request<ReturnType<typeof runBacklinks>>({ op: 'backlinks', pathArg, includeText, reload });
   if (entries.length === 0) {
-    console.log('[ApeironNgn kg:backlinks] No backlinks found.');
+    console.log('[aperas backlinks] No backlinks found.');
     return;
   }
   for (const { linkId, label, title, text } of entries) {
@@ -83,7 +83,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgBacklinks.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:backlinks] Failed:', err.message || err);
+    console.error('[aperas backlinks] Failed:', err.message || err);
     process.exit(1);
   });
 }

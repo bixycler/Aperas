@@ -48,14 +48,14 @@ export async function main(): Promise<void> {
   if (prunedUnfolds) gcParts.push(`${prunedUnfolds} stale unfold(s) cleared`);
 
   console.log(
-    `[ApeironNgn kg:reload] Reloaded ${quadCount} quad(s), ${nodeCount} node(s).` +
+    `[aperas reload] Reloaded ${quadCount} quad(s), ${nodeCount} node(s).` +
       (gcParts.length > 0 ? ` GC: ${gcParts.join(', ')}.` : '')
   );
 }
 
 if (process.argv[1]?.endsWith('kgReload.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:reload] Failed:', err.message || err);
+    console.error('[aperas reload] Failed:', err.message || err);
     process.exit(1);
   });
 }

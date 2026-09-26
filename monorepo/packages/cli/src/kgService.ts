@@ -48,13 +48,13 @@ async function bindAndSpawn(): Promise<{ apeironRoot: string; artifactsRoot: str
 export async function runStart(): Promise<void> {
   if (await ping()) {
     const lock = readLock();
-    console.log(`[ApeironNgn kg:service] Already running (pid ${lock?.pid ?? '?'}), bound to ${lock ? describeBinding(lock.apeironRoot, lock.artifactsRoot) : '?'}.`);
+    console.log(`[aperas service] Already running (pid ${lock?.pid ?? '?'}), bound to ${lock ? describeBinding(lock.apeironRoot, lock.artifactsRoot) : '?'}.`);
     return;
   }
   const lock = readLock();
   if (lock) clearLock(); // not actually answering — a stale leftover from a crash, not a live claim
   const { apeironRoot, artifactsRoot } = await bindAndSpawn();
-  console.log(`[ApeironNgn kg:service] Started — bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
+  console.log(`[aperas service] Started — bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
 }
 
 /** Gracefully stops whatever's running — SIGTERM triggers the service's own graceful shutdown
@@ -65,7 +65,7 @@ export async function runStart(): Promise<void> {
 async function stopIfRunning(): Promise<boolean> {
   const lock = readLock();
   if (lock && isProcessAlive(lock.pid)) {
-    console.log(`[ApeironNgn kg:service] Stopping service (pid ${lock.pid})...`);
+    console.log(`[aperas service] Stopping service (pid ${lock.pid})...`);
     process.kill(lock.pid, 'SIGTERM');
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline && isProcessAlive(lock.pid)) await sleep(100);
@@ -80,14 +80,14 @@ async function stopIfRunning(): Promise<boolean> {
 
 async function runStop(): Promise<void> {
   const stopped = await stopIfRunning();
-  console.log(stopped ? '[ApeironNgn kg:service] Stopped.' : '[ApeironNgn kg:service] No running service found.');
+  console.log(stopped ? '[aperas service] Stopped.' : '[aperas service] No running service found.');
 }
 
 async function runRestart(): Promise<void> {
   const stopped = await stopIfRunning();
-  if (!stopped) console.log('[ApeironNgn kg:service] No running service found — starting fresh instead of restarting.');
+  if (!stopped) console.log('[aperas service] No running service found — starting fresh instead of restarting.');
   const { apeironRoot, artifactsRoot } = await bindAndSpawn();
-  console.log(`[ApeironNgn kg:service] Restarted — now running the current on-disk code, bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
+  console.log(`[aperas service] Restarted — now running the current on-disk code, bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
 }
 
 export async function main(): Promise<void> {
@@ -115,7 +115,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgService.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:service] Failed:', err.message || err);
+    console.error('[aperas service] Failed:', err.message || err);
     process.exit(1);
   });
 }

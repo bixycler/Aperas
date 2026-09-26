@@ -439,19 +439,19 @@ export async function main(): Promise<void> {
   const result = await request<ReturnType<typeof runUpdate>>({ op: 'update', path, base, markdown, textOnly, flush, reload });
 
   if (result.reconciled) {
-    console.log(`[ApeironNgn kg:update] Reconciled '${path}': ${result.matched} matched, ${result.moved} moved, ${result.changed} changed, ${result.added} added, ${result.removed} removed.`);
+    console.log(`[aperas update] Reconciled '${path}': ${result.matched} matched, ${result.moved} moved, ${result.changed} changed, ${result.added} added, ${result.removed} removed.`);
   } else {
-    console.log(`[ApeironNgn kg:update] Updated '${path}' (--text-only: overflow prepended, no reconciliation).`);
+    console.log(`[aperas update] Updated '${path}' (--text-only: overflow prepended, no reconciliation).`);
   }
   const links = result.linkResolution;
   if (links.resolved + links.dangling > 0) {
-    console.log(`[ApeironNgn kg:update]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
+    console.log(`[aperas update]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
   }
 }
 
 if (process.argv[1]?.endsWith('kgUpdate.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:update] Failed:', err.message || err);
+    console.error('[aperas update] Failed:', err.message || err);
     process.exit(1);
   });
 }

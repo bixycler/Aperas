@@ -101,7 +101,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgTree.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:tree] Failed:', err.message || err);
+    console.error('[aperas tree] Failed:', err.message || err);
     process.exit(1);
   });
 }

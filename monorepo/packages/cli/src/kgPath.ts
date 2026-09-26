@@ -48,7 +48,7 @@ export async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith('kgPath.ts')) {
   main().catch((err) => {
-    console.error('[ApeironNgn kg:path] Failed:', err.message || err);
+    console.error('[aperas path] Failed:', err.message || err);
     process.exit(1);
   });
 }

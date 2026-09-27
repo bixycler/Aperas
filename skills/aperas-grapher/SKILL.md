@@ -8,14 +8,14 @@ description: >-
 
 # aperas-grapher
 
-Status: **v3.0**. You are the grapher. The base `aperas` skill applies in full; this adds what only the grapher does. You write everything in the graph except the orchestrator's freeflow and Ask nodes and the coder's own thread nodes.
+Status: **v3.1**. You are the grapher. The base `aperas` skill applies in full; this adds what only the grapher does. You write everything in the graph except the orchestrator's freeflow and Ask nodes and the coder's own thread nodes.
 
 ## Every invocation
 
 1. **Read your input.** `aperas tree --view <p>-orchestrator-grapher`, plus any node the message names. The view's root is this turn's Ask.
 2. **Recover context from your thread, not from memory.** The current task's earlier turns in `.threads/grapher.md` — your own subturns and Reports — are everything you know about this task.
 3. **Do the turn's work** (below), writing subturns as you go: what you looked at, what you concluded, and the essence of each result.
-4. **Report.** A Report node citing what you found or changed and any open question; zoom `<p>-grapher-orchestrator` onto it; one or two lines of chat naming the view and anything the orchestrator has to decide.
+4. **Report.** A Report node citing what you found or changed, any open question, and every tool gap the turn hit (base: *Threads*); zoom `<p>-grapher-orchestrator` onto it; one or two lines of chat naming the view and anything the orchestrator has to decide.
 5. **Stage** what you changed in `AperasKG` (base: *Stage each verified step*).
 
 A turn is not done until step 4 is. Work without a Report is invisible to every later turn, yours included.
@@ -26,9 +26,11 @@ A turn is not done until step 4 is. Work without a Report is invisible to every 
 
 Deep read for the task at hand: enter both ways (base: *Entering the corpus*), and climb every pinpointed node until it reaches `design`. The Report cites the governing design blocks, the open issues, the planned items and the prior history the task touches, and names any drift found between them. The coder starts from this Report, so it has to be complete enough to start from without searching again — a survey that leaves the coder re-deriving it has pushed your work onto the role least equipped for it.
 
+The survey is the graph's side only. Touch source code just to pinpoint an entry into the graph; mapping how the code behaves is the coder's survey, the next turn (base: *The task loop*). If an Ask asks you for that map, say so in your Report rather than doing it.
+
 ### Filing — after each coder turn
 
-Read the coder's latest Report and the Work under it in `.threads/coder.md`. Record what the coder found where it belongs: into the task's `discussion` freeflow first, then promoted into `issues`/`history`/`design` once it has earned a home (*Discussion is where meta-info is born*, below). Copy content up; never link into a thread. Where the coder reports code and design disagreeing, that discrepancy is itself the finding — record it, and fix whichever side is stale.
+Read the coder's latest Report and the Work under it in `.threads/coder.md`. Record what the coder found where it belongs: into the task's `discussion` freeflow first, then promoted into `issues`/`history`/`design` once it has earned a home (*Discussion is where meta-info is born*, below). Copy content up; never link into a thread. Where the coder reports code and design disagreeing, that discrepancy is itself the finding — record it, and fix whichever side is stale. File every tool gap in a Report, the coder's or your own, in the freeflow of the concern that owns the tool.
 
 ### Finishing — the last turn of a task
 
@@ -109,12 +111,12 @@ The other two link checks need nothing from you, and that is the point — the t
 
 ### Checking the skill against its own record
 
-`SKILL.md` is a *generative* projection of its concern — authored from design rather than serialized by a command — so unlike an `aperas project` artifact it can drift from its source with nothing detecting it. `scripts/skill_drift.py` compares the file against the graph's record of it (the latest snapshot plus the deltas above it):
+`SKILL.md` is a *generative* projection of its concern — authored from design rather than serialized by a command — so unlike an `aperas project` artifact it can drift from its source with nothing detecting it. `skill_drift.py`, in the base `aperas` skill's `scripts/`, compares the file against the graph's record of it (the latest snapshot plus the deltas above it). From the repo root:
 
 ```bash
-scripts/skill_drift.py              # both directions
-scripts/skill_drift.py --added      # written into the file, never recorded
-scripts/skill_drift.py --dropped    # recorded, no longer in the file
+skills/aperas/scripts/skill_drift.py              # both directions
+skills/aperas/scripts/skill_drift.py --added      # written into the file, never recorded
+skills/aperas/scripts/skill_drift.py --dropped    # recorded, no longer in the file
 ```
 
 A delta entry that replaces rather than adds carries a `Supersedes: [title](#id/BlockNode:...)` line naming the item it retires, which is what lets the check tell a deliberate rewrite from a silent loss.

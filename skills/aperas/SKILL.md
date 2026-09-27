@@ -17,7 +17,7 @@ description: >-
 
 # aperas
 
-Status: **v3.0** — the base every role loads: four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. What each role does with it lives in its role skill — `aperas-orchestrator`, `aperas-grapher`, `aperas-coder`. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
+Status: **v3.1** — the base every role loads: four levels, Philosophy through Mechanics, each item explaining a consequence of the one above it. What each role does with it lives in its role skill — `aperas-orchestrator`, `aperas-grapher`, `aperas-coder`. Only current, verified items appear here; superseded material, unverified hypotheses and version-by-version rationale live in `discussion/aperas-skill.md`'s snapshot and deltas. Concern docs: `AperasKG/artifacts/{design,issues,planning,history,discussion}/aperas-skill.md`.
 
 > **Aperas-repo insiders**: `aperas` ships as a real published package (`npm install -g aperas`) as of `0.2.2`, but this repo still develops it from source — running the bare `aperas <verb> ...` commands below here would invoke whatever's globally installed, not your local changes. Run them as `npm run aperas -- <verb> ...` from `Aperas/monorepo/` instead.
 
@@ -159,6 +159,20 @@ A write outside your role's column is a hand-off you skipped. Route it to the ro
 
 If you were started as a subagent, your agent definition names your role, profile and views. Otherwise you are the orchestrator, and `aperas-orchestrator` is loaded alongside this skill. Profiles are fixed, per platform `<p>` (`claude`, `antigravity`): `<p>`, `<p>-grapher`, `<p>-coder`. Never create another one for your own views.
 
+### The task loop
+
+Every task runs the same sequence of turns. Each role skill details its own turns; the whole sequence lives here, so every role knows what comes before and after its part:
+
+1. **Grapher survey.** The graph for the task: the governing design, open issues, planned items, prior history, and any drift between them. Source code is touched only to pinpoint an entry into the graph (*Entering the corpus*), never to map how the code behaves.
+2. **Coder survey.** No code changes: map where the behavior lives, starting from the grapher's survey, and report where the code disagrees with it.
+3. **Grapher files** the coder's survey, so the change starts from a recorded picture rather than one in the coder's context.
+4. **Coder change**, starting from the filed survey.
+5. **Orchestrator verifies** the diff and the tests itself.
+6. **Grapher files** the result.
+7. **Repeat 4–6** as the task needs, then the **grapher's finishing turn**.
+
+An Ask asks only for its receiver's kind of work. A grapher Ask that says "find the source" or "map the behavior" has folded the coder's survey into the grapher's turn, and the coder then starts its change from a code map nobody filed.
+
 ### Threads — where a subagent's context lives
 
 Each subagent has one thread, `.threads/grapher.md` or `.threads/coder.md`. Nothing carries a subagent from one invocation to the next that it can rely on except its thread and its views — which is not a weaker substitute for chat history but a stronger one, because it is structured, linked, and readable by the other roles. A thread is a tree:
@@ -175,11 +189,14 @@ Each subagent has one thread, `.threads/grapher.md` or `.threads/coder.md`. Noth
 - **Report**: <the outcome, in a sentence>   ← subagent; root of <p>-grapher-orchestrator
   - [<changed or found node>](…) — what changed, or what it shows
   - **Question**: <whatever the Ask left unsettled — see below>
+  - **Tool gap**: <a workaround built, a call that failed or hung — see below>
 ```
 
 A follow-up is a new turn, not an edit to an old one.
 
-**Subturns are optional as a level and mandatory as content.** Across a batch of tool calls, a subturn records the progress, the reasoning, and the *essence of each tool result* a later turn will need — the failing assertion's line, the id that came back, the count, the file that turned out to own the behavior — not "ran the tests". Write them as you go or at the end of the turn, but before the turn ends: a result that is not in the thread is gone for every later turn, since the next invocation starts from the thread, not from this one's context.
+**Every turn has subturns: at least one per batch of tool calls.** The Work line holds the approach in one line; the results belong in subturns, and no turn with more than one call can fold them into that line. For each batch, a subturn records the progress, the reasoning, and the *essence of each tool result* a later turn will need — the failing assertion's line, the id that came back, the count, the file that turned out to own the behavior — not "ran the tests". Write them as you go or at the end of the turn, but before the turn ends: a result that is not in the thread is gone for every later turn, since the next invocation starts from the thread, not from this one's context.
+
+**Record the friction, not only the results.** A subturn also records every place the tools got in the way: a workaround you built (a script, a loop over a command, a detour through another verb), a call that failed, hung or had to be stopped, each retry and what changed in it, an error you routed around, a write that did something you didn't intend. Give the command and what happened, even once you got past it — especially then, because a problem you solved leaves no trace in the results, and nobody will remember it after the turn. The Report lists each one as a **Tool gap**, so the grapher can file it. A gap that is not in the thread is one the graph can never notice.
 
 **Ask back instead of guessing.** An ordinary subagent runs to completion on whatever it was handed and returns its best guess at the gaps. Here a subagent stops when it meets something the Ask doesn't settle — an ambiguous requirement, two plausible approaches with different costs, code or graph contradicting what the Ask assumed, a change turning out larger than the Ask implied — and asks. The question goes in the Report as **Question**, with what raised it and the options you see; the turn ends there, and the orchestrator answers in a new turn. A wrong guess costs a whole round of work plus unwinding it; a question costs one turn. Guessing is what a subagent does by default, so asking has to be done deliberately — it is as much a part of every turn as recording the subturns.
 
@@ -238,7 +255,7 @@ After a step lands clean, `git add` it — in both the code repo and `AperasKG/`
 
 This is not bookkeeping. Recovering a live incident that tombstoned real content was only possible because the prior step had actually been staged.
 
-The grapher stages `AperasKG/`; the coder stages the code repo; the orchestrator stages neither, since it writes nothing that is not staged by the grapher's next turn.
+Every role stages what it writes, in the repo it wrote to: the orchestrator and the grapher stage `AperasKG/`, the coder stages the code repo. The checkpoint exists for the writer's own recovery, so it is never left to another role's next turn.
 
 ---
 
@@ -299,7 +316,7 @@ For an **ordered** list, direct insertion is riskier because a freshly inserted 
 ### Updating an existing list item
 
 To update the text of an *existing* list item without changing its identity, use `aperas update <item-id>`.
-- **For an ordinary text change, pipe bare text with no bullet marker** (e.g. `updated text`, not `- updated text`). This also updates any nested children in the same call, if you include them — see the next point for the cases that need a marker instead.
+- **For an ordinary text change, pipe bare text with no bullet marker** (e.g. `updated text`, not `- updated text`). This replaces the item's children too, not just its text — see the last point below for what that costs if you don't restate them. See the next point for the cases that need a marker instead.
 - **A marker is needed only for a checkbox, an ordered item's position, or text that's deliberately blank.** Use whatever you'd normally write: `- [x]`/`- [ ]` for a checkbox, `n.` for an ordered item, or a bare `- ` (nothing after it) if you want the item's own text to end up empty while still giving it children:
   ```
   - 
@@ -308,7 +325,7 @@ To update the text of an *existing* list item without changing its identity, use
 - **A bare `- ` with real text but no `[x]`/`[ ]` removes an existing checkbox entirely** (e.g. `- updated text`, not `updated text`). Choosing list syntax at all is what signals "this edit addresses the checkbox" — a marker-less bullet clears it, while bare text (no bullet at all, the first point above) never touches it either way.
 - **Updating an item never changes where it sits in the list.** Whether it's ordered or unordered, and its position in the numbering, stays exactly as it was, no matter which marker you use to update it. To actually reorder or renumber, use the parent-plus-complete-list technique above — not a single-item update.
 - **The title always tracks your current text, never the old one.** If your new text has a bold lead-in term (`**Like this**: ...`), the title updates to match it. If it doesn't, the title falls back to the item's own id — the same fallback any untitled node gets — rather than keeping whatever the title used to say about text that's now gone.
-- **The text itself works differently: leaving it out clears it.** If you only pipe new children (a list, with no text of its own before it), the item's own text becomes empty — unlike the title, nothing here is left alone by default. Restate the existing text if you don't want it wiped.
+- **The rule runs both ways: whichever piece you don't restate is wiped, not left alone.** Piping only new children (a list, with no text of its own before it) clears the item's own text — unlike the title, nothing here is left alone by default. Piping only text with no children after it tombstones any existing children the same way, since the call reconciles them against what was piped, which was none. Confirmed live: fixing a lead-in term by piping the item's corrected text alone, with no children, cost it two children that had to be reinserted. Restate whichever side you're not touching.
 
 ### Updating a heading — `--text-only`
 

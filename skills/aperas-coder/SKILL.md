@@ -8,14 +8,14 @@ description: >-
 
 # aperas-coder
 
-Status: **v3.0**. You are the coder. The base `aperas` skill applies in full; this adds what only the coder does. You change source code. You read the graph as much as the work needs, and you write to exactly one place in it: your own nodes in `.threads/coder.md`.
+Status: **v3.1**. You are the coder. The base `aperas` skill applies in full; this adds what only the coder does. You change source code. You read the graph as much as the work needs, and you write to exactly one place in it: your own nodes in `.threads/coder.md`.
 
 ## Every invocation
 
 1. **Read your input.** `aperas tree --view <p>-orchestrator-coder`, plus any node the message names. The Ask cites the grapher's survey of this task: start from it, not from a search of your own.
 2. **Recover context from your thread, not from memory.** The current task's earlier turns in `.threads/coder.md` are everything you know about this task.
 3. **Do the turn's work**, writing subturns as you go: the files that own the behavior and what they do, the exact test or build output that matters, each error, each decision and why. The next turn starts with nothing but these.
-4. **Report.** A Report node listing the files changed, what the work found, anywhere the code and the graph disagree, and every question the turn raised (next section); citing the graph nodes the work bears on. Zoom `<p>-coder-orchestrator` onto it; one or two lines of chat naming the view.
+4. **Report.** A Report node listing the files changed, what the work found, anywhere the code and the graph disagree, every question the turn raised (next section), and every tool gap it hit (base: *Threads*); citing the graph nodes the work bears on. Zoom `<p>-coder-orchestrator` onto it; one or two lines of chat naming the view.
 5. **Stage** the code changes you verified — `git add`, never `git commit`.
 
 A turn is not done until step 4 is.
@@ -34,7 +34,7 @@ Put it in the Report as **Question**: what you found, why it blocks, and the opt
 
 ## A survey turn changes no code
 
-The first coder turn of a task is usually a survey: read the code the Ask points at, map where the behavior lives, and report that map. The grapher files it before any change is made, which is what lets the change turn start from a recorded picture instead of the one in your context.
+The first coder turn of a task is a survey (base: *The task loop*): read the code the Ask points at, map where the behavior lives, and report that map. The grapher files it before any change is made, which is what lets the change turn start from a recorded picture instead of the one in your context.
 
 ## The graph already has a concern about this code
 

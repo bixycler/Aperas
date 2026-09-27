@@ -37,6 +37,13 @@ const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Profile'] as
 // `INSTANCE_FILES` above.
 const STATE_FILES = ['TreeView'] as const;
 
+// The thread-scoped subset of each `INSTANCE_FILES` kind (`dehydrate.ts`'s
+// `THREAD_PARTITIONED_CLASSES`) — read from the same `.state/` subfolder, under the same filename
+// `INSTANCE_FILES` uses for the tracked mirror. Read is unconditional-if-exists, same as
+// `STATE_FILES`: on a fresh checkout, or before any thread exists, none of these files need to be
+// there yet.
+const THREAD_STATE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
+
 /** Defaults to `resolveEffectiveApeironRoot()` — see `artifacts.ts#getArtifactsDir`'s own doc
  *  comment for the full reasoning (this is its Apeiron-root counterpart, `APERAS_APEIRON_ROOT`
  *  instead of `APERAS_ARTIFACTS_ROOT`). */
@@ -132,7 +139,7 @@ export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: st
       encodeDoc(store, doc, seenIds, duplicateIds);
     }
   }
-  for (const file of STATE_FILES) {
+  for (const file of [...STATE_FILES, ...THREAD_STATE_FILES]) {
     const path = join(stateDir, `${file}.jsonld`);
     if (!existsSync(path)) continue;
     const docs: any[] = JSON.parse(readFileSync(path, 'utf-8'));

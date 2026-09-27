@@ -16,15 +16,25 @@ import { wantsHelp, printHelp } from './kgHelp';
  *  `'text'` case's `aperas://tree/<path>` breadcrumb line, below). */
 export interface TreeRenderResult { path: string | null; tree: RenderNodeItem | null }
 
-export function runTree(store: Store, req: { pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload?: boolean }): string[] | TreeRenderResult {
-  const id = resolveDeepPath(store, req.pathArg);
-  if (!id) throw new Error(`'${req.pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
+export function runTree(store: Store, req: { pathArg?: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload?: boolean }): string[] | TreeRenderResult {
   // Unlike `unfold`/`fold` (which always need *some* view to mutate, so an omitted `--view`
   // resolves to the default one), an omitted `--view` here means plain title-only rendering —
   // `view` stays `undefined` rather than falling back to `resolveTreeView`'s own default-view
   // behavior. `viewRef: 'default'` (typed explicitly) still resolves through `resolveTreeView`,
   // same as every other `--view` value.
   const view: TreeView | undefined = req.viewRef !== undefined ? resolveTreeView(store, req.viewRef) : undefined;
+  let id: string | null;
+  if (req.pathArg !== undefined) {
+    id = resolveDeepPath(store, req.pathArg);
+    if (!id) throw new Error(`'${req.pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
+  } else {
+    // No explicit path given: a view's own `root` (design/treeview.md's "root records the current
+    // zoom", set by `aperas zoom`) is the apex to render from whenever one has been set — otherwise
+    // fall back to the corpus root, the same plain default as before `root` existed.
+    const rootRef = (view?.root as unknown as { id: string } | undefined)?.id;
+    id = rootRef ?? resolveDeepPath(store, '.');
+    if (!id) throw new Error(`'.' isn't resolvable — the corpus root itself is missing.`);
+  }
   const node = wrap(store, id) as unknown as TreeNode;
   const path = node.toPath();
   if (req.format === 'render-tree') {
@@ -85,7 +95,7 @@ export async function main(): Promise<void> {
     : withoutView;
   const depthFlagIdx = withoutFlag.indexOf('--depth');
   let maxDepth: number | undefined;
-  let pathArg = '.';
+  let pathArg: string | undefined;
   if (depthFlagIdx !== -1) {
     maxDepth = Number(withoutFlag[depthFlagIdx + 1]);
     const rest = withoutFlag.filter((_, i) => i !== depthFlagIdx && i !== depthFlagIdx + 1);
@@ -93,6 +103,11 @@ export async function main(): Promise<void> {
   } else if (withoutFlag[0]) {
     pathArg = withoutFlag[0];
   }
+  // No explicit path *and* no `--view` flag at all: '.' (the corpus root), same default as always.
+  // `--view` given (even with no name, which still bootstraps 'default' per `resolveTreeView`) and
+  // no explicit path leaves `pathArg` unset so `runTree` falls back to that view's own `root`
+  // instead (design/treeview.md) — set by a prior `aperas zoom`, or the corpus root if none.
+  if (pathArg === undefined && viewFlagIdx === -1) pathArg = '.';
 
   await ensureServiceRunning();
   const result = await request<ReturnType<typeof runTree>>({ op: 'tree', pathArg, maxDepth, noHolders, showTombstoned, viewRef, format, reload });

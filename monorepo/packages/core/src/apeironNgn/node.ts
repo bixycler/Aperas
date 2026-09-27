@@ -1259,6 +1259,7 @@ export class TreeView extends ApeironInstance {
   declare profile?: Profile;
   declare name?: string;
   declare unfolds?: ApeironNode[]; // mixed TreeNode | Link
+  declare root?: ApeironNode; // TreeNode apex; only the current zoom is recorded, never a history
 
   /** Adds exactly `ref` (a `TreeNode` or `Link` id) to this view's `unfolds` set — idempotent, and
    *  *only* `ref` (Aperas-treeview-design.md §5 — an earlier draft of that design wrongly proposed

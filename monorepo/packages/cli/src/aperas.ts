@@ -33,6 +33,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   tree: { description: 'Render the fractal tree from a resolved node.', load: () => import('./kgTree') },
   unfold: { description: "Add one TreeNode/Link ref to a TreeView's unfolds set — only that one ref; the view's own rendering decides what becomes visible as a result.", load: () => import('./kgUnfold') },
   fold: { description: "Remove one TreeNode/Link ref's own unfolds entry from a TreeView, cascading to anything reached from it that's also separately unfolded.", load: () => import('./kgFold') },
+  zoom: { description: "Set a TreeView's root to a resolved ref and unfold it in the same call — the apex 'aperas tree --view' renders from by default when no explicit path is given.", load: () => import('./kgZoom') },
   link: { description: 'Interactively prompt for cross-links on BlockNodes in scope.', load: () => import('./kgLink') },
   unlink: { description: 'Remove a manually-added kg:link between two nodes.', load: () => import('./kgUnlink') },
   path: { description: 'Resolve a node to its walkable path.', load: () => import('./kgPath') },

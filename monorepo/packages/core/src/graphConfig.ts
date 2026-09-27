@@ -36,6 +36,10 @@ export interface GraphConfig {
   parent?: string;
   /** Human-readable display name for this graph (e.g. the webapp's `<h1>` and page title). */
   name?: string;
+  /** Live-block-count cap for a `.threads/`-scoped artifact (design/aperas-skill.md's Threads),
+   *  past which every further write to it reports a warning until it's pruned. `undefined` when
+   *  unset in config — `resolveEffectiveThreadSizeCap`'s hardcoded default applies then. */
+  threadSizeCap?: number;
   /** Where `aperas.config.json` itself was found — mostly for diagnostics/error messages. */
   configPath: string;
 }
@@ -48,6 +52,7 @@ interface RawGraphConfig {
   graph: string | { apeiron: string; artifacts: string };
   parent?: string;
   name?: string;
+  threadSizeCap?: number;
 }
 
 function isUrl(value: string): boolean {
@@ -104,8 +109,9 @@ export function resolveGraphConfig(startDir: string = process.cwd()): GraphConfi
     : (isUrl(raw.parent) ? raw.parent : resolve(configDir, raw.parent));
 
   const name = typeof raw.name === 'string' ? raw.name : undefined;
+  const threadSizeCap = typeof raw.threadSizeCap === 'number' ? raw.threadSizeCap : undefined;
 
-  return { apeironRoot, artifactsRoot, parent, name, configPath };
+  return { apeironRoot, artifactsRoot, parent, name, threadSizeCap, configPath };
 }
 
 /** The fallback graph root when no `aperas.config.json` is found anywhere above the caller — this
@@ -181,4 +187,30 @@ export function resolveEffectiveGraphName(startDir?: string): string | undefined
   } catch {
     return undefined;
   }
+}
+
+/** Live-block-count cap for a `.threads/`-scoped artifact (design/aperas-skill.md's Threads),
+ *  past which `service.ts` reports a warning on every further write to it until it's pruned. Checks
+ *  `APERAS_THREAD_SIZE_CAP` first, then `aperas.config.json`'s `threadSizeCap` (walking up, and
+ *  falling back to beside the fallback root, same two-step lookup `resolveEffectiveGraphName`
+ *  uses), else a hardcoded default. No config file needs this field set for the warning to work. */
+export function resolveEffectiveThreadSizeCap(startDir?: string): number {
+  const DEFAULT_THREAD_SIZE_CAP = 200;
+  if (process.env.APERAS_THREAD_SIZE_CAP) {
+    const parsed = Number(process.env.APERAS_THREAD_SIZE_CAP);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  const config = resolveGraphConfig(startDir);
+  if (config?.threadSizeCap !== undefined) return config.threadSizeCap;
+
+  const fallbackConfigPath = join(resolveFallbackGraphRoot(), CONFIG_FILENAME);
+  if (existsSync(fallbackConfigPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(fallbackConfigPath, 'utf-8')) as RawGraphConfig;
+      if (typeof raw.threadSizeCap === 'number') return raw.threadSizeCap;
+    } catch {
+      // fall through to the hardcoded default
+    }
+  }
+  return DEFAULT_THREAD_SIZE_CAP;
 }

@@ -1,14 +1,18 @@
 /**
- * `aperas skill` — installs the two end-user-facing skills bundled with this package (`aperas`,
- * `kg-doc-ingest`) into an agent's skill directory. Without this, an agent working against an
- * installed `aperas` binary has the CLI but none of the graph-first discipline the skill encodes
- * (dense linking, deep read/write, the update/insert edge cases) — found live installing `aperas`
- * into a fresh project with no equivalent of this repo's own `.claude/skills/aperas`.
+ * `aperas skill` — installs the end-user-facing skills bundled with this package (`aperas` and its
+ * three role skills, `kg-doc-ingest`) into an agent's skill directory. Without this, an agent
+ * working against an installed `aperas` binary has the CLI but none of the graph-first discipline
+ * the skill encodes (dense linking, deep read/write, the update/insert edge cases) — found live
+ * installing `aperas` into a fresh project with no equivalent of this repo's own
+ * `.claude/skills/aperas`.
  *
- * `build.mjs` copies `skills/aperas`/`skills/kg-doc-ingest` (this repo's own skill sources — not
- * its other, dev-only skills) to `dist/skills/`, sibling to the bundle; `resolveSkillsRoot` below
- * finds that in a built/packaged install, falling back to the source location for dev (`tsx`) runs,
- * the same built-vs-source shape as `service.ts#resolveWebRoot`.
+ * `build.mjs` copies each of `BUNDLED_SKILLS` (this repo's own skill sources — not its other,
+ * dev-only skills) to `dist/skills/`, sibling to the bundle; `resolveSkillsRoot` below finds that
+ * in a built/packaged install, falling back to the source location for dev (`tsx`) runs, the same
+ * built-vs-source shape as `service.ts#resolveWebRoot`. Doesn't install the role subagents'
+ * `.claude/agents/`/`.agents/agents/` definition files — those aren't a `SKILL.md` directory this
+ * command's copy loop can treat uniformly, so an agent host that wants the multi-agent split still
+ * needs its own agent-definition files set up separately.
  */
 
 import { existsSync, mkdirSync, cpSync, rmSync } from 'node:fs';
@@ -18,7 +22,7 @@ import { homedir } from 'node:os';
 import { wantsHelp, printHelp } from './kgHelp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SKILLS = ['aperas', 'kg-doc-ingest'];
+const SKILLS = ['aperas', 'aperas-orchestrator', 'aperas-grapher', 'aperas-coder', 'kg-doc-ingest'];
 // Every host below expects the same `<dot-dir>/skills/<name>/SKILL.md` layout Claude Code does —
 // confirmed for `.claude`/`.agents` (this repo's own `.agents/skills/` mirrors `.claude/skills/`
 // verbatim, one already proven to work for Antigravity), assumed but unverified for the rest.
@@ -63,7 +67,7 @@ export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
-      description: "Install this package's bundled skills (aperas, kg-doc-ingest) into an agent's skill directory, so it knows how to work the CLI's graph correctly.",
+      description: "Install this package's bundled skills (aperas, aperas-orchestrator, aperas-grapher, aperas-coder, kg-doc-ingest) into an agent's skill directory, so it knows how to work the CLI's graph correctly.",
       usage: 'aperas skill install [--host claude|agents|codex|cursor|opencode] [--global] [--force]',
       args: [
         { name: 'install', description: 'Copy the bundled skills into a <host>/skills/ directory.' },

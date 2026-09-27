@@ -190,10 +190,29 @@ function reportLinkBreakage(result: unknown): void {
   console.error(`  Re-running the identical write has fixed this before; 'aperas check-links --repair' also re-resolves. See issues/linking.md.`);
 }
 
+/** `service.ts#withLinkCheck`'s other splice-on field (design/aperas-skill.md's Threads): a
+ *  `.threads/`-scoped artifact whose post-write live-block count is over its cap. Printed from
+ *  here, not from each `kgX.ts`, for the same reason `reportLinkBreakage` is — the grapher's own
+ *  discipline is to prune once it sees this, not something every caller has to remember to check. */
+interface ThreadSizeWarning {
+  count: number;
+  cap: number;
+  artifactPath: string | null;
+}
+
+function reportThreadSizeWarning(result: unknown): void {
+  const warning = (result as { threadSize?: ThreadSizeWarning } | null)?.threadSize;
+  if (!warning) return;
+  console.error(
+    `[ApeironNgn service] THREAD SIZE: '${warning.artifactPath ?? '?'}' has ${warning.count} live block(s), over its cap of ${warning.cap} — prune finished tasks whose content has been promoted.`
+  );
+}
+
 export async function request<T>(req: ServiceRequest): Promise<T> {
   const res = await sendRaw(req, 0);
   if (!res.ok) throw new Error(res.error);
   reportStanding(res);
   reportLinkBreakage(res.result);
+  reportThreadSizeWarning(res.result);
   return res.result as T;
 }

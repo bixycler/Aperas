@@ -53,11 +53,16 @@ def find_graph_dir() -> Path:
     sys.exit("could not locate AperasKG/Apeiron")
 
 
-def find_skill_file() -> Path:
-    cand = Path(__file__).resolve().parents[1] / "SKILL.md"
-    if not cand.is_file():
-        sys.exit(f"no SKILL.md beside {Path(__file__).parent}")
-    return cand
+def find_skill_files() -> list[Path]:
+    """The base skill plus every role skill (v3's multi-agent split) — one shared graph record
+    covers all four, so drift is checked against their combined text, not file by file."""
+    skills_dir = Path(__file__).resolve().parents[2]
+    files = [skills_dir / "aperas" / "SKILL.md"]
+    files += sorted(skills_dir.glob("aperas-*/SKILL.md"))
+    missing = [f for f in files if not f.is_file()]
+    if missing:
+        sys.exit(f"missing skill file(s): {', '.join(str(f) for f in missing)}")
+    return files
 
 
 def norm(text: str) -> str:
@@ -170,7 +175,7 @@ def file_units(path: Path) -> list[tuple[str, str]]:
             para = re.sub(r"^\s*(?:[-*+]|\d+\.)\s+", "", para, flags=re.M)
             para = norm(re.sub(r"```\w*", "", para))  # fences match the stripped graph side
             if len(para) > 40:  # skip stubs: headings-only, one-liners, fence edges
-                units.append((heading, para))
+                units.append((f"{path.parent.name}: {heading}", para))
     return units
 
 
@@ -200,7 +205,7 @@ def main() -> None:
     both = not (args.added or args.dropped)
 
     blocks = load_blocks(find_graph_dir())
-    skill = find_skill_file()
+    skills = find_skill_files()
 
     roots = recorded_roots(blocks)
     if not roots:
@@ -211,7 +216,9 @@ def main() -> None:
         for nid, body in subtree_texts(rid, blocks):
             recorded.append((nid, body, label))
 
-    print(f"comparing {skill} against {len(roots)} recorded section(s):")
+    print(f"comparing {len(skills)} skill file(s) against {len(roots)} recorded section(s):")
+    for s in skills:
+        print(f"  {s}")
     for _, label in roots:
         print(f"  {label}")
     print()
@@ -219,7 +226,7 @@ def main() -> None:
     if both or args.added:
         haystack = " ".join(b for _, b, _ in recorded)
         missing = [
-            (h, b) for h, b in file_units(skill)
+            (h, b) for s in skills for h, b in file_units(s)
             if b not in haystack
         ]
         print(f"ADDED but unrecorded — {len(missing)}")
@@ -230,7 +237,7 @@ def main() -> None:
         print()
 
     if both or args.dropped:
-        filetext = norm(skill.read_text())
+        filetext = norm(" ".join(s.read_text() for s in skills))
         gone = [
             (nid, b, label) for nid, b, label in recorded
             if b[:FINGERPRINT_CHARS] not in filetext

@@ -21,9 +21,13 @@ let lastTreeKey = '';
 let lastTreeJson = '';
 let cachedTreeResponse: TreeResponse | null = null;
 
-async function fetchTree(params: { apex: string; view: string }): Promise<TreeResponse> {
-  const url = `/api/tree?path=${encodeURIComponent(params.apex)}&view=${encodeURIComponent(params.view)}`;
-  const key = `${params.apex}::${params.view}`;
+async function fetchTree(params: { apex?: string; view: string }): Promise<TreeResponse> {
+  // `apex` omitted (not defaulted to `.`) means "let the server decide" — it falls back to the
+  // view's own recorded `root` (design/treeview.md), which is what makes a bare `?view=<name>` deep
+  // link land somewhere other than the corpus root when a prior zoom set one.
+  const path = params.apex !== undefined ? `path=${encodeURIComponent(params.apex)}&` : '';
+  const url = `/api/tree?${path}view=${encodeURIComponent(params.view)}`;
+  const key = `${params.apex ?? ''}::${params.view}`;
   const res = await apiFetch(url);
   const text = await res.text();
   if (!res.ok) {
@@ -48,6 +52,17 @@ async function postFold(ref: string, view: string, action: 'unfold' | 'fold'): P
   if (!res.ok) throw new Error(body.error ?? `/api/fold: ${res.status}`);
 }
 
+/** Persists a webapp zoom as the view's `root` (design/treeview.md's "root records the current
+ *  zoom") — the other zoom source alongside `aperas zoom`. Fired alongside `setApex`, not instead
+ *  of it: the local signal is what makes the click feel instant, this is what makes it survive past
+ *  this tab. */
+async function postZoom(ref: string, view: string): Promise<void> {
+  const url = `/api/zoom?ref=${encodeURIComponent(ref)}&view=${encodeURIComponent(view)}`;
+  const res = await apiFetch(url, { method: 'POST' });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? `/api/zoom: ${res.status}`);
+}
+
 /** Slice 8's shallow write — the one edit Phase 1 supports: a node's own text, nothing else. */
 async function postUpdate(id: string, text: string): Promise<void> {
   const res = await apiFetch(`/api/update?id=${encodeURIComponent(id)}`, { method: 'POST', body: text });
@@ -64,7 +79,11 @@ const initialParams = new URLSearchParams(window.location.search);
 
 export default function App() {
   const [view, setView] = createSignal(initialParams.get('view') ?? 'default');
-  const [apex, setApex] = createSignal(initialParams.get('path') ?? '.');
+  // `undefined` (no `path` in the URL at all) means "not yet known — let the view's own `root`
+  // decide"; it's resolved to a concrete value from the first response's own `path` field below,
+  // same as `aperas tree --view <name>` with no explicit path falls back to `root` server-side.
+  // Distinct from an explicit `'.'`, which is a real, deliberate corpus-root apex.
+  const [apex, setApex] = createSignal<string | undefined>(initialParams.get('path') ?? undefined);
   const [refreshTick, setRefreshTick] = createSignal(0);
 
   const [views] = createResource(fetchViews);
@@ -90,6 +109,12 @@ export default function App() {
     if (tree.error) return;
     const data = tree.latest;
     if (data) setTreeStore(reconcile(data, { key: 'id' }));
+    // First response after an apex-less request: seed the concrete apex from what the server
+    // actually resolved (the view's `root`, or the corpus root if it has none) — every later read
+    // and every URL update from here on uses this real value, same as if it had been typed in.
+    // Falls back to '.' on the rare `path: null` case (whatever `toPath()` can't walk) rather than
+    // leaving `apex` unresolved forever.
+    if (data && apex() === undefined) setApex(data.path ?? '.');
   });
 
   // Cheap stopgap for the missing tick channel (Slice 4, planning/webapp.md): no push exists yet
@@ -117,7 +142,11 @@ export default function App() {
   createEffect(() => {
     const params = new URLSearchParams();
     params.set('view', view());
-    params.set('path', apex());
+    // Omitted while still unresolved (see `apex`'s own doc comment) — writing a placeholder here
+    // would turn a genuine "let the view decide" reload into a hardcoded one the moment the tab is
+    // bookmarked or refreshed.
+    const a = apex();
+    if (a !== undefined) params.set('path', a);
     history.replaceState(null, '', `${location.pathname}?${params}`);
   });
 
@@ -136,7 +165,16 @@ export default function App() {
     return segments.map((_, i) => ({ label: segments[i], full: segments.slice(0, i + 1).join('/') }));
   });
 
-  const onZoom = (id: string) => setApex(id);
+  // Every user-initiated zoom — tree click, backlink zoom, breadcrumb, "zoom out to root" — goes
+  // through here: `setApex` for the instant local UI update, `postZoom` fire-and-forget alongside it
+  // so the new apex is recorded as the view's `root` and survives past this tab (design/treeview.md).
+  // Not awaited: a zoom that failed to persist still zoomed, and awaiting would make every click wait
+  // on a round trip for a UI update that's already local.
+  const zoomTo = (id: string) => {
+    setApex(id);
+    void postZoom(id, view());
+  };
+  const onZoom = (id: string) => zoomTo(id);
   // Awaited all the way through the refetch, not fire-and-forget — every existing caller already
   // ignored the returned promise, so this is a strict tightening, and it's what lets
   // `onRevealBacklink` below know the new content has actually landed before it tries to scroll to it.
@@ -164,7 +202,7 @@ export default function App() {
     });
   };
   const onZoomToBacklink = (linkId: string, ownerId: string) => {
-    setApex(ownerId);
+    zoomTo(ownerId);
     void onFold(ownerId, 'unfold');
     void onFold(linkId, 'unfold');
   };
@@ -188,7 +226,7 @@ export default function App() {
         >
           <For each={views()}>{(v) => <option value={v.name}>{v.name} ({v.profile})</option>}</For>
         </select>
-        <button onClick={() => setApex('.')} title="Zoom out to the artifacts root">⌂ root</button>
+        <button onClick={() => zoomTo('.')} title="Zoom out to the artifacts root">⌂ root</button>
 
         <label class="poll-toggle" title="Poll every 1s for changes made outside this tab (e.g. via the CLI)">
           <input
@@ -209,12 +247,12 @@ export default function App() {
       </header>
 
       <nav class="breadcrumbs">
-        <span class="crumb" onClick={() => setApex('.')}>.</span>
+        <span class="crumb" onClick={() => zoomTo('.')}>.</span>
         <For each={breadcrumbs()}>
           {(c) => (
             <>
               <span class="crumb-sep">/</span>
-              <span class="crumb" onClick={() => setApex(c.full)}>{c.label}</span>
+              <span class="crumb" onClick={() => zoomTo(c.full)}>{c.label}</span>
             </>
           )}
         </For>

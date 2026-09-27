@@ -14,8 +14,9 @@
  * no separate install step. Web build failures are fatal here, same as a CLI build failure: a
  * package with no webapp in it isn't the self-contained artifact this script promises.
  *
- * Also copies the two end-user-facing skills (`skills/aperas`, `skills/kg-doc-ingest` — this repo's
- * own other skills, e.g. `solidjs`/`terminusdb`, are dev-only and never bundled) to `dist/skills/`,
+ * Also copies the end-user-facing skills (`skills/aperas` and its three role skills,
+ * `skills/kg-doc-ingest` — this repo's own other skills, e.g. `solidjs`/`terminusdb`, are dev-only
+ * and never bundled) to `dist/skills/`,
  * sibling to the bundle — `kgSkill.ts#resolveSkillsRoot` looks there first, the same
  * built-vs-source-fallback shape as `resolveWebRoot()`. Without this, an agent working against an
  * `npm install`ed `aperas` has the binary but none of the graph-first discipline the skill encodes —
@@ -63,10 +64,11 @@ console.log(`[build:aperas] Copied ${join(webDir, 'dist')} -> ${join(distDir, 'w
 cpSync(join(cliDir, 'README.md'), join(distDir, 'README.md'));
 
 const repoRoot = join(cliDir, '..', '..', '..'); // packages/cli -> packages -> monorepo -> repo root
-for (const skill of ['aperas', 'kg-doc-ingest']) {
+const BUNDLED_SKILLS = ['aperas', 'aperas-orchestrator', 'aperas-grapher', 'aperas-coder', 'kg-doc-ingest'];
+for (const skill of BUNDLED_SKILLS) {
   cpSync(join(repoRoot, 'skills', skill), join(distDir, 'skills', skill), { recursive: true });
 }
-console.log(`[build:aperas] Copied skills/{aperas,kg-doc-ingest} -> ${join(distDir, 'skills')}`);
+console.log(`[build:aperas] Copied skills/{${BUNDLED_SKILLS.join(',')}} -> ${join(distDir, 'skills')}`);
 
 const distPkg = {
   name: 'aperas',

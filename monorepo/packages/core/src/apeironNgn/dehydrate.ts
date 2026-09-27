@@ -21,6 +21,7 @@ import {
   PARENT_PRED,
   SIBLING_INDEX_PRED,
 } from './vocab';
+import { isThreadScopedId } from './threadScope';
 import { SHAPE_BY_KIND, type FieldSpec } from './shape';
 import { getApeironExportDir } from './store';
 
@@ -35,8 +36,15 @@ export const DEHYDRATE_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Pr
 
 // `TreeView` (Aperas-treeview-design.md §8) — per-viewer UI state, genuinely ephemeral, dehydrated
 // separately via `dehydrateStateToJsonLd` into a gitignored `.state/` subfolder rather than
-// alongside `DEHYDRATE_CLASSES` above.
+// alongside `DEHYDRATE_CLASSES` above. Every `TreeView` goes here, unconditionally.
 export const STATE_CLASSES = ['TreeView'] as const;
+
+// A `.threads/`-scoped `BlockNode`/`ArtifactNode`/`FolderNode` (design/aperas-skill.md's Threads;
+// design/treeview.md's thread persistence) also goes to `.state/` instead of the tracked content
+// mirror — but only the thread-scoped subset of each kind, unlike `STATE_CLASSES` above, which
+// takes every node of its kind. `dehydrateToJsonLd` excludes this subset from the content mirror;
+// `dehydrateStateToJsonLd` writes it, under the same kind name, into `.state/` instead.
+export const THREAD_PARTITIONED_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
 
 export function allIdsOfKind(store: Store, kind: string): string[] {
   const ids = new Set<string>();
@@ -119,11 +127,14 @@ function stableId(value: unknown): string {
 }
 
 /** Rewrites a whole class's JSON-LD file from the `Store`'s current content, for each of
- *  `DEHYDRATE_CLASSES` — full replace, matching `export.ts`'s own behavior against TerminusDB. */
+ *  `DEHYDRATE_CLASSES` — full replace, matching `export.ts`'s own behavior against TerminusDB.
+ *  Excludes any `THREAD_PARTITIONED_CLASSES` member whose owning artifact/folder sits under
+ *  `.threads/` — that subset goes to `.state/` instead, via `dehydrateStateToJsonLd`. */
 export function dehydrateToJsonLd(store: Store, dir: string = getApeironExportDir()): { dir: string; counts: Record<string, number> } {
   const counts: Record<string, number> = {};
   for (const kind of DEHYDRATE_CLASSES) {
     const docs = allIdsOfKind(store, kind)
+      .filter((id) => !isThreadScopedId(store, id, kind))
       .map((id) => serializeDoc(store, id))
       .sort((a, b) => stableId(a).localeCompare(stableId(b)));
     writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify(docs, null, 2) + '\n');
@@ -137,12 +148,25 @@ export function dehydrateToJsonLd(store: Store, dir: string = getApeironExportDi
  *  `STATE_CLASSES` into a separate, gitignored directory instead (default: `.state/` under the
  *  main mirror dir) so genuinely ephemeral per-viewer UI state never lands in the git-tracked
  *  content mirror. `mkdirSync(..., { recursive: true })` since `.state/` won't exist on a fresh
- *  checkout. */
+ *  checkout.
+ *
+ *  Also writes the thread-scoped subset of each `THREAD_PARTITIONED_CLASSES` kind here, under the
+ *  same `<Kind>.jsonld` filename `dehydrateToJsonLd` uses for the tracked mirror — the two files
+ *  hold disjoint id sets by construction (a node is thread-scoped or it isn't), so `rehydrateStore`
+ *  reading both back is an ordinary merge, never a collision. */
 export function dehydrateStateToJsonLd(store: Store, dir: string = join(getApeironExportDir(), '.state')): { dir: string; counts: Record<string, number> } {
   mkdirSync(dir, { recursive: true });
   const counts: Record<string, number> = {};
   for (const kind of STATE_CLASSES) {
     const docs = allIdsOfKind(store, kind)
+      .map((id) => serializeDoc(store, id))
+      .sort((a, b) => stableId(a).localeCompare(stableId(b)));
+    writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify(docs, null, 2) + '\n');
+    counts[kind] = docs.length;
+  }
+  for (const kind of THREAD_PARTITIONED_CLASSES) {
+    const docs = allIdsOfKind(store, kind)
+      .filter((id) => isThreadScopedId(store, id, kind))
       .map((id) => serializeDoc(store, id))
       .sort((a, b) => stableId(a).localeCompare(stableId(b)));
     writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify(docs, null, 2) + '\n');

@@ -144,6 +144,10 @@ export const TREE_VIEW_SHAPE: ClassShape = {
   profile: { cardinality: 'one', storageKind: 'reference' },
   name: { cardinality: 'one' },
   unfolds: { cardinality: 'set', storageKind: 'reference' },
+  // `aperas zoom` (design/treeview.md's "root records the current zoom") — the apex `aperas tree
+  // --view <name>` renders from when no explicit path is given. Only the current one is recorded,
+  // never a history of past roots; unset means the whole corpus, same as before this field existed.
+  root: { cardinality: 'optional', storageKind: 'reference' },
 };
 
 export const SHAPE_BY_KIND: Record<string, ClassShape> = {

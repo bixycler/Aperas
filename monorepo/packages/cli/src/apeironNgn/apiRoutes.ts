@@ -36,12 +36,19 @@ export async function handleApiRoute(
 ): Promise<ApiRouteResult> {
   try {
     if (pathname === '/api/tree') {
-      const pathArg = searchParams.get('path') ?? '.';
+      // Absent `path` (no query param at all) is distinct from an explicit `path=.`: the former
+      // omits `pathArg` so `runTree` falls back to the view's own `root` (design/treeview.md's "root
+      // records the current zoom", set by `aperas zoom`/`/api/zoom` below); the latter is a real,
+      // deliberate "corpus root" apex. Defaulting this to `'.'` unconditionally (the old behavior)
+      // meant a view's recorded root was never actually reachable from a bare `?view=<name>` deep
+      // link — every request already carried an explicit path by the time it got here.
+      const pathArg = searchParams.get('path') ?? undefined;
       const viewRef = searchParams.get('view') ?? 'default';
       const depth = searchParams.get('depth');
       const result = await callOp({
-        op: 'tree', pathArg, viewRef, format: 'render-tree',
+        op: 'tree', viewRef, format: 'render-tree',
         noHolders: false, showTombstoned: false, reload: false,
+        ...(pathArg !== undefined ? { pathArg } : {}),
         ...(depth !== null ? { maxDepth: Number(depth) } : {}),
       } as ServiceRequest);
       return { status: 200, body: result };
@@ -65,6 +72,17 @@ export async function handleApiRoute(
         ? { op: 'unfold', ref, viewRef, showTombstoned: false, flush: false, reload: false }
         : { op: 'fold', ref, viewRef, flush: false, reload: false };
       await callOp(req);
+      return { status: 200, body: { ok: true } };
+    }
+    // A webapp zoom (ctrl-click, breadcrumb, "zoom out to root") — persists the new apex as the
+    // view's `root` the same way `aperas zoom` does, so a human zooming in the webapp is one of the
+    // two zoom sources design/treeview.md names, not a client-only signal the graph never sees.
+    // `flush: false`, same reasoning as `/api/fold` above: genuinely ephemeral per-view UI state.
+    if (pathname === '/api/zoom') {
+      const ref = searchParams.get('ref');
+      const viewRef = searchParams.get('view') ?? 'default';
+      if (!ref) throw new Error("'ref' is required.");
+      await callOp({ op: 'zoom', ref, viewRef, flush: false, reload: false } as ServiceRequest);
       return { status: 200, body: { ok: true } };
     }
     if (pathname === '/api/graph') {

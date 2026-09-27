@@ -49,10 +49,13 @@ import { fileURLToPath } from 'node:url';
 import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
 import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
-import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds } from '@aperas/core/apeironNgn/node';
+import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds, wrap, type TreeNode } from '@aperas/core/apeironNgn/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/apeironNgn/linkIntegrity';
 import { runMigrateFrontmatter } from '@aperas/core/apeironNgn/artifacts';
 import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
+import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
+import { isThreadScopedId } from '@aperas/core/apeironNgn/threadScope';
+import { resolveEffectiveThreadSizeCap } from '@aperas/core/graphConfig';
 import { getRunDir, getSocketPath, markReady, clearLock, writeToken, resolveHttpPort } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
@@ -77,6 +80,7 @@ import { runTrack, runReverseTrack } from '../kgTrack';
 import { runIngest } from '../kgIngest';
 import { runUnfold } from '../kgUnfold';
 import { runFold } from '../kgFold';
+import { runZoom } from '../kgZoom';
 import { runResolve } from '../kgResolve';
 import { runInsert } from '../kgInsert';
 import { runUpdate } from '../kgUpdate';
@@ -166,6 +170,7 @@ export function main(): void {
   const stateDir = join(contentDir, '.state');
   let contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
   let stateStamps = stampAll(stateDir, STATE_CLASSES);
+  const threadSizeCap = resolveEffectiveThreadSizeCap();
 
   let dirty = false;
   let stateDirty = false;
@@ -281,7 +286,14 @@ export function main(): void {
    *  right where the caller is already reading its `Links: N resolved…` summary — the exact line
    *  that reported success while `.links` came back empty in both recorded incidents. Diffed against
    *  a sweep taken just before the write, so a pre-existing discrepancy elsewhere in the same
-   *  artifact isn't re-reported on every subsequent edit to it. */
+   *  artifact isn't re-reported on every subsequent edit to it.
+   *
+   *  Also splices on a `threadSize` warning (design/aperas-skill.md's Threads) when `artifactId` is
+   *  `.threads/`-scoped and its post-write live-block count is over `threadSizeCap` — reusing
+   *  `after.totalLiveBlocks`, already computed above for the link check, rather than a second
+   *  traversal. Appears on *every* write past the cap, not just the one that crossed it: unlike
+   *  `linkBreakage` (a regression to flag once), a thread over its cap stays worth nagging about
+   *  until it's actually pruned. */
   function withLinkCheck<T extends object>(result: T, artifactId: string | null, before: LinkIntegrityReport | null): T {
     if (!artifactId || !before) return result;
     let after: LinkIntegrityReport;
@@ -296,7 +308,13 @@ export function main(): void {
         .filter((code) => !known.has(`${d.blockId}\u0000${code}`))
         .map((code) => ({ blockId: d.blockId, blockTitle: d.blockTitle, code }))
     );
-    return introduced.length > 0 ? { ...result, linkBreakage: introduced } : result;
+    let out = result;
+    if (introduced.length > 0) out = { ...out, linkBreakage: introduced };
+    if (after.totalLiveBlocks > threadSizeCap && isThreadScopedId(store, artifactId, nodeKindFromId(artifactId))) {
+      const artifactPath = (wrap(store, artifactId) as unknown as TreeNode).toPath();
+      out = { ...out, threadSize: { count: after.totalLiveBlocks, cap: threadSizeCap, artifactPath } };
+    }
+    return out;
   }
 
   function flushStateIfDirty(): void {
@@ -519,6 +537,15 @@ export function main(): void {
         if (req.reload) reloadStore();
         const view = resolveTreeView(store, req.viewRef);
         const result = runFold(store, req.ref, view);
+        stateDirty = true;
+        dirty = true; // see the matching comment in 'unfold' above
+        if (req.flush) { flushStateIfDirty(); flushIfDirty(); }
+        return result;
+      }
+      case 'zoom': {
+        if (req.reload) reloadStore();
+        const view = resolveTreeView(store, req.viewRef);
+        const result = runZoom(store, req.ref, view);
         stateDirty = true;
         dirty = true; // see the matching comment in 'unfold' above
         if (req.flush) { flushStateIfDirty(); flushIfDirty(); }

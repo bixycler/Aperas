@@ -74,6 +74,11 @@ export type ServiceRequest =
   // default (issues/treeview.md).
   | { op: 'unfold'; ref: string; viewRef?: string; peek?: boolean; showTombstoned: boolean; flush: boolean; reload: boolean }
   | { op: 'fold'; ref: string; viewRef?: string; flush: boolean; reload: boolean }
+  // `aperas zoom` (design/treeview.md's "root records the current zoom") — sets a `TreeView`'s
+  // `root` to `ref` and unfolds it in the same call, so the apex both renders and shows its own
+  // content by default. No `peek` mode, unlike `unfold`/`fold`: there's nothing to preview without
+  // mutating, since setting the root *is* the point of the call.
+  | { op: 'zoom'; ref: string; viewRef?: string; flush: boolean; reload: boolean }
   | { op: 'resolve'; paths: string[]; base?: string; createHolder: boolean; titles?: string[]; flush: boolean; reload: boolean }
   // `kg:insert` (Aperas-crud-design.md §7) — `markdown` present (even `''`) means create mode,
   // absent means move/promote mode; the CLI client decides which based on `process.stdin.isTTY`,
@@ -106,7 +111,10 @@ export type ServiceRequest =
   // this directly rather than parsing the text format back apart. Requires `viewRef` (the
   // structured render only exists for the view-based renderer, §13); omitted (or `'text'`) keeps
   // today's string-lines shape, view-based or not.
-  | { op: 'tree'; pathArg: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload: boolean }
+  // `pathArg` omitted (rather than defaulted to `'.'`) means "resolve from `viewRef`'s own `root`"
+  // (design/treeview.md's "root records the current zoom", set by `aperas zoom`) — `runTree` itself
+  // falls back to the corpus root if that view has none set.
+  | { op: 'tree'; pathArg?: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload: boolean }
   | { op: 'path'; idArg: string; reload: boolean }
   // `kg:backlinks` (Aperas-apeironngn-design.md §4 Step 13) — read-only reverse lookup, `reload`-
   // capable like `tree`/`path` above.

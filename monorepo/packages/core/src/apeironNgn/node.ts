@@ -1924,9 +1924,12 @@ function buildLinkItem(
 }
 
 /** `RenderItem`'s text serializer — the sole remaining consumer of the string format `buildNodeItem`/
- *  `buildLinkItem` used to write directly. Byte-identical to the old `emitNode`/`emitLinkLine`
- *  output by construction: every field read here is exactly the value those functions used to
- *  compute inline, just carried on the item instead of formatted immediately. */
+ *  `buildLinkItem` used to write directly. Every field read here is exactly the value those
+ *  functions compute, just carried on the item instead of formatted immediately — except the text
+ *  shown: this prints the uncapped `item.text` when present, falling back to the capped
+ *  `item.abstract` only for the textless-list case where `text` is never set (`buildNodeItem`'s own
+ *  `abstract` computation is unchanged and still feeds `Inline.tsx`'s hover popover, which wants the
+ *  capped form). */
 function toText(items: RenderItem[], lines: string[]): void {
   for (const item of items) {
     const indent = '│ '.repeat(item.depth);
@@ -1940,7 +1943,7 @@ function toText(items: RenderItem[], lines: string[]): void {
         const star = item.starred ? '  [*]' : '';
         const tomb = item.tombstonedAt ? '  (tombstoned)' : '';
         const foldTag = item.hiddenCount > 0 ? `  [+${item.hiddenCount}]` : '';
-        const content = item.abstract !== undefined ? `${item.title}  ║  ${item.abstract}` : item.title;
+        const content = item.abstract !== undefined ? `${item.title}  ║  ${item.text ?? item.abstract}` : item.title;
         lines.push(`${indent}${item.id}  [${item.displayLabel}]  ${content}${holderTag}${star}${tomb}${foldTag}`);
         if (item.truncated) {
           lines.push(`${'│ '.repeat(item.depth + 1)}…`);
@@ -1953,7 +1956,7 @@ function toText(items: RenderItem[], lines: string[]): void {
     // item.kind === 'link'
     const tomb = item.tombstonedAt ? '  (tombstoned)' : '';
     const head = `${indent}${item.id}  [Link]  ${item.predicate} → ${item.targetId}  `;
-    const preview = item.abstract !== undefined ? `${item.targetTitle}  ║  ${item.abstract}` : (item.targetTitle ?? '');
+    const preview = item.abstract !== undefined ? `${item.targetTitle}  ║  ${item.text ?? item.abstract}` : (item.targetTitle ?? '');
     switch (item.mode) {
       case 'no-target':
         lines.push(`${indent}${item.id}  [Link]  ${item.predicate}  <no target>`);

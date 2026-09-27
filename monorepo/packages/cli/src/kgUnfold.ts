@@ -3,9 +3,9 @@
  * ref — the view's own rendering, not this command, decides what becomes visible as a result;
  * Aperas-treeview-design.md §5), via the shared ApeironNgn service
  * (Aperas-apeironngn-design.md §4 rollout step 5). Prints the target's title plus its full,
- * uncapped text (the one place a node's complete text is ever shown — everywhere else, including
- * this same command's own child/link previews below it, is a capped one-line preview), then each
- * immediate child's/link's own title+capped-abstract preview of what just got revealed.
+ * uncapped text, then each immediate child's/link's own title+full-text preview of what just got
+ * revealed — none of these lines truncate any more (`kg:backlinks`'s own preview line is the one
+ * place that still does).
  */
 
 import type { Store } from 'oxigraph';
@@ -35,11 +35,10 @@ export function nodeAbstract(node: TreeNode, opts: { full?: boolean } = {}): str
   if (node.text === undefined) return undefined;
   const raw = node.text as unknown as string;
   if (opts.full) {
-    // The whole point of unfolding *this* node: nowhere else ever shows a node's complete text,
-    // only ever a capped preview (kg:tree, and this same file's own children/links below) — so
-    // the one thing actually being revealed here should never itself be truncated. Verbatim, not
-    // collapsed to one line either, unlike the preview case: this is "what's really stored," not
-    // a scannable summary.
+    // Verbatim, not collapsed to one line either, unlike the preview case: this is "what's really
+    // stored," not a scannable summary. `kg:backlinks` is the one caller left that still wants the
+    // capped, collapsed form (its own preview line), which is why `opts.full` stays optional here
+    // rather than becoming this function's only behavior.
     return raw;
   }
   return truncateForPreviewWithHint(raw, node.id);
@@ -105,13 +104,13 @@ function previewChildren(store: Store, node: TreeNode, showTombstoned: boolean):
     .map((child) => {
       const childId = child.id;
       if (!nodeExists(store, childId)) return { id: childId, label: '?', text: '<not found>' };
-      return { id: childId, label: displayLabel(childId, child), text: `${previewText(child)}${tombstoneTag(child as unknown as { tombstonedAt?: string })}${foldTag(child)}` };
+      return { id: childId, label: displayLabel(childId, child), text: `${previewText(child, { full: true })}${tombstoneTag(child as unknown as { tombstonedAt?: string })}${foldTag(child)}` };
     });
   const links = ((node.links as unknown as Link[] | undefined) ?? [])
     .filter((link) => showTombstoned || !isTombstoned((link.target as unknown as { tombstonedAt?: string } | undefined)))
     .map((link) => {
       const target = link.target as unknown as TreeNode | undefined;
-      return { id: link.id, label: 'Link', text: target ? `${link.predicate as unknown as string} → ${target.id}  ${previewText(target)}${tombstoneTag(target as unknown as { tombstonedAt?: string })}${foldTag(target)}` : '<no target>' };
+      return { id: link.id, label: 'Link', text: target ? `${link.predicate as unknown as string} → ${target.id}  ${previewText(target, { full: true })}${tombstoneTag(target as unknown as { tombstonedAt?: string })}${foldTag(target)}` : '<no target>' };
     });
   return [...children, ...links];
 }

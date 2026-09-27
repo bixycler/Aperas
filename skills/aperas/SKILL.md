@@ -127,6 +127,8 @@ aperas profile create-view <name> --profile <handle>
 
 Then `aperas unfold <path> --view <name> --flush` whatever you are working on *as* you start it, `aperas tree --view <name>` to render that lens, `aperas fold` to collapse a subtree again, and plain `aperas tree --depth <n>` (no `--view`) for a skeletal title-only map of the whole corpus.
 
+This is separate from the fixed hand-off views a subagent already owns (*Hand-offs*, below), which are re-rooted onto an Ask or a Report every turn and aren't meant for free browsing. A subagent that needs to look around a whole task — to write a finishing turn, say — sets up one of these for itself the same way. `TreeView` names are globally unique, so name it `${profile}-${topic-or-task}`, not a bare topic name: the orchestrator's own personal views are bare (`kg-cleanup`, `core-redesign`), and a subagent using the same bare name for the same topic would collide with one that already exists.
+
 A view created early and never touched again still answers `aperas tree --view <name>`, showing whatever was unfolded during a previous task, with nothing warning you it is stale — worse than no view, because it looks current without being current.
 
 ### Worked example — a traversal, start to finish
@@ -189,8 +191,11 @@ Each subagent has one thread, `.threads/grapher.md` or `.threads/coder.md`. Noth
 - **Report**: <the outcome, in a sentence>   ← subagent; root of <p>-grapher-orchestrator
   - [<changed or found node>](…) — what changed, or what it shows
   - **Question**: <whatever the Ask left unsettled — see below>
-  - **Tool gap**: <a workaround built, a call that failed or hung — see below>
+  - **Tool gap — <what>**: <a workaround built, a call that failed or hung — see below>
+  - **Tool gap — <what else>**: <a second one, if the turn hit more than one>
 ```
+
+More than one **Tool gap** in a Report needs a distinct lead-in for each — `<what>`, not a bare repeat of the word "Tool gap" — since sibling slugs are derived from the lead-in term, and two identical ones collide outright: the write is rejected in full, nothing written, before either one lands.
 
 A follow-up is a new turn, not an edit to an old one.
 
@@ -200,7 +205,7 @@ A follow-up is a new turn, not an edit to an old one.
 
 **Ask back instead of guessing.** An ordinary subagent runs to completion on whatever it was handed and returns its best guess at the gaps. Here a subagent stops when it meets something the Ask doesn't settle — an ambiguous requirement, two plausible approaches with different costs, code or graph contradicting what the Ask assumed, a change turning out larger than the Ask implied — and asks. The question goes in the Report as **Question**, with what raised it and the options you see; the turn ends there, and the orchestrator answers in a new turn. A wrong guess costs a whole round of work plus unwinding it; a question costs one turn. Guessing is what a subagent does by default, so asking has to be done deliberately — it is as much a part of every turn as recording the subturns.
 
-A thread is the lowest tier of the gradient (*Citation direction*, below), so it cites upward freely and **nothing outside a thread links into one**. What a thread finds reaches the rest of the graph by the grapher copying it up, never by citation.
+Threads are the lowest tier of the gradient (*Citation direction*, below), so a thread cites upward freely, and threads cite each other sideways — an Ask citing the other subagent's Report is the ordinary case. **Nothing above the threads tier links into one**: no formal doc, `concepts.md` entry or discussion node. What a thread finds reaches the rest of the graph by the grapher copying it up, never by citation.
 
 When a write to a thread reports its size cap reached, say so in your Report; the grapher prunes finished tasks at its next turn.
 
@@ -231,7 +236,7 @@ The root moves every turn while the content under it mostly stays put, the way a
 
 Philosophy's evidence rule, as something every role does, not only whoever ends up writing the formal docs. Before leaving a claim in place — a freeflow finding, a thread's Report, a formal-doc entry, whatever you are writing and wherever — check that it can be traced: provenance first, and every other relationship it carries alongside it, each reified as a real link rather than described in prose. A claim resting on nothing is not a lesser entry; it is incomplete, whichever role wrote it and whatever it was written into.
 
-Where you check depends on where you wrote it. A thread or freeflow entry cites forward, since nothing links into a thread and freeflow is not itself a citation target (base *Citation direction*, below) — so the check there is simply: does this entry's own text name what it rests on? A formal-doc entry can be checked from the other side, and more strongly: run `aperas backlinks <id> --text` on **what you just wrote**, not only on what you were about to read. A node whose claims rest on nothing returns nothing, and that silence is the entire signal. The mechanics of applying this to a formal-doc promotion — where the link goes when citation direction forbids the obvious direction — belong to the grapher, the only role that writes one (`aperas-grapher`'s *Provenance at the origin*).
+Where you check depends on where you wrote it. A thread or freeflow entry cites forward, since nothing above the threads tier links into a thread and freeflow is not itself a citation target (base *Citation direction*, below) — so the check there is simply: does this entry's own text name what it rests on? A formal-doc entry can be checked from the other side, and more strongly: run `aperas backlinks <id> --text` on **what you just wrote**, not only on what you were about to read. A node whose claims rest on nothing returns nothing, and that silence is the entire signal. The mechanics of applying this to a formal-doc promotion — where the link goes when citation direction forbids the obvious direction — belong to the grapher, the only role that writes one (`aperas-grapher`'s *Provenance at the origin*).
 
 ### Citation direction
 

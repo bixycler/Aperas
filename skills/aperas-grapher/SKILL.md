@@ -30,7 +30,7 @@ The survey is the graph's side only. Touch source code just to pinpoint an entry
 
 ### Filing — after each coder turn
 
-Read the coder's latest Report and the Work under it in `.threads/coder.md`. Record what the coder found where it belongs: into the task's `discussion` freeflow first, then promoted into `issues`/`history`/`design` once it has earned a home (*Discussion is where meta-info is born*, below). Copy content up; never link into a thread. Where the coder reports code and design disagreeing, that discrepancy is itself the finding — record it, and fix whichever side is stale. File every tool gap in a Report, the coder's or your own, in the freeflow of the concern that owns the tool.
+Read the coder's latest Report and the Work under it in `.threads/coder.md`. Record what the coder found where it belongs: into the task's `discussion` freeflow first, then promoted into `issues`/`history`/`design` once it has earned a home (*Discussion is where meta-info is born*, below). Copy content up; never link into a thread from the graph above it. Where the coder reports code and design disagreeing, that discrepancy is itself the finding — record it, and fix whichever side is stale. File every tool gap in a Report, the coder's or your own, in the freeflow of the concern that owns the tool.
 
 ### Finishing — the last turn of a task
 

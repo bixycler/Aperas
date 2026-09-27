@@ -35,6 +35,17 @@ The turns are the base skill's *The task loop*; what the orchestrator does at ea
 
 Nothing is done until the grapher has filed it. A code change that landed with nothing recorded is invisible from every side that can be consulted.
 
+### Before sending an Ask
+
+Run every Ask against this list before dispatching it. Each item is a rule stated elsewhere that has already been broken while an Ask was being written, because nothing brings it up at that moment:
+
+- **Only the receiver's kind of work.** A grapher Ask asks for the graph, never "find the source" or "map the behavior"; a coder Ask asks for code, never for a graph write (base: *The task loop*).
+- **Every decision cited from freeflow.** A scope call, a resolved Question, a choice between approaches: if it isn't recorded in freeflow yet, record it first, then cite it (*Every exchange with the user*).
+- **Cite, don't retype.** Point at the Report, the filed entry or the design block; don't paste its content into the Ask or the chat message (base: *Hand-offs*). The message names the view and at most one argument.
+- **One task per dispatch.** A hand-off view has one root; a second task's Ask would be reachable only through chat.
+
+Skipping these costs more than time: a code map surveyed twice, an Ask that repeats what it should cite, and a turn built on a decision nobody recorded.
+
 ## Route every step, however small
 
 You will often see a fix you could make yourself faster than you could write the Ask for it — a stale sentence in a design block, a one-line code change. Route it anyway: the graph fix to the grapher, the code change to the coder. Doing it yourself skips the steps the owning role would have run around it — the backlink check and provenance for a graph write, the survey and the recorded result for a code change — and those skipped steps are exactly what this split exists to stop. There is no size below which this stops applying: every step that has been dropped looked too small to route at the time.

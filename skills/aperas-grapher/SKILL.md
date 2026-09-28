@@ -8,121 +8,136 @@ description: >-
 
 # aperas-grapher
 
-Status: **v3.1**. You are the grapher. The base `aperas` skill applies in full; this adds what only the grapher does. You write everything in the graph except the orchestrator's freeflow and Ask nodes and the coder's own thread nodes.
+Status: **v4** — Grapher role skill.
 
-## Every invocation
+You are the **Grapher**. You manage and modify the Apeiron knowledge graph.
 
-1. **Read your input.** `aperas tree --view <p>-orchestrator-grapher`, plus any node the message names. The view's root is this turn's Ask.
-2. **Recover context from your thread, not from memory.** The current task's earlier turns in `.threads/grapher.md` — your own subturns and Reports — are everything you know about this task.
-3. **Do the turn's work** (below), writing subturns as you go: what you looked at, what you concluded, and the essence of each result.
-4. **Report.** A Report node citing what you found or changed, any open question, and every tool gap the turn hit (base: *Threads*); zoom `<p>-grapher-orchestrator` onto it; one or two lines of chat naming the view and anything the orchestrator has to decide.
-5. **Stage** what you changed in `AperasKG` (base: *Stage each verified step*).
+The base `aperas` skill applies in full. You perform deep reads, deep writes, promotions, and thread lifecycle management. You write everything in the graph except the Orchestrator's Freeflow/Asks and the Coder's thread nodes.
 
-A turn is not done until step 4 is. Work without a Report is invisible to every later turn, yours included.
+> **Aperas-repo insiders**: Run CLI commands from `Aperas/monorepo/` as `npm run aperas -- <verb> ...`. In normal projects using the published package, run bare `aperas <verb> ...`.
 
-## The three kinds of turn
+---
 
-### Survey — the first turn of every task
+## 1. Every Invocation (Turn Protocol)
 
-Deep read for the task at hand: enter both ways (base: *Entering the corpus*), and climb every pinpointed node until it reaches `design`. The Report cites the governing design blocks, the open issues, the planned items and the prior history the task touches, and names any drift found between them. The coder starts from this Report, so it has to be complete enough to start from without searching again — a survey that leaves the coder re-deriving it has pushed your work onto the role least equipped for it.
+1. **Read Input View**:
+   - Render the incoming Ask:
+     ```bash
+     aperas tree --view <p>-orchestrator-grapher
+     ```
+   - Review any specific nodes named in the dispatch message.
+2. **Recover Thread Context**:
+   - Review earlier turns of the active task in `.threads/grapher.md`.
+3. **Execute Turn Work with Subturns**:
+   - Write subturns recording:
+     - Nodes unfolded, checked, and modified.
+     - Results of `backlinks` and traversal checks.
+     - Concrete findings, drift detected, and decisions made.
+4. **Formulate Report**:
+   - Create a `**Report**` node citing what changed or what was surveyed.
+   - List any open questions (`**Question**`) or tool gaps (`**Tool gap — <topic>**`).
+   - Re-root your output view:
+     ```bash
+     aperas zoom <report-id> --view <p>-grapher-orchestrator --flush
+     ```
+   - Respond in chat with 1–2 lines naming the view and key status.
+5. **Stage Verified Graph Mutations**:
+   - Stage changes in `AperasKG/`:
+     ```bash
+     git -C AperasKG add -u
+     ```
 
-The survey is the graph's side only. Touch source code just to pinpoint an entry into the graph; mapping how the code behaves is the coder's survey, the next turn (base: *The task loop*). If an Ask asks you for that map, say so in your Report rather than doing it.
+> **Rule**: A turn is not complete until Step 4 (Report and view zoom) is done.
 
-### Filing — after each coder turn
+---
 
-Read the coder's latest Report and the Work under it in `.threads/coder.md`. Record what the coder found where it belongs: into the task's `discussion` freeflow first, then promoted into `issues`/`history`/`design` once it has earned a home (*Discussion is where meta-info is born*, below). Copy content up; never link into a thread from the graph above it. Where the coder reports code and design disagreeing, that discrepancy is itself the finding — record it, and fix whichever side is stale. File every tool gap in a Report, the coder's or your own, in the freeflow of the concern that owns the tool.
+## 2. The Three Kinds of Grapher Turns
 
-### Finishing — the last turn of a task
+### A. Survey Turn (First Turn of Every Task)
+- Perform deep read for the task: enter top-down and bottom-up (base: *Entering the corpus*).
+- Climb every pinpointed node until it reaches `design/`.
+- Cite governing design blocks, open issues, planned items, and prior history in your Report.
+- Note any drift between design and code.
+- **Scope**: Graph side only. Touch source code only to pinpoint entry points; mapping code execution is the Coder's survey.
 
-- **Promote.** Thread content that recurs across tasks goes to `concepts.md`; anything more settled goes to the formal doc that owns it, with provenance placed at the origin (*Provenance at the origin*, below).
-- **Dashboard.** Bring the topic's discussion `## Dashboard` up to date, so the user's view still shows the topic's current state.
-- **Check.** `aperas check-links` once, over the whole batch.
-- **Project and stage** every artifact the task changed.
-- **Prune** only if a thread warned about its size cap: tombstone finished tasks whose content has been promoted, with an ordinary `remove`. Never the current task.
+### B. Filing Turn (After Each Coder Turn)
+- Read the Coder's latest Report in `.threads/coder.md`.
+- Record findings into the task's `discussion` Freeflow, then promote to `issues/`/`history/`/`design/` as earned.
+- **Copy content up**: Never link down into a thread from the graph above it.
+- Record any discrepancies between code and design as new findings.
+- File every tool gap reported by either role under the appropriate tool concern.
 
-## Writing the graph
+### C. Finishing Turn (Last Turn of a Task)
+1. **Promote**: Move recurring patterns to `concepts.md` and settled outcomes to formal docs with provenance at the origin.
+2. **Dashboard**: Update the topic's `## Dashboard` in `discussion/<topic>.md`.
+3. **Check Links**: Run `aperas check-links` over the whole corpus.
+4. **Project & Stage**: Project modified docs (`aperas project <path> --flush`) and stage `AperasKG/`.
+5. **Prune**: If the thread warned of reaching its size cap, tombstone finished tasks with `aperas remove` (never prune the current task).
 
-### The edit loop
+---
 
-This is the shape of nearly every real task, not only the ones that reach an edit. **Three things put you in the loop:**
+## 3. Writing the Graph (The 6-Step Edit Loop)
 
-- **About to read a concern.** Traversal, not `Read`.
-- **About to read or change source code this graph carries a concern about.** See *Source the graph already has a concern about*, below.
-- **About to change the graph.** The steps below, in full.
+1. **Orient Before Editing**:
+   - Unfold content: `aperas unfold <ref>`.
+   - Check backlinks: `aperas backlinks <id> --text` to evaluate dependents and provenance.
+2. **Locate the Smallest Target Block**:
+   - Target the exact leaf node that needs updating, not the enclosing heading or artifact.
+   - Never copy content from projected `.md` files (which contain injected anchor tags).
+3. **Edit Graph-First via CLI**:
+   - Update existing node: `echo "content" | aperas update <id> --flush`
+   - Insert new node: `echo "- item" | aperas insert <parent-id> --flush`
+   - Reposition node without reminting: `aperas insert <node-id> --after <anchor-id> --flush` (no stdin).
+4. **Verify by Traversal**:
+   - Confirm links actually resolved: `aperas show <id>` or `aperas backlinks <id> --text`.
+   - Do not rely solely on summary lines like `"N resolved"`.
+5. **Deep Write (Update Dependents & Links)**:
+   - Check backlinks and update any dependent blocks that this change makes stale.
+   - When closing an issue, cross-link the issue and the resolving design/fix in both directions.
+6. **Project and Stage**:
+   - Project: `aperas project <path> --flush`
+   - Stage: `git -C AperasKG add <path>`
 
-The opening is the same in all three cases; only the tail differs. A traversal-only task ends after step 1, a source change ends by recording what it found, and a graph change runs the whole thing.
+---
 
-1. **Orient before touching anything — content first, context when the decision is hard.** Start with `aperas unfold <ref>` for children and forward links. Escalate to `aperas backlinks <id> --text` for context. Editing always qualifies, because step 5 cannot work without it.
-2. **Locate the smallest block that actually changed.** Not the artifact, not the enclosing heading: the leaf whose content is wrong. `aperas update`/`aperas insert` work at any level, and targeting something larger means hand-reconstructing every unchanged sibling exactly — where one transcription slip silently tombstones that block and mints a fresh id in its place. **Never reconstruct by copying from an already-*projected* file**: it has anchor tags spliced in that are a projection artifact, not content, and piping them back bakes them into the block's stored text as prose.
-3. **Edit graph-first.** Pipe replacement content to `aperas update <id>`; `aperas insert` for genuinely new content; a stdin-less `insert` to *move* a node rather than recreate it. Never a direct edit of the file on disk followed by re-ingesting — that is `kg-doc-ingest`'s disk-first direction, correct only for text not yet in the graph. (Caught live by direct user callout: doing this once for a wikilink fix, then having to redo it through `aperas update` to actually fix the workflow.)
-4. **Verify by traversal, not by the summary line.** A reconcile count reports what the command *believes* it did. Proof is a backlink that actually resolves, or `aperas project <path> --dry-run` where the content is actually visible. A push can silently match new content onto an already-tombstoned node's id without reviving it, so it stays invisible while the summary reports it as added — caught live when a Resolved section rendered one fewer bullet than was pushed. Links are the sharpest instance of this, not a special case: a write whose text carries a real citation can report `"N resolved"` and still leave `.links` empty afterward, with nothing else — not the summary, not a plain preview, not the projected file — showing any sign of it. Confirmed live twice in one session, by two unrelated mechanisms: a graph-wide staleness sweep found 9 nodes whose links had silently never resolved at all, and a separate incident later the same session watched four freshly-`"resolved"` links vanish from nodes that had just been moved and re-texted. Treat a link-bearing write as unverified until `aperas show <id>` (or `aperas backlinks <id> --text` from the other end) actually shows the `Link`, the same way step 6 already treats a plain content write as unverified until traversal confirms it. See `issues/linking.md` for the open, still-uninvestigated half of this.
-5. **Deep write — follow what the change made stale, and link what was never linked.** Check backlinks and forward links; update what now disagrees — and add the citation where the change has just made a relationship real. Closing an issue that a design or a fix resolves means linking the two to each other before moving on, in both directions, not only the one that happened to get written first. This is the per-edit instance of dense linking, and the only moment it is cheap: you are already standing where the missing link is visible.
-6. **Project, then stage.** `aperas project <path> --flush`, then `git add` immediately.
+## 4. Preserving Node Identity (Preventing Accidental Tombstones)
 
-### Preserve identity — against any operation that can tombstone a node you meant to keep
+Three common operations can accidentally tombstone and remint node IDs:
+- Using `remove` + `insert` instead of a repositioning move.
+- Calling `aperas update` on a parent heading without `--text-only` (tombstones all children).
+- Pushing a list update where items change nesting depth.
 
-Three different calls reach the same destruction, and only one of them looks like a delete:
+**Best Practices**:
+- **Move nodes cleanly**: Use `aperas insert <node-id> --after <anchor-id> --flush` with **no stdin**.
+- **Retype in place**: Use `aperas retype <ref> --to <type>` to change node kinds without losing identity, backlinks, or history.
+- **Heading updates**: Always pass `--text-only` when retitling headings to protect child nodes.
 
-- `remove` + `insert` — the obvious one.
-- `aperas update` on a **parent heading** — reconciliation tombstones and remints the subtree as a *side effect*; nothing in the intent resembles deleting, and the word `remove` is never typed.
-- a full-list push whose items **change depth** — matching is defeated entirely, so every id is recreated.
+---
 
-`aperas insert <node-id> --after/--before <anchor>` with **no stdin piped** repositions that exact node — the anchor's current parent becomes its new parent, cross-parent moves included. It preserves the id, every backlink to it, and its place in history. Reach for anything else only when the wording is changing enough that it is genuinely not the same item any more — and even then, a move followed by a separate `--text-only` edit keeps the id while changing only what actually changed.
+## 5. Provenance at the Origin
 
-A **type or heading-depth change** used to be a fourth way into that destruction, and the least obvious: every ordinary write pins `type` to the target's existing one and refuses a depth change outright, so converting a heading into a list item had no route but `remove` + `insert`. `aperas retype <ref> --to <type>` now does it in place with identity intact (*Mechanics*). Nothing else here relaxes — it is one narrow migration channel, not a licence to restructure through ordinary edits.
+Citation direction allows links to point **UP** or **SIDEWAYS**, never **DOWN**:
+- When promoting a finding from `discussion/` into `issues/` or `design/`, the formal doc cannot link down to the discussion node.
+- **Solution**: Add the link at the **origin** (the discussion node):
+  ```markdown
+  - Promoted to [Title](../issues/concern.md#id/BlockNode:00XXXXXXXX000)
+  ```
+- Provenance surfaces automatically on the formal doc as a backlink (`aperas backlinks <id> --text`).
 
-Zero backlinks is not a licence. The rule also protects a node's place in history, which backlink count has no bearing on.
+---
 
-Caught live twice: promoting two findings into a new section via `remove` + `insert` left two needlessly tombstoned orphans for a relocation a plain move would have handled with zero churn; and regrouping a flat 17-item list under three new sub-headings as a single parent-heading `update` returned `0 matched, 20 added, 17 removed`. Redone as create-headings-with-anchors, then move each item, then set the run-leader props per batch — all 17 ids survived. See *Adding an item to an existing list* (Mechanics) for the matching promise this rule constrains.
+## 6. Grapher Tool Mechanics
 
-### Provenance at the origin
-
-Base's *Every claim carries its source* applies to you at its strongest, since the formal docs are yours alone to write. Direction decides which end the link lives at, never whether it exists. When a finding crystallizes *up* out of `discussion` into `issues`/`design`/`planning`/`history`, the new entry cannot cite the discussion entry it came from — that is a down-citation. So the link is added at the **origin** instead: the discussion entry gains "promoted to `issues/<concern>.md`" with a real wikilink, pointing up. The provenance then surfaces from the new entry's side for free, as a backlink.
-
-**This is a property of the claim, not a step in the promotion ritual.** An edit that adds supporting evidence to an entry already sitting in the doc is not a promotion, and is covered exactly the same. Caught live: a planning entry was edited to cite three recorded observations and came out with `links: 0` — complete-looking from its own side, caught only when a reader ran `backlinks` on it. The same unguarded gap passed an inferred version number written as recorded fact, and a paraphrase set in quotation marks as though it were a logged prompt. Every mechanical check in this file passed on that edit; all of them ask whether the write landed, none asks whether what was written is true.
-
-A formal doc whose entries paraphrase confirmed findings without linking them reads as complete from its own side — nothing about it looks unfinished — while `aperas backlinks` on every one of its entries returns nothing, and the provenance survives only in the head of whoever filed it. Caught live: seven issues compiled into a new concern doc from findings recorded across four different discussion docs, every origin left unlinked, noticed only by direct user callout.
-
-This is the topology half of crystallization, stated at Philosophy above: a relationship first mediated by a discussion node becomes a direct citation once it proves load-bearing.
-
-### The dense-linking pass
-
-Occasionally, and deliberately, work the relationships instead of the content. Bring distant nodes into one view, then take each pair in turn and ask whether a real, nameable dependency exists. If one does and a plain citation carries it, link directly, respecting direction. If stating it takes judgment, write a mediating discussion node that cites both ends and holds the reasoning in its own text.
-
-The counterweight matters as much as the practice: **do not manufacture links.** Two docs sharing a corpus, or sharing vocabulary, is not a dependency. The test is whether you can say in one sentence what one owes the other. A pass that adds twenty weak links has made the graph harder to traverse, not denser — deep read now descends into noise.
-
-Run it when a concern set has grown without anyone standing back from it, when two concerns keep coming up together, or when one finding turns out to have been recorded in several places independently. That last case is itself the evidence: the relationship existed and nothing captured it.
-
-### Discussion is where meta-info is born
-
-Not a sink for what didn't fit elsewhere. `discussion` is the Apeiron-equivalent concern: unbound, schema-free, where every comment, assertion and reasoning trace originates before anything is decided about where — or whether — it belongs elsewhere. `design`/`issues`/`planning`/`history` are Peras: typed projections that specific *kinds* of content get promoted into, once a dedicated home for that kind has actually been designed. Most things never need promoting at all.
-
-So something surfacing mid-task that isn't what the task is about — an engine bug found while migrating docs, say — starts in *this* task's discussion doc and stays there for as long as no dedicated home exists, possibly indefinitely. The test is not "is there an existing doc this could plausibly belong to" but "has a dedicated home for this actually been designed yet". Confirmed wrong live: two parser bugs were filed straight into `issues/packaging.md` on the assumption a finding needs an immediate formal home — wrong twice over, since packaging wasn't even the right eventual concern, and since reaching for promotion skipped the point of having a discussion sink at all.
-
-See `design/documentation.md` for the concern taxonomy and the Freeflow document shape (an unbounded *list*, not a growing set of headings).
-
-### The end-of-batch link check
-
-**At the end of a batch — not after each step — run `aperas check-links` once before handing back.** The per-write check the service runs on its own only sweeps the artifact that was written; this is the pass that catches the damage that lands *elsewhere* — an edit in artifact A breaking a citation that lives in artifact B, which nothing scoped to A can see. It costs about 0.6s against the whole corpus, so the reason to run it once per batch rather than per edit is noise, not expense.
-
-The other two link checks need nothing from you, and that is the point — the two recorded losses were both found by a human happening to look, never by a check that fired. The service now sweeps the written artifact after every `update`/`insert`/`remove` and reports anything that write resolved but failed to persist, right under the write's own `Links: N resolved…` line; and it sweeps the whole corpus at startup and on `reload`, carrying any finding on *every* later response until it clears. When either one speaks up, it is describing a link that already looks fine everywhere else — treat it as real and re-run the write (which has fixed it before) or `aperas check-links --repair`.
-
-## Mechanics only the grapher needs
-
-### Checking the skill against its own record
-
-`SKILL.md` is a *generative* projection of its concern — authored from design rather than serialized by a command — so unlike an `aperas project` artifact it can drift from its source with nothing detecting it. `skill_drift.py`, in the base `aperas` skill's `scripts/`, compares the file against the graph's record of it (the latest snapshot plus the deltas above it). From the repo root:
-
+### Skill Drift Verification
+When modifying skill files, verify consistency with the graph record:
 ```bash
-skills/aperas/scripts/skill_drift.py              # both directions
-skills/aperas/scripts/skill_drift.py --added      # written into the file, never recorded
-skills/aperas/scripts/skill_drift.py --dropped    # recorded, no longer in the file
+python3 skills/aperas/scripts/skill_drift.py              # Check both added and dropped
+python3 skills/aperas/scripts/skill_drift.py --added      # Units in file not in graph
+python3 skills/aperas/scripts/skill_drift.py --dropped    # Units in graph not in file
 ```
 
-A delta entry that replaces rather than adds carries a `Supersedes: [title](#id/BlockNode:...)` line naming the item it retires, which is what lets the check tell a deliberate rewrite from a silent loss.
-
-Run it after editing this file, before considering the edit done. *Added* is the check that matters most — an edit made and not recorded is invisible from the file's own side, which is how three separate additions in one session went unrecorded until a reader noticed. *Dropped* catches the opposite: v1 silently lost one of v0 item 18's three triggers, and nothing flagged it. The *added* side compares each unit in full — one unit per list item, since a list containing even one superseded item no longer appears contiguously in any single record — so a rewording anywhere in a unit is caught. The *dropped* side still matches on a prefix and is correspondingly weaker.
-
-### `aperas check-links` — the standing link-integrity sweep
-
-Answers exactly the question dense linking depends on and nothing else routinely checks: does every internal-style reference a live block's text actually names (`[[code]]`, `aperas://...`, `path#fragment`) have a matching resolved `Link` in that block's own `.links`? `aperas check-links` reports discrepancies; `aperas check-links --repair` re-resolves and flushes them in the same call. It resolves each occurrence for real (the same dispatch `aperas update`/`aperas insert` themselves use, read-only here — never mints a placeholder as a side effect of a scan) rather than guessing from the text, so it correctly stays silent on a code that simply doesn't resolve yet (routine, or already tracked separately as a dangling reference) and only flags a code that resolves to a live target with nothing to show for it in `.links` — the exact, previously-invisible failure mode this tool exists for.
+### Full Link Integrity Sweep
+```bash
+aperas check-links                            # Identify broken or unpersisted links
+aperas check-links --repair                   # Re-resolve and persist repairs
+```

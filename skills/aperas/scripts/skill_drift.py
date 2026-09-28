@@ -89,8 +89,8 @@ def subtree_texts(root_id: str, blocks: dict[str, dict]) -> list[tuple[str, str]
         # something the file should be expected to contain.
         body = "" if nid == root_id else norm(node.get("text") or "")
         # A fenced block stores its own ``` markers; the file's frontmatter
-        # carries none, so strip them before comparing.
-        body = re.sub(r"^```\w*\s*|\s*```$", "", body)
+        # carries none, so strip them before comparing. Strip embedded code fences as well.
+        body = norm(re.sub(r"```\w*", "", body))
         # A Supersedes: marker is delta bookkeeping, not skill text — it is
         # never expected to appear in the file, so it must not read as dropped.
         body = norm(SUPERSEDES_RE.sub("", body))
@@ -172,7 +172,9 @@ def file_units(path: Path) -> list[tuple[str, str]]:
           # contiguously in any one record, so comparing a whole list must
           # fail — and would fail as a false positive, not a real finding.
           for para in re.split(r"\n(?=\s*(?:[-*+]|\d+\.)\s)", para):
-            para = re.sub(r"^\s*(?:[-*+]|\d+\.)\s+", "", para, flags=re.M)
+            # Strip list bullet markers and optional task list checkbox markers ([ ] / [x])
+            # so items compare directly to the AST-parsed text property in the graph.
+            para = re.sub(r"^\s*(?:[-*+]|\d+\.)\s+(?:\[[ xX]?\]\s+)?", "", para, flags=re.M)
             para = norm(re.sub(r"```\w*", "", para))  # fences match the stripped graph side
             if len(para) > 40:  # skip stubs: headings-only, one-liners, fence edges
                 units.append((f"{path.parent.name}: {heading}", para))

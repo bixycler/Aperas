@@ -18,36 +18,60 @@ The base `aperas` skill applies in full. You read the graph for context, change 
 
 ---
 
-## 1. Every Invocation (Turn Protocol)
+## 1. Every Invocation (6-Step Turn Execution Template)
+
+Every coder turn follows this strict 6-step lifecycle:
 
 1. **Read Input View**:
    - Render the incoming Ask:
      ```bash
-     aperas tree --view <p>-orchestrator-coder
+     npm run aperas -- tree --view <p>-orchestrator-coder
      ```
-   - Review any specific nodes named in the dispatch message.
+   - Review any specific nodes named in the dispatch message or Ask.
    - Start from the Grapher's survey cited in the Ask; do not duplicate graph exploration.
-2. **Recover Thread Context**:
-   - Review earlier turns of the active task in `.threads/coder.md`.
-   - Your thread is your complete working memory across invocations.
-3. **Execute Turn Work with Subturns**:
-   - For every tool batch, write a subturn recording:
-     - Files inspected and modified.
-     - Exact test outputs, failure lines, and assertion messages.
-     - Key implementation decisions and rationale.
-4. **Formulate Report**:
-   - Create a `**Report**` node listing files changed, findings, and test status.
-   - Cite relevant graph nodes that the work bears on.
-   - Include any `**Question**` or `**Tool gap — <topic>**` (see below).
-   - Re-root your output view:
-     ```bash
-     aperas zoom <report-id> --view <p>-coder-orchestrator --flush
-     ```
-   - Respond in chat with 1–2 lines naming the view and key status.
-5. **Stage Verified Code**:
-   - Stage tested code changes immediately: `git add <files>` (staging only, never `git commit`).
+   - Recover context from earlier turns in `.threads/coder.md` if continuing an active task.
 
-> **Rule**: A turn is not complete until Step 4 (Report and view zoom) is done.
+2. **Execute Work**:
+   - Perform code inspection or edits according to the turn's scope (survey vs implementation).
+   - Run tests or verification commands.
+   - Keep detailed notes for subturns (files inspected/modified, command outputs, line numbers, test results).
+
+3. **Record Work and Report in a Single Insert**:
+   - Pipe both `- **Work**` and `- **Report**` in a single `insert` command positioned `--after <ask-id>`:
+     ```bash
+     cat << 'EOF' | npm run aperas -- insert <turn-id> --after <ask-id> --flush
+     - **Work**: <approach in a sentence>
+       - Subturn 1 (<focus>): <exact details, files inspected/changed, commands run, failure lines, results>
+       - Subturn 2 (<focus>): <details>
+     - **Report**: <outcome in a sentence>
+       - [<node or file ref>](...) — <what changed, or what it shows>
+       - **Question**: <whatever the Ask left unsettled or unexpected code behaviors>
+       - **Tool gap — <what>**: <workaround built, call that failed or hung>
+     EOF
+     ```
+   - *Note*: Writing Work and Report in a single piped AST insertion guarantees atomic recording and avoids orphan nodes.
+
+4. **Zoom Output View**:
+   - Re-root your output view onto the newly inserted Report node ID:
+     ```bash
+     npm run aperas -- zoom <report-id> --view <p>-coder-orchestrator --flush
+     ```
+
+5. **Project Thread Shadow**:
+   - Project the updated thread back to the disk mirror (pipe `echo yes` to handle any overwrite prompts):
+     ```bash
+     echo yes | npm run aperas -- project .threads/coder.md --flush
+     ```
+
+6. **Verify View & Respond**:
+   - Verify that your output view renders correctly:
+     ```bash
+     npm run aperas -- tree --view <p>-coder-orchestrator
+     ```
+   - Stage verified code changes immediately: `git add <files>` (staging only, never `git commit`).
+   - Respond to the Orchestrator in chat with 1–2 lines naming the view and key status.
+
+> **Rule**: A turn is not complete until Step 6 (verified view and reply) is done.
 
 ---
 
@@ -104,3 +128,9 @@ Always compare what the code actually does against what `design/` specifies. Tha
 - **Write only in your thread**: Never write directly to discussion, issues, design, or another agent's thread. Report findings in `.threads/coder.md` for the Grapher to file.
 - **Never touch `artifacts/**.md` files directly**: Never use `view_file` or edit markdown projections on disk.
 - **Never omit subturns**: Results and tool friction not captured in subturns are permanently lost to subsequent turns.
+
+---
+
+## 6. Complete CLI Syntax Reference
+
+For complete CLI syntax, anchor rules, list insertion mechanics, `--after` positioning, `--text-only` updates, or troubleshooting, refer directly to **Section 4 (Mechanics)** of the base skill (`skills/aperas/SKILL.md`).

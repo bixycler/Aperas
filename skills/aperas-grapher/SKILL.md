@@ -18,36 +18,61 @@ The base `aperas` skill applies in full. You perform deep reads, deep writes, pr
 
 ---
 
-## 1. Every Invocation (Turn Protocol)
+## 1. Every Invocation (6-Step Turn Execution Template)
+
+Every grapher turn follows this strict 6-step lifecycle:
 
 1. **Read Input View**:
    - Render the incoming Ask:
      ```bash
-     aperas tree --view <p>-orchestrator-grapher
+     npm run aperas -- tree --view <p>-orchestrator-grapher
      ```
-   - Review any specific nodes named in the dispatch message.
-2. **Recover Thread Context**:
-   - Review earlier turns of the active task in `.threads/grapher.md`.
-3. **Execute Turn Work with Subturns**:
-   - Write subturns recording:
-     - Nodes unfolded, checked, and modified.
-     - Results of `backlinks` and traversal checks.
-     - Concrete findings, drift detected, and decisions made.
-4. **Formulate Report**:
-   - Create a `**Report**` node citing what changed or what was surveyed.
-   - List any open questions (`**Question**`) or tool gaps (`**Tool gap — <topic>**`).
-   - Re-root your output view:
+   - Review any specific nodes named in the dispatch message or Ask.
+   - Recover context from earlier turns in `.threads/grapher.md` if continuing an active task.
+
+2. **Execute Work**:
+   - Perform graph surveys, deep reads, deep writes, promotions, or thread lifecycle updates.
+   - Keep detailed notes for subturns (nodes unfolded, checked, modified, backlinks verified, decisions made).
+
+3. **Record Work and Report in a Single Insert**:
+   - Pipe both `- **Work**` and `- **Report**` in a single `insert` command positioned `--after <ask-id>`:
      ```bash
-     aperas zoom <report-id> --view <p>-grapher-orchestrator --flush
+     cat << 'EOF' | npm run aperas -- insert <turn-id> --after <ask-id> --flush
+     - **Work**: <approach in a sentence>
+       - Subturn 1 (<focus>): <exact details, nodes unfolded/modified, traversal checks, results>
+       - Subturn 2 (<focus>): <details>
+     - **Report**: <outcome in a sentence>
+       - [<node or doc ref>](...) — <what changed, or what it shows>
+       - **Question**: <whatever the Ask left unsettled or unexpected graph state>
+       - **Tool gap — <what>**: <workaround built, call that failed or hung>
+     EOF
      ```
-   - Respond in chat with 1–2 lines naming the view and key status.
-5. **Stage Verified Graph Mutations**:
-   - Stage changes in `AperasKG/`:
+   - *Note*: Writing Work and Report in a single piped AST insertion guarantees atomic recording and avoids orphan nodes.
+
+4. **Zoom Output View**:
+   - Re-root your output view onto the newly inserted Report node ID:
+     ```bash
+     npm run aperas -- zoom <report-id> --view <p>-grapher-orchestrator --flush
+     ```
+
+5. **Project Thread Shadow**:
+   - Project the updated thread back to the disk mirror (pipe `echo yes` to handle any overwrite prompts):
+     ```bash
+     echo yes | npm run aperas -- project .threads/grapher.md --flush
+     ```
+
+6. **Verify View & Respond**:
+   - Verify that your output view renders correctly:
+     ```bash
+     npm run aperas -- tree --view <p>-grapher-orchestrator
+     ```
+   - Stage verified graph mutations in `AperasKG/`:
      ```bash
      git -C AperasKG add -u
      ```
+   - Respond to the Orchestrator in chat with 1–2 lines naming the view and key status.
 
-> **Rule**: A turn is not complete until Step 4 (Report and view zoom) is done.
+> **Rule**: A turn is not complete until Step 6 (verified view and reply) is done.
 
 ---
 
@@ -141,3 +166,9 @@ python3 skills/aperas/scripts/skill_drift.py --dropped    # Units in graph not i
 aperas check-links                            # Identify broken or unpersisted links
 aperas check-links --repair                   # Re-resolve and persist repairs
 ```
+
+---
+
+## 7. Complete CLI Syntax Reference
+
+For complete CLI syntax, anchor rules, list insertion mechanics, `--after` positioning, `--text-only` updates, or troubleshooting, refer directly to **Section 4 (Mechanics)** of the base skill (`skills/aperas/SKILL.md`).

@@ -19,9 +19,20 @@ Aperas is an evidence-based knowledge-graph documentation system. This skill est
 
 ---
 
+## Table of Contents
+
+- [1. Philosophy](#1-philosophy) — Foundational principles (Apeiron as source, substance maturity, provenance)
+- [2. Orientation](#2-orientation) — Initial gates, view triage, entering the corpus, traversal directions
+- [3. Discipline](#3-discipline) — Three roles, 9-step task loop, thread structure, zooming, citation gradients
+- [4. Mechanics](#4-mechanics) — Command references, CLI piping recipes, node editing, service lifecycle, link checks
+- [5. Reference](#5-reference) — Canonical specifications and open tool gaps
+
+---
+
 ## 1. Philosophy
 
 ### The Apeiron is the source; `.md` files under `artifacts/` are shadows it casts
+- **Node reference, not file path**: Any `.md` mentioned in Aperas skills or given to you is a node reference, not a file path. Any attempt to access, list, or inspect it with filesystem tools (`view_file`, `cat`, `ls`) mistakes the shadow for the source.
 - Projections can be regenerated from the graph at any time.
 - A projected markdown file is never where a change is made, and never where a question is answered.
 - Modifying a projection mistakes the shadow for the source. Reading it gives text stripped of links, backlinks, and graph position.
@@ -79,6 +90,9 @@ Choose an entry strategy based on your starting point:
     grep -n -C3 '<identifier>' AperasKG/Apeiron/BlockNode.jsonld
     ```
     `-C3` context is essential to capture the `@id` line and surrounding fields (which vary in position).
+    > [!WARNING]
+    > **Grep on symlinks (`git grep` and `grep -r` skip `AperasKG`)**:
+    > `git grep` and standard `grep -r` (lowercase `-r`) do **not** follow symlinks and will silently skip `AperasKG` when run from the code repo root! Always use `grep -R` (uppercase `-R`) to follow symlinks when searching across repos, or target `AperasKG/Apeiron/BlockNode.jsonld` directly. When running commands from `monorepo/`, target `../AperasKG/Apeiron/BlockNode.jsonld`.
   - Unfold the matching candidate node: `aperas unfold <id>`.
   - Climb upward via its forward links until you reach `design`.
 - **Finding Drift**: Drift is the discrepancy where top-down design and bottom-up code/findings meet. Run both directions to confirm alignment.
@@ -116,19 +130,22 @@ Every graph traversal moves along three distinct axes:
 
 ### The Task Loop (9 Steps)
 
-1. **Open Task**: Orchestrator creates `## <topic>` and `### <task>` in `.threads/grapher.md` and `.threads/coder.md`.
+1. **Open Task**: Orchestrator creates `## <topic>` and `### <task>` in `.threads/grapher.md` and `.threads/coder.md` via graph CLI recipes (see [Step 1 Thread Initialization CLI Recipes](#step-1-thread-initialization-cli-recipes)). Never inspect or touch `.threads/` with filesystem tools.
 2. **Grapher Survey**: Grapher surveys graph context (design, issues, drift), writes Report in `.threads/grapher.md`.
 3. **Orchestrator Review**: Orchestrator reads Grapher Report (`aperas tree --view <p>-grapher-orchestrator`).
 4. **Coder Survey**: Orchestrator asks Coder to map code behavior (no code edits). Coder reports in `.threads/coder.md`.
 5. **Grapher Files Survey**: Grapher records Coder findings into graph.
 6. **Coder Change**: Coder applies fix and runs tests, reporting diff and results.
-7. **Orchestrator Verification**: Orchestrator verifies diff and test output directly (`npm run verify`).
+7. **Orchestrator Verification**: Orchestrator verifies diff and test output directly (`npm run verify` for code/engine changes; for skill-only tasks, strictly run `python3 skills/aperas/scripts/skill_drift.py` and `npm run aperas -- check-links` — never run `npm run verify` on skill tasks).
 8. **Grapher Files Result**: Grapher promotes findings, marks issues resolved.
 9. **Finishing Turn**: Repeat steps 6–8 as needed, then Grapher executes the finishing turn.
 
 ### Thread Structure (`.threads/{grapher,coder}.md`)
 
-Threads are stored under `.threads/` and are **Git-ignored**. Nothing above the thread tier links into a thread.
+> [!IMPORTANT]
+> **`.threads/` is a graph path, not a local directory**:
+> `.threads/` is a graph node path rooted under `artifacts/.threads/` in `AperasKG/`. Projections under `artifacts/.threads/` are Git-ignored in `AperasKG`.
+> There is no `.threads/` directory in the `Aperas/` code repository. Never run `ls .threads/` or `cat .threads/...`. Access threads strictly through graph commands (`npm run aperas -- tree .threads/grapher.md`, `npm run aperas -- show .threads/grapher.md`).
 
 A thread represents the complete working memory of a subagent across turns. When starting a fresh thread or continuing an existing one, use this tree structure:
 
@@ -147,6 +164,32 @@ A thread represents the complete working memory of a subagent across turns. When
   - **Question**: <whatever the Ask left unsettled>
   - **Tool gap — <what>**: <a workaround built, a call that failed or hung>
   - **Tool gap — <what else>**: <a second one, if the turn hit more than one>
+```
+
+#### Step 1 Thread Initialization CLI Recipes
+When opening a task in Step 1 of the task loop, use these graph CLI commands without touching the disk:
+
+```bash
+# 1. Inspect existing thread tree to locate the topic or root ID:
+npm run aperas -- tree .threads/grapher.md
+# (To resolve the ArtifactNode ID if starting fresh: npm run aperas -- show .threads/grapher.md)
+
+# 2. Insert ## <topic> heading if it does not yet exist:
+echo "## <topic-name>" | npm run aperas -- insert <thread-root-id> --flush
+
+# 3. Insert ### <task> heading under the topic:
+echo "### <task-name>" | npm run aperas -- insert <topic-heading-id> --flush
+
+# 4. Insert #### Turn 1 heading under the task:
+echo "#### Turn 1" | npm run aperas -- insert <task-heading-id> --flush
+
+# 5. Insert initial **Ask** with Freeflow citation under the turn heading:
+cat << 'EOF' | npm run aperas -- insert <turn-heading-id> --flush
+- **Ask**: <what is wanted, in a sentence>
+  - [<Freeflow decision>](../discussion/<topic>.md#id/BlockNode:<ID>) — why it matters here
+EOF
+
+# 6. Repeat for .threads/coder.md when opening coder turns.
 ```
 
 #### Core Thread Disciplines
@@ -216,10 +259,11 @@ threads (least abstract — Git-ignored)
 | **Render View Tree** | `aperas tree --view <name>` | Renders structured lens of the view |
 | **Raw Stored Text** | `aperas show <ref> --text` | Exact stored text undecorated (safe for editing) |
 | **Full Node State** | `aperas show <ref>` | Inspects props, tombstonedAt, links, parent, children |
-| **Insert Turn Node** | `cat ask.md \| aperas insert <turn-id> --flush` | Appends Ask/Report node to turn heading |
+| **Insert Turn Node** | `cat turn.md \| aperas insert <turn-id> --after <ask-id> --flush` | Pipes markdown subtree; appends or positions `--after` anchor |
 | **Zoom View** | `aperas zoom <node-id> --view <name> --flush` | Re-roots view onto current Ask or Report |
 | **Retitle Heading** | `echo "## Title" \| aperas update <id> --text-only --flush` | **Must use `--text-only`** to preserve child blocks |
-| **Update List Item** | `echo "text" \| aperas update <id> --flush` | Bare text replaces text and children |
+| **Update List Item** | `echo "text" \| aperas update <id> --text-only --flush` | Bare text updates text/title while **preserving children** |
+| **Replace List Item** | `echo "text" \| aperas update <id> --flush` | Bare text replaces text and **tombstones unstated children** |
 | **Clear Checkbox** | `echo "- text" \| aperas update <id> --flush` | Bare bullet `- ` removes checkbox entirely |
 | **Insert List Item** | `echo "- text" \| aperas insert <parent> --after <sibling> --flush` | Unordered items **must include bullet `- `** |
 | **Reposition Node** | `aperas insert <node-id> --after <anchor-id> --flush` | **No stdin piped** moves node without reminting ID |
@@ -239,12 +283,13 @@ aperas tree --view <name>                     # Render view tree
 aperas show <ref> --text                      # Stored text only (undecorated)
 
 # 2. Turns & Hand-Off Zooming
-cat ask.md | aperas insert <turn-id> --flush  # Insert Ask/Report node
+cat turn.md | aperas insert <turn-id> --after <ask-id> --flush # Insert Work + Report tree after Ask
 aperas zoom <node-id> --view <name> --flush   # Re-root view onto node
 
 # 3. Safe Edits
-echo "## New Title" | aperas update <heading-id> --text-only --flush   # Heading update
-echo "Updated content" | aperas update <item-id> --flush               # List item update
+echo "## New Title" | aperas update <heading-id> --text-only --flush   # Heading update (preserves children)
+echo "Updated text" | aperas update <item-id> --text-only --flush      # List item update (preserves children)
+echo "Replaced item" | aperas update <item-id> --flush                 # Replaces text AND tombstones children
 echo "- New child" | aperas insert <parent-id> --after <sibling-id> --flush # List item insert
 
 # 4. Service & Integrity
@@ -254,10 +299,22 @@ aperas service restart                        # Flush and restart service daemon
 aperas reload -- --discard                    # Discard memory state and re-read disk
 ```
 
-### Path Resolution
-Paths passed to `aperas` CLI resolve relative to the graph's `artifacts` root defined in `aperas.config.json` (e.g. `discussion/foo.md` relative to `AperasKG/artifacts/`).
-- **CORRECT**: `aperas project discussion/foo.md`
-- **INCORRECT**: `aperas project AperasKG/artifacts/discussion/foo.md` (fails with "No ingested ArtifactNode or FolderNode found").
+### Path Resolution & Two-Repo Architecture
+The Aperas workspace is split across two sibling git repositories:
+- `Aperas/`: The code repository containing `monorepo/`, packages, and skills.
+- `AperasKG/`: The knowledge graph repository containing `Apeiron/` (the raw store mirror) and `artifacts/` (projected markdown docs).
+
+Within `Aperas/`, a tracked symlink points to the graph repository:
+```
+Aperas/AperasKG -> ../AperasKG
+```
+
+**Resolution Rule**:
+Paths passed to the `aperas` CLI always resolve relative to the graph's `artifacts` root defined in `aperas.config.json` (i.e. `AperasKG/artifacts/`), **never** against the filesystem `$CWD` or code repository root.
+- **CORRECT**: `npm run aperas -- project discussion/foo.md`
+- **CORRECT**: `npm run aperas -- tree .threads/coder.md`
+- **INCORRECT**: `npm run aperas -- project AperasKG/artifacts/discussion/foo.md` (fails with "No ingested ArtifactNode or FolderNode found").
+- **INCORRECT**: Resolving `.threads/` against `$CWD` (`Aperas/.threads/` does not exist on disk).
 
 ### Wikilink & Link Syntax
 The link resolver recognizes:
@@ -282,10 +339,12 @@ Build new headings or subtrees directly in the graph with zero disk-first author
    ```
 2. Populate content using `aperas update` and `aperas insert`.
 
-### `--after` and `--before` Anchors
-The anchor node must be a **direct child** of `<path>`, not a descendant:
-- Check tree structure first via `aperas tree` or `aperas show <path>`.
-- If an anchor is invalid, the insert fails after hydrating nodes into memory, leaving live orphans. Recover by running `aperas reload -- --discard`.
+### Multi-Node Tree Piping and `--after` Anchors
+Markdown piped into `aperas insert <parent-id> [--after <anchor-id>]` parses into an AST and inserts the entire subtree:
+- **Multi-node piping**: You can pipe multiple top-level list items or paragraphs in a single command (e.g. piping `- **Work**: ...` and `- **Report**: ...` together). All piped root items are inserted as direct children under `<parent-id>`.
+- **Hierarchical nesting**: Nested sub-bullets beneath piped items parse into child BlockNodes cleanly attached to their parent items.
+- **Anchor positioning**: The `--after <anchor-id>` flag positions the inserted batch directly after the specified anchor child (e.g. inserting Work and Report after the turn's `**Ask**` node).
+- **Anchor constraint**: The anchor node must be a **direct child** of `<parent-id>`, not a descendant. Check tree structure first via `aperas tree` or `aperas show <parent-id>`. If an anchor is invalid, the insert fails after hydrating nodes into memory, leaving live orphans. Recover by running `aperas reload -- --discard`.
 
 ### Inserting into Lists
 
@@ -302,11 +361,17 @@ The anchor node must be a **direct child** of `<path>`, not a descendant:
 
 ### Updating an Existing List Item (`aperas update <item-id>`)
 
-- **Ordinary text change**: Pipe bare text with **no bullet marker**:
+- **Preserving Children with `--text-only`**:
+  ```bash
+  echo "updated text" | aperas update <item-id> --text-only --flush
+  ```
+  `--text-only` updates the item's `.text` (and `.title` if a lead-in exists) while leaving all existing child blocks completely untouched.
+- **Ordinary text change without `--text-only`**:
+  Pipe bare text with **no bullet marker**:
   ```bash
   echo "updated text" | aperas update <item-id> --flush
   ```
-  *Note*: This replaces the item's text **and its children**. Restate children if you want to keep them.
+  *Note*: Without `--text-only`, this replaces the item's text **and reconciles its children** (tombstoning any unstated child blocks).
 - **Checkboxes**:
   - Marker `- [x]` or `- [ ]` sets checkbox state.
   - Bare `- ` with text (marker-less bullet) **removes an existing checkbox entirely**.
@@ -315,7 +380,7 @@ The anchor node must be a **direct child** of `<path>`, not a descendant:
   - Updating an item never changes its position in the list (ordered or unordered, its sequence position is preserved). To reorder or renumber, update the parent heading with the complete list.
 - **Deliberately blank text**: A bare `- ` (bullet with nothing after it) clears the item's text while allowing children to be attached.
 - **Title Tracking**: The title updates if text has a bold lead-in (`**Term**: ...`). Without one, title falls back to the item's ID.
-- **Symmetry Rule**: Whichever piece you do not restate is wiped. If you pipe only text with no children, existing children are tombstoned. Restate whichever side you are not modifying.
+- **Symmetry Rule**: Whichever piece you do not restate without `--text-only` is wiped. If you pipe only text with no children and no `--text-only`, existing children are tombstoned. Restate whichever side you are not modifying, or use `--text-only`.
 
 ### Updating a Heading (`--text-only`)
 - Calling `aperas update <heading-id>` without `--text-only` reconciles children against piped input. Piping just `## Title` tombstones all existing child blocks!
@@ -383,6 +448,9 @@ grep -n -C3 '<pattern>' AperasKG/Apeiron/BlockNode.jsonld
 ```
 Matches are candidate IDs. Always inspect live status via `aperas show <id>`.
 
+> [!WARNING]
+> `git grep` and `grep -r` skip symlinked directories like `AperasKG -> ../AperasKG`. Always use `grep -R` to follow symlinks, or specify the path directly (e.g. `grep -n -C3 '<pattern>' AperasKG/Apeiron/BlockNode.jsonld` from repo root, or `../AperasKG/Apeiron/BlockNode.jsonld` from `monorepo/`).
+
 ### Comparing Distant Docs (View as a Lens)
 Use `--view` to bring distant parts of the tree together side by side:
 ```bash
@@ -403,6 +471,14 @@ The first line of an `aperas tree` render is a breadcrumb: `aperas://tree/<path>
 aperas check-links           # Sweep corpus for unresolved internal wikilinks
 aperas check-links --repair  # Re-resolve and persist repairs to store
 ```
+
+### Verification Scope — Code vs. Skills
+- **Code/Engine changes**: Run `npm run verify` (from `monorepo/`) to execute build, lint, and engine tests.
+- **Skill-only changes**: Strictly **NEVER** run `npm run verify`! Running full test suites on skill edits causes unnecessary hangs, compute waste, and test timeouts. For skill-only changes, verify using:
+  ```bash
+  python3 skills/aperas/scripts/skill_drift.py
+  npm run aperas -- check-links
+  ```
 
 ---
 

@@ -81,7 +81,7 @@ The user's view is `<p>-<topic>`, zoomed onto `discussion/<topic>.md` `## Dashbo
 ## 4. Running the Task Loop (9 Steps)
 
 1. **Open Task**:
-   - Ensure `## <topic>` and `### <task>` exist in both `.threads/grapher.md` and `.threads/coder.md`.
+   - Ensure `## <topic>` and `### <task>` exist in both `.threads/grapher.md` and `.threads/coder.md` using graph CLI insert commands (see base skill *Step 1 Thread Initialization CLI Recipes*). Never access `.threads/` with filesystem tools.
 2. **Grapher Survey**:
    - Write an **Ask** in `.threads/grapher.md` to survey the graph for the task, citing the Freeflow decision nodes.
    - Zoom `<p>-orchestrator-grapher` onto the Ask.
@@ -111,7 +111,24 @@ The user's view is `<p>-<topic>`, zoomed onto `discussion/<topic>.md` `## Dashbo
 
 ---
 
-## 5. Pre-Send Checklist for Asks
+## 5. Stateless Subagent Dispatch Across Harnesses
+
+> [!CRITICAL]
+> **Universal Dispatch Discipline**:
+> Subagents in Aperas are **stateless workers**. Always dispatch a fresh subagent instance for every turn.
+> **NEVER carry conversation history across turns.**
+
+### Why Stateless Dispatch is Mandatory
+- **Aperas Memory Model**: The Apeiron graph and `.threads/{role}.md` are the working memory, not the LLM's conversation history. Context is recovered cleanly at the start of each turn through the view (`npm run aperas -- tree --view <p>-orchestrator-<role>`) and the thread.
+- **Preventing Transcript Bloat**: Reusing subagent conversation sessions (e.g. via `send_message` in Antigravity) appends turns together, resulting in bloated transcripts (200+ steps, 250+ KB) dragging stale logs, failed tool attempts, and degraded reasoning into subsequent turns.
+
+### Harness Tool Mappings
+- **Antigravity**: Call `invoke_subagent` for every turn. **NEVER** use `send_message` across distinct turns.
+- **Claude Code**: Call `Task` for every turn (inherently ephemeral and stateless).
+
+---
+
+## 6. Pre-Send Checklist for Asks
 
 Before sending any `**Ask**`, verify:
 
@@ -122,23 +139,29 @@ Before sending any `**Ask**`, verify:
 
 ---
 
-## 6. Verification Protocol (Reading for Yourself)
+## 7. Verification Protocol (Reading for Yourself)
 
 In Step 7, verifying the Coder's work is the Orchestrator's responsibility:
 
 1. **Inspect the Code Diff**:
    - Run `git diff` in the code repo to examine exact line changes.
-2. **Run and Validate Tests**:
-   - Execute the repo test command (e.g. `npm run verify` from `monorepo/`).
+2. **Run and Validate Tests (Strict Scope Separation)**:
+   - **For Code/Engine changes**: Execute the repo test command (`npm run verify` from `monorepo/`).
+   - **For Skill-only changes**: Strictly **DO NOT** run `npm run verify`. Instead, run:
+     ```bash
+     python3 skills/aperas/scripts/skill_drift.py
+     npm run aperas -- check-links
+     ```
+     Running `npm run verify` on skill modifications is a severe process violation that leads to test timeouts and compute waste.
 3. **Record Verification Findings in Freeflow**:
-   - Document that the diff and tests were inspected and confirmed clean, citing the file paths and test status.
+   - Document that the diff and tests/drift checks were inspected and confirmed clean, citing the file paths and test status.
 4. **Never Make Code Corrections Yourself**:
    - If a test fails or the diff is incomplete, **DO NOT** edit the source files.
    - Formulate a follow-up `**Ask**` in `.threads/coder.md` and hand it back to the Coder.
 
 ---
 
-## 7. Route Every Step, However Small
+## 8. Route Every Step, However Small
 
 Never bypass the multi-agent loop for "trivial" fixes (e.g. a one-line code patch or a minor doc edit).
 - Doing it yourself skips the backlink checks, provenance recording, and thread checkpoints that maintain graph integrity.

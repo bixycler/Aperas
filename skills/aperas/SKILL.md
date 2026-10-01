@@ -1,7 +1,7 @@
 ---
 name: aperas
 description: >-
-  Before anything else in this project — first turn, every session, whatever the task looks like, including when it looks unrelated, trivial, read-only, or like one quick lookup — check memory for a standing decision on whether Aperas manages this session. Do this without loading this skill, and never ask permission to do it or offer it as an option; just do it. If a decision is recorded, follow it. If none is, ask with AskUserQuestion using exactly these choices — Never / Not now / Yes, this session only / Yes, all sessions — and record only 'all sessions' or 'never' durably, so a session-scoped answer is asked again next session. Load this skill only once the answer is yes, and with it `aperas-orchestrator` if you are the main agent, or the appropriate subagent skill (e.g. `aperas-grapher` or `aperas-coder`) if not. 
+  Before anything else in this project — first turn, every session, whatever the task looks like, including when it looks unrelated, trivial, read-only, or like one quick lookup — check memory/rules for a standing decision on whether Aperas manages this session (`.agents/rules/aperas.md` or harness memory). Do this without loading this skill, and never ask permission to do it or offer it as an option; just do it. If a decision is recorded, follow it. If none is, ask with AskUserQuestion using exactly these choices — Never / Not now / Yes, this session only / Yes, all sessions — and record only 'all sessions' or 'never' durably (into `.agents/rules/aperas.md` or harness memory), so a session-scoped answer is asked again next session. Load this skill only once the answer is yes, and with it `aperas-orchestrator` if you are the main agent, or the appropriate subagent skill (e.g. `aperas-grapher` or `aperas-coder`) if not. 
   Aperas is this project's external memory: a knowledge graph, worked through the `aperas` CLI, holding what has been decided, tried, found and planned, and the medium the three roles communicate through.
 ---
 
@@ -26,6 +26,7 @@ Aperas is an evidence-based knowledge-graph documentation system. This skill est
 - A projected markdown file is never where a change is made, and never where a question is answered.
 - Modifying a projection mistakes the shadow for the source. Reading it gives text stripped of links, backlinks, and graph position.
 - Projections on disk can be **unprojected or stale**. Graph truth lives only in Apeiron.
+- **Native harness artifacts are for human communication only**: Harness-native artifacts (e.g. Antigravity artifacts) exist solely for presenting proposals, alternatives, or visual designs to the human user. They are never a substrate for task planning, execution tracking, or agent coordination; all task state, implementation tracking, and working memory live exclusively in Apeiron and thread files.
 
 ### A claim and its provenance are one object
 - A claim without a link to its source/evidence is incomplete.
@@ -48,19 +49,22 @@ Aperas is an evidence-based knowledge-graph documentation system. This skill est
 > **NEVER START WITH** file-reading tools (`view_file`, `cat`, `head`, `grep_search`) on any path under `artifacts/` before inspecting the graph via `aperas`.
 > An `artifacts/**.md` path in your hand is a **node reference**, not a file path.
 
-### Three Traversal Directions
-Every graph traversal moves along three distinct axes:
+> [!IMPORTANT]
+> **Always begin with View Triage.** Before any inspection or file access, render the structured lens of active views (see [View Triage & Management](#view-triage--management)).
 
-1. **Forward & Downward (Deeper Content)**:
-   - A block's children and outgoing links: what it is made of and what it refers to.
-   - Command: `aperas unfold <ref>`
-2. **Upward (Surrounding Context)**:
-   - Ancestors: the heading it sits under, the thread it belongs to.
-   - Climb a level at a time and stop once the block's meaning stabilizes.
-3. **Backward (Deeper Context: Dependents & Sources)**:
-   - What relies on this block (impact) and what it rests on (provenance).
-   - Command: `aperas backlinks <id> --text`
-   - Deep read follows sources; **deep write is inherently backward** (you must inspect what a change breaks or makes stale).
+### View Triage & Management
+- **Triage active views**:
+  ```bash
+  aperas profile list <profile>   # e.g. antigravity or claude
+  aperas tree --view <view-name>
+  ```
+- **Manage views**:
+  ```bash
+  aperas profile create-view <name> --profile <handle>
+  aperas unfold <ref> --view <name> --flush
+  aperas fold <ref> --view <name> --flush
+  ```
+- Keep views scoped per task. A view left pointing at last session's work is worse than no view.
 
 ### Entering the Corpus
 Choose an entry strategy based on your starting point:
@@ -79,20 +83,19 @@ Choose an entry strategy based on your starting point:
   - Climb upward via its forward links until you reach `design`.
 - **Finding Drift**: Drift is the discrepancy where top-down design and bottom-up code/findings meet. Run both directions to confirm alignment.
 
-### View Triage & Management
-- Views provide structured lenses into the graph.
-- **Triage active views**:
-  ```bash
-  aperas profile list <profile>   # e.g. antigravity or claude
-  aperas tree --view <view-name>
-  ```
-- **Manage views**:
-  ```bash
-  aperas profile create-view <name> --profile <handle>
-  aperas unfold <ref> --view <name> --flush
-  aperas fold <ref> --view <name> --flush
-  ```
-- Keep views scoped per task. A view left pointing at last session's work is worse than no view.
+### Three Traversal Directions
+Every graph traversal moves along three distinct axes:
+
+1. **Forward & Downward (Deeper Content)**:
+   - A block's children and outgoing links: what it is made of and what it refers to.
+   - Command: `aperas unfold <ref>`
+2. **Upward (Surrounding Context)**:
+   - Ancestors: the heading it sits under, the thread it belongs to.
+   - Climb a level at a time and stop once the block's meaning stabilizes.
+3. **Backward (Deeper Context: Dependents & Sources)**:
+   - What relies on this block (impact) and what it rests on (provenance).
+   - Command: `aperas backlinks <id> --text`
+   - Deep read follows sources; **deep write is inherently backward** (you must inspect what a change breaks or makes stale).
 
 ---
 

@@ -4,6 +4,8 @@ description: >-
   Surveys and changes source code in an Aperas-managed project, starting from the grapher's survey and recording everything it finds in its own thread. The orchestrator hands to it after the grapher has surveyed a task.
 subagent: true
 model: inherit
+enable_write_tools: true
+tools: [run_command, replace_file_content, write_to_file]
 skills: [aperas, aperas-coder]
 ---
 

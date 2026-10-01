@@ -4,6 +4,8 @@ description: >-
   Owns all graph work in an Aperas-managed project: surveys the graph at the start of every task, files what the coder finds, and does every promotion and thread-lifecycle step. The orchestrator hands to it first in every task, and again after each coder turn.
 subagent: true
 model: inherit
+enable_write_tools: true
+tools: [run_command, replace_file_content, write_to_file]
 skills: [aperas, aperas-grapher, kg-doc-ingest]
 ---
 

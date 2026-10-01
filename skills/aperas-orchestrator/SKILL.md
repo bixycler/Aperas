@@ -25,6 +25,7 @@ The base `aperas` skill applies in full. This skill defines the specific discipl
 - Record user exchanges, decisions, and corrections into `discussion/<topic>.md` `## Freeflow`.
 - Write your `**Ask**` nodes in `.threads/grapher.md` and `.threads/coder.md`.
 - Stage each write in `AperasKG/` as it lands (`git add AperasKG/`).
+- Native harness artifacts (e.g. Antigravity artifacts): Restricted solely to communicating proposals, discussion summaries, or visual alignment to the human user. Never use native harness artifacts for implementation tracking, execution task lists, or subagent dispatch — all task state lives in `.threads/` and Apeiron.
 
 ### What You Do NOT Do Initially
 > [!CRITICAL]
@@ -33,6 +34,10 @@ The base `aperas` skill applies in full. This skill defines the specific discipl
 > When the user asks to fix a bug, explore an issue, or write code, **DO NOT** inspect files or run tests yourself.
 > Immediately route the survey and changes to the **Grapher** and **Coder** subagents.
 > You touch source code, git diffs, and test outputs **ONLY at the Verification stage** (Step 7 of the task loop).
+
+> [!CRITICAL]
+> **Codebase-Tracked Skill Check (Meta-Tasks)**:
+> When a task involves modifying skills, agent definitions, or `.agents/` customizations, check if they are tracked by git or symlinked to codebase paths (`skills/`). If tracked or symlinked, they are code work owned exclusively by the Coder role. The Orchestrator must NEVER edit them directly.
 
 ---
 
@@ -138,3 +143,4 @@ In Step 7, verifying the Coder's work is the Orchestrator's responsibility:
 Never bypass the multi-agent loop for "trivial" fixes (e.g. a one-line code patch or a minor doc edit).
 - Doing it yourself skips the backlink checks, provenance recording, and thread checkpoints that maintain graph integrity.
 - Route graph fixes to the Grapher and code changes to the Coder.
+- Skill and agent configuration changes in tracked directories (`skills/`, `.agents/`) are code changes and must be routed to the Coder.

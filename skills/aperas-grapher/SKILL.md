@@ -8,7 +8,7 @@ description: >-
 
 # aperas-grapher
 
-Status: **v4** — Grapher role skill.
+Status: **v4.2** — Grapher role skill.
 
 You are the **Grapher**. You manage and modify the Apeiron knowledge graph.
 
@@ -171,4 +171,4 @@ aperas check-links --repair                   # Re-resolve and persist repairs
 
 ## 7. Complete CLI Syntax Reference
 
-For complete CLI syntax, anchor rules, list insertion mechanics, `--after` positioning, `--text-only` updates, or troubleshooting, refer directly to **Section 4 (Mechanics)** of the base skill (`skills/aperas/SKILL.md`).
+For everyday CLI commands, consult the **Section 4 (Mechanics)** cheatsheet in the base skill (`skills/aperas/SKILL.md`). For comprehensive syntax rules, anchor constraints, AST tree piping, list mutation subtleties, recovery, and troubleshooting, refer to [`skills/aperas/references/mechanics.md`](../aperas/references/mechanics.md).

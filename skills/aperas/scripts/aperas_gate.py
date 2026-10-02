@@ -69,7 +69,7 @@ def main() -> None:
         "editing monorepo source, orient first: `aperas unfold`/`backlinks` on "
         "the relevant concern, or at least read its issues/design/planning doc "
         "under AperasKG/artifacts/ — see the aperas skill. Running any "
-        "`aperas`/`npm run aperas` command opens this gate for the rest of the "
+        "`aperas` command opens this gate for the rest of the "
         "session."
     )
 

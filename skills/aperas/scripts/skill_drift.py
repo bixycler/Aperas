@@ -13,6 +13,18 @@ additions at each minor one. This compares the two.
 
 Read-only by construction: it opens the file and the mirror and prints.
 
+A third check runs in every mode: each skill's `Status:` line must carry the
+same version as the newest recorded delta (or the snapshot, when there are no
+deltas). The versions compare as tuples with trailing zeros trimmed, so v4 equals
+v4.0; a `Status:` line ahead of the graph's record is a finding as well as one
+behind it. Only the four skill files the checker already receives are read, and
+only a line that begins `Status: **vN**`.
+
+Exit status: nonzero (1) when any check in the modes that ran has a finding — a
+Status mismatch, an ADDED-but-unrecorded unit, or a DROPPED-unaccounted item. The
+"superseded, accounted for" list is informational and never affects the exit
+status.
+
 Two directions, two different defects:
 
   *added*   — a section was written into the skill and never recorded as a
@@ -43,6 +55,7 @@ DELTA_RE = re.compile(r"^##\s+v[\d.]+\s+additions", re.I)
 FINGERPRINT_CHARS = 120  # dropped-side only; the added side compares in full
 SUPERSEDES_RE = re.compile(r"^\s*Supersedes:\s*(.+)$", re.M)
 ID_RE = re.compile(r"#id/(BlockNode:[0-9A-Z]+)")
+STATUS_RE = re.compile(r"^Status:\s+\*\*v(\d+(?:\.\d+)*)\*\*", re.M)
 
 
 def find_graph_dir() -> Path:
@@ -157,16 +170,48 @@ def recorded_roots(blocks: dict[str, dict]) -> list[tuple[str, str]]:
     return roots
 
 
+def trimmed(ver: tuple[int, ...]) -> tuple[int, ...]:
+    """Drop trailing zeros so (4,) and (4, 0) compare equal."""
+    out = list(ver)
+    while out and out[-1] == 0:
+        out.pop()
+    return tuple(out)
+
+
+def status_findings(skills: list[Path], roots: list[tuple[str, str]]) -> tuple[tuple[int, ...], list[str]]:
+    """The newest recorded version and one message per skill whose `Status:` line differs from it.
+
+    A line ahead of the graph's record differs just as one behind it does.
+    """
+    newest = max(version_of(label) for _, label in roots)
+    found: list[str] = []
+    for s in skills:
+        m = STATUS_RE.search(s.read_text())
+        if not m:
+            found.append(f"{s.parent.name}: no `Status: **vN**` line")
+            continue
+        ver = tuple(int(x) for x in m.group(1).split("."))
+        if trimmed(ver) != trimmed(newest):
+            side = "ahead of" if trimmed(ver) > trimmed(newest) else "behind"
+            found.append(f"{s.parent.name}: Status v{m.group(1)} is {side} the newest recorded v{'.'.join(map(str, newest))}")
+    return newest, found
+
+
 def file_units(path: Path) -> list[tuple[str, str]]:
     """(heading, paragraph) per paragraph, which is the granularity that matters.
 
     Section-level fingerprints only catch whole new sections; an addition made
     *inside* an existing section keeps that section's opening text and so reads
     as unchanged. Checking each paragraph catches both.
+
+    A paragraph ends at a blank line or at a lone `---` line. The separator rule
+    matters after a list item: with no blank line between them, a `---` would
+    otherwise fold into that item's unit and the unit would never match the
+    graph's text for the item.
     """
     units = []
     for heading, body in _sections(path):
-        for para in re.split(r"\n\s*\n", body):
+        for para in re.split(r"\n\s*\n|^[ \t]*---[ \t]*$", body, flags=re.M):
           # One unit per list item, not per paragraph block. Once any single
           # item has been superseded, the list as a whole no longer appears
           # contiguously in any one record, so comparing a whole list must
@@ -213,6 +258,9 @@ def main() -> None:
     if not roots:
         sys.exit("no snapshot or delta sections found in the graph — nothing to compare against")
 
+    newest, status_bad = status_findings(skills, roots)
+    findings = len(status_bad)
+
     recorded: list[tuple[str, str, str]] = []
     for rid, label in roots:
         for nid, body in subtree_texts(rid, blocks):
@@ -223,6 +271,13 @@ def main() -> None:
         print(f"  {s}")
     for _, label in roots:
         print(f"  {label}")
+    print()
+
+    print(f"STATUS vs newest recorded v{'.'.join(map(str, newest))} — {len(status_bad)}")
+    for msg in status_bad:
+        print(f"  - {msg}")
+    if not status_bad:
+        print("  (none — every Status line matches the newest recorded version)")
     print()
 
     if both or args.added:
@@ -237,6 +292,7 @@ def main() -> None:
         if not missing:
             print("  (none — every section traces to a snapshot or delta)")
         print()
+        findings += len(missing)
 
     if both or args.dropped:
         filetext = norm(" ".join(s.read_text() for s in skills))
@@ -254,12 +310,18 @@ def main() -> None:
             print(f"  - {nid}\n      {b[:100]}…")
         if not unaccounted:
             print("  (none)")
+        findings += len(unaccounted)
 
         if accounted:
             print()
             print(f"superseded, accounted for — {len(accounted)}")
             for nid, b, _ in accounted:
                 print(f"  - {nid}  ← superseded by {sup[nid]}\n      {b[:80]}…")
+
+    if findings:
+        print()
+        print(f"{findings} finding(s) — exit 1")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

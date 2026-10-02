@@ -8,13 +8,11 @@ description: >-
 
 # aperas-grapher
 
-Status: **v4.2** — Grapher role skill.
+Status: **v4.3** — Grapher role skill.
 
 You are the **Grapher**. You manage and modify the Apeiron knowledge graph.
 
 The base `aperas` skill applies in full. You perform deep reads, deep writes, promotions, and thread lifecycle management. You write everything in the graph except the Orchestrator's Freeflow/Asks and the Coder's thread nodes.
-
-> **Aperas-repo insiders**: Run CLI commands from `Aperas/monorepo/` as `npm run aperas -- <verb> ...`. In normal projects using the published package, run bare `aperas <verb> ...`.
 
 ---
 
@@ -25,7 +23,7 @@ Every grapher turn follows this strict 6-step lifecycle:
 1. **Read Input View**:
    - Render the incoming Ask:
      ```bash
-     npm run aperas -- tree --view <p>-orchestrator-grapher
+     aperas tree --view <p>-orchestrator-grapher
      ```
    - Review any specific nodes named in the dispatch message or Ask.
    - Recover context from earlier turns in `.threads/grapher.md` if continuing an active task.
@@ -37,14 +35,14 @@ Every grapher turn follows this strict 6-step lifecycle:
 3. **Record Work and Report in a Single Insert**:
    - Pipe both `- **Work**` and `- **Report**` in a single `insert` command positioned `--after <ask-id>`:
      ```bash
-     cat << 'EOF' | npm run aperas -- insert <turn-id> --after <ask-id> --flush
+     cat << 'EOF' | aperas insert <turn-id> --after <ask-id> --flush
      - **Work**: <approach in a sentence>
        - Subturn 1 (<focus>): <exact details, nodes unfolded/modified, traversal checks, results>
        - Subturn 2 (<focus>): <details>
      - **Report**: <outcome in a sentence>
        - [<node or doc ref>](...) — <what changed, or what it shows>
-       - **Question**: <whatever the Ask left unsettled or unexpected graph state>
-       - **Tool gap — <what>**: <workaround built, call that failed or hung>
+       - **Question — <topic>**: <whatever the Ask left unsettled or unexpected graph state>
+       - **Friction — <topic>**: <a mistake of your own, a tool-use problem, or a tool gap: workaround built, call that failed or hung>
      EOF
      ```
    - *Note*: Writing Work and Report in a single piped AST insertion guarantees atomic recording and avoids orphan nodes.
@@ -52,19 +50,19 @@ Every grapher turn follows this strict 6-step lifecycle:
 4. **Zoom Output View**:
    - Re-root your output view onto the newly inserted Report node ID:
      ```bash
-     npm run aperas -- zoom <report-id> --view <p>-grapher-orchestrator --flush
+     aperas zoom <report-id> --view <p>-grapher-orchestrator --flush
      ```
 
 5. **Project Thread Shadow**:
    - Project the updated thread back to the disk mirror (pipe `echo yes` to handle any overwrite prompts):
      ```bash
-     echo yes | npm run aperas -- project .threads/grapher.md --flush
+     echo yes | aperas project .threads/grapher.md --flush
      ```
 
 6. **Verify View & Respond**:
    - Verify that your output view renders correctly:
      ```bash
-     npm run aperas -- tree --view <p>-grapher-orchestrator
+     aperas tree --view <p>-grapher-orchestrator
      ```
    - Stage verified graph mutations in `AperasKG/`:
      ```bash
@@ -73,6 +71,8 @@ Every grapher turn follows this strict 6-step lifecycle:
    - Respond to the Orchestrator in chat with 1–2 lines naming the view and key status.
 
 > **Rule**: A turn is not complete until Step 6 (verified view and reply) is done.
+
+> **Rule**: Never wait on a silent command beyond one minute. If a graph command, the service or a projection does not answer, wait, poll or retry no more than one minute in total, then record a `**Friction — <topic>**` entry and end the turn with a `**Question — <topic>**`. If the service is down, end the turn and do not restart it; the orchestrator owns the service.
 
 ---
 
@@ -87,13 +87,13 @@ Every grapher turn follows this strict 6-step lifecycle:
 
 ### B. Filing Turn (After Each Coder Turn)
 - Read the Coder's latest Report in `.threads/coder.md`.
-- Record findings into the task's `discussion` Freeflow, then promote to `issues/`/`history/`/`design/` as earned.
+- Record findings into the task's `discussion` Freeflow. Promote a finding that is a defect or a gap to an `issues/` entry in this turn; promoting recurring patterns and settled outcomes waits for the Finishing Turn.
 - **Copy content up**: Never link down into a thread from the graph above it.
 - Record any discrepancies between code and design as new findings.
-- File every tool gap reported by either role under the appropriate tool concern.
+- File each real tool gap reported by either role under the appropriate tool issue; own mistakes and tool-use problems stay in the task's Freeflow.
 
 ### C. Finishing Turn (Last Turn of a Task)
-1. **Promote**: Move recurring patterns to `concepts.md` and settled outcomes to formal docs with provenance at the origin.
+1. **Promote**: Move recurring patterns to `concepts.md` and settled outcomes to design and history with provenance at the origin (defects and gaps were already promoted to `issues/` in the Filing Turn).
 2. **Dashboard**: Update the topic's `## Dashboard` in `discussion/<topic>.md`.
 3. **Check Links**: Run `aperas check-links` over the whole corpus.
 4. **Project & Stage**: Project modified docs (`aperas project <path> --flush`) and stage `AperasKG/`.
@@ -160,6 +160,16 @@ python3 skills/aperas/scripts/skill_drift.py              # Check both added and
 python3 skills/aperas/scripts/skill_drift.py --added      # Units in file not in graph
 python3 skills/aperas/scripts/skill_drift.py --dropped    # Units in graph not in file
 ```
+
+A delta titled vN needs one `Status` entry per skill whose `Status:` line moved, `skill_drift.py` fails when the newest delta's version differs from the `Status:` lines, and a mismatch is a Question to the orchestrator.
+
+#### Recording a skill delta
+- **Entry shape**: Each entry is a block holding the new skill text in full. The checker looks for each skill unit as a substring of the recorded text, and the delta root's own text is commentary that is never compared.
+- **Replacing a unit**: Add a `Supersedes: [title](#id/BlockNode:…)` line to the entry. The checker strips that line before comparing and reads its `#id/` ids; one entry may name several ids. A block made only of `Supersedes:` lines removes a unit with no replacement.
+- **Version label**: It is the first `vN.N` in the delta's title.
+- **40-character limit**: Skill units of 40 characters or fewer are skipped, so they can be neither recorded nor checked; the `Status:` guard covers the `Status:` lines separately.
+- **Order of work**: The Coder edits the file and drift fails, listing the added and dropped units (truncated to 100 and 80 characters). Match each added unit to the dropped unit it replaces, record the delta, and re-run until the exit status is 0 with 0 Status, 0 added and 0 dropped findings.
+- **Unreleased or released**: Update the entries of an unreleased delta in place; supersede the entries of a released delta.
 
 ### Full Link Integrity Sweep
 ```bash

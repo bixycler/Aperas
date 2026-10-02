@@ -13,7 +13,7 @@ description: >-
 
 Status: **v0** — the core ingest/round-trip/wikilink loop was verified end-to-end on `design/documentation.md` + `discussion/documentation.md` + `issues/documentation.md`, then again migrating a `cli.md` doc set. The general graph-editing discipline this skill used to also carry (staging practice, wikilink syntax, renaming, discussion-before-execution, ...) moved to the `aperas` skill once a second workflow needed the same practices — **read that skill first**; this one is only steps 1-4 below.
 
-All commands run from `Aperas/monorepo/` as `aperas <verb> <args>` (see the `aperas` skill's own insider note on today's actual invocation). Paths passed to `aperas ingest`/`aperas project`/etc. are relative to `AperasKG/artifacts/` (e.g. `design/foo.md`), not the repo root.
+Commands are `aperas <verb> <args>`. Paths passed to `aperas ingest`/`aperas project`/etc. are relative to `AperasKG/artifacts/` (e.g. `design/foo.md`), not the repo root.
 
 ## Workflow
 

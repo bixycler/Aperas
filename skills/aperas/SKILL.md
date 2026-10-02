@@ -7,15 +7,9 @@ description: >-
 
 # aperas
 
-Status: **v4.2** — Base skill for all Aperas roles.
+Status: **v4.3** — Base skill for all Aperas roles.
 
 Aperas is an evidence-based knowledge-graph documentation system. This skill establishes the common mental model, traversal discipline, multi-agent protocol, and CLI mechanics used across all roles (`aperas-orchestrator`, `aperas-grapher`, `aperas-coder`).
-
-> **Aperas-repo insiders**: `aperas` is published as a package (`npm install -g aperas`), but this repo develops it from source. Running bare `aperas <verb>` invokes whatever is globally installed, not your local changes. Run commands from `Aperas/monorepo/` as:
-> ```bash
-> npm run aperas -- <verb> ...
-> ```
-> In normal projects using the published tool, run bare `aperas <verb> ...`.
 
 ---
 
@@ -119,14 +113,14 @@ Every graph traversal moves along three distinct axes:
 
 | Role | Runs As | Writes | Reads |
 |---|---|---|---|
-| **Orchestrator** | Active session | `discussion` Freeflow, thread `**Ask**` nodes | Graph, threads, **and source code/diffs/tests during Verification** |
+| **Orchestrator** | Active session | `discussion` Freeflow, thread `**Ask**` nodes | Graph, threads, **and source code/diffs/tests to check, assess or review a result or claim** |
 | **Grapher** | Subagent | Everything else in graph (deep read/write, promotions, thread lifecycle) | Graph, thread reports |
 | **Coder** | Subagent | Source code, `.threads/coder.md` | Source code, graph context |
 
 > [!CRITICAL]
 > **Orchestrator Role Gate**:
 > **NEVER START WITH** surveying or modifying source code when a task begins. Always delegate initial graph and code surveys to the Grapher and Coder subagents.
-> The Orchestrator inspects source code, git diffs, and test outputs **ONLY at the Verification stage** (Step 7 of the task loop).
+> The Orchestrator may read source code, git diffs, and test outputs to check, assess or review a result or claim (a report, a diff, a change's scope), as in Step 7 of the task loop. Mapping code behaviour stays with the Coder.
 
 ### The Task Loop (9 Steps)
 
@@ -134,18 +128,18 @@ Every graph traversal moves along three distinct axes:
 2. **Grapher Survey**: Grapher surveys graph context (design, issues, drift), writes Report in `.threads/grapher.md`.
 3. **Orchestrator Review**: Orchestrator reads Grapher Report (`aperas tree --view <p>-grapher-orchestrator`).
 4. **Coder Survey**: Orchestrator asks Coder to map code behavior (no code edits). Coder reports in `.threads/coder.md`.
-5. **Grapher Files Survey**: Grapher records Coder findings into graph.
+5. **Grapher Files Survey**: Grapher records Coder findings into graph, promoting defects and gaps to `issues/` in the same Filing Turn.
 6. **Coder Change**: Coder applies fix and runs tests, reporting diff and results.
-7. **Orchestrator Verification**: Orchestrator verifies diff and test output directly (`npm run verify` for code/engine changes; for skill-only tasks, strictly run `python3 skills/aperas/scripts/skill_drift.py` and `npm run aperas -- check-links` — never run `npm run verify` on skill tasks).
-8. **Grapher Files Result**: Grapher promotes findings, marks issues resolved.
-9. **Finishing Turn**: Repeat steps 6–8 as needed, then Grapher executes the finishing turn.
+7. **Orchestrator Verification**: Orchestrator checks the diff and test output directly, reading source, diffs and tests as needed to assess the result (`npm run verify` for code/engine changes; for skill-only tasks, strictly run `python3 skills/aperas/scripts/skill_drift.py` and `aperas check-links` as two separate commands, expecting drift to fail here naming the edited units until the Grapher records the delta at Step 8 — never run `npm run verify` on skill tasks).
+8. **Grapher Files Result**: Grapher records the result, promotes defects and gaps to `issues/`, marks issues resolved.
+9. **Finishing Turn**: Repeat steps 6–8 as needed, then Grapher executes the finishing turn (recurring patterns to `concepts.md`, settled outcomes to design and history).
 
 ### Thread Structure (`.threads/{grapher,coder}.md`)
 
 > [!IMPORTANT]
 > **`.threads/` is a graph path, not a local directory**:
 > `.threads/` is a graph node path rooted under `artifacts/.threads/` in `AperasKG/`. Projections under `artifacts/.threads/` are Git-ignored in `AperasKG`.
-> There is no `.threads/` directory in the `Aperas/` code repository. Never run `ls .threads/` or `cat .threads/...`. Access threads strictly through graph commands (`npm run aperas -- tree .threads/grapher.md`, `npm run aperas -- show .threads/grapher.md`).
+> There is no `.threads/` directory in the `Aperas/` code repository. Never run `ls .threads/` or `cat .threads/...`. Access threads strictly through graph commands (`aperas tree .threads/grapher.md`, `aperas show .threads/grapher.md`).
 
 A thread represents the complete working memory of a subagent across turns. When starting a fresh thread or continuing an existing one, use this tree structure:
 
@@ -161,9 +155,10 @@ A thread represents the complete working memory of a subagent across turns. When
   - <subturn 2: files inspected, lines, failure output>
 - **Report**: <the outcome, in a sentence>   ← subagent; root of <p>-grapher-orchestrator
   - [<changed or found node>](…) — what changed, or what it shows
-  - **Question**: <whatever the Ask left unsettled>
-  - **Tool gap — <what>**: <a workaround built, a call that failed or hung>
-  - **Tool gap — <what else>**: <a second one, if the turn hit more than one>
+  - **Question — <topic>**: <whatever the Ask left unsettled>
+  - **Question — <other topic>**: <a second one, if the Ask left more than one open>
+  - **Friction — <topic>**: <a mistake of your own, a tool-use problem, or a tool gap: a workaround built, a call that failed or hung>
+  - **Friction — <other topic>**: <a second one, if the turn hit more than one>
 ```
 
 #### Step 1 Thread Initialization CLI Recipes
@@ -171,20 +166,20 @@ When opening a task in Step 1 of the task loop, use these graph CLI commands wit
 
 ```bash
 # 1. Inspect existing thread tree to locate the topic or root ID:
-npm run aperas -- tree .threads/grapher.md
-# (To resolve the ArtifactNode ID if starting fresh: npm run aperas -- show .threads/grapher.md)
+aperas tree .threads/grapher.md
+# (To resolve the ArtifactNode ID if starting fresh: aperas show .threads/grapher.md)
 
 # 2. Insert ## <topic> heading if it does not yet exist:
-echo "## <topic-name>" | npm run aperas -- insert <thread-root-id> --flush
+echo "## <topic-name>" | aperas insert <thread-root-id> --flush
 
 # 3. Insert ### <task> heading under the topic:
-echo "### <task-name>" | npm run aperas -- insert <topic-heading-id> --flush
+echo "### <task-name>" | aperas insert <topic-heading-id> --flush
 
 # 4. Insert #### Turn 1 heading under the task:
-echo "#### Turn 1" | npm run aperas -- insert <task-heading-id> --flush
+echo "#### Turn 1" | aperas insert <task-heading-id> --flush
 
 # 5. Insert initial **Ask** with Freeflow citation under the turn heading:
-cat << 'EOF' | npm run aperas -- insert <turn-heading-id> --flush
+cat << 'EOF' | aperas insert <turn-heading-id> --flush
 - **Ask**: <what is wanted, in a sentence>
   - [<Freeflow decision>](../discussion/<topic>.md#id/BlockNode:<ID>) — why it matters here
 EOF
@@ -195,8 +190,9 @@ EOF
 #### Core Thread Disciplines
 - **A follow-up is a new turn, not an edit to an old one**: Never mutate prior turns to add follow-up work.
 - **Every turn has subturns**: At least one per batch of tool calls. Record the essence of each tool result (failing line numbers, node IDs, counts, filenames) — not just "ran tests".
-- **Record friction**: Record workarounds, retries, and tool failures under distinct `**Tool gap — <topic>**` lead-ins (identical lead-ins collide on slug generation).
-- **Ask back instead of guessing**: Not only against the Ask, but for **anything unsure during execution** — unexpected code behaviors, conflicting requirements or evidence, missing schemas/dependencies, architectural trade-offs, or unexpected tool failures — the subagent **must stop and ask back** via a `**Question**` in its Report rather than making speculative assumptions. Guessing wastes full round trips and creates technical debt.
+- **Record friction**: Record any trouble the turn meets (your own mistakes, tool-use problems, tool gaps, workarounds, retries, failed calls) under `**Friction — <topic>**` lead-ins. A Report with more than one Question or Friction entry gives each its own topic, because identical lead-ins collide on slug generation.
+- **Ask back instead of guessing**: Not only against the Ask, but for **anything unsure during execution** — unexpected code behaviors, conflicting requirements or evidence, missing schemas/dependencies, architectural trade-offs, or unexpected tool failures — the subagent **must stop and ask back** via a `**Question — <topic>**` in its Report rather than making speculative assumptions. Guessing wastes full round trips and creates technical debt.
+- **One minute is the limit on anything that does not answer, for every role**: No agent waits, polls or retries more than one minute in total on a command, service or process that is not answering. After that minute it stops trying harder and reports to its upline: a subagent records the trouble as a `**Friction — <topic>**` entry and ends its turn with a `**Question — <topic>**` to the orchestrator; the orchestrator reports to the user, and may keep waiting only after telling the user. The orientation is to not try hard on something that seems stuck and to bubble it up. A subagent that finds the service down ends its turn and does not restart it, because the orchestrator owns the service; a restart or kill of the service is for the user to approve.
 
 ### Hand-Off Views & Zooming
 
@@ -276,11 +272,15 @@ aperas check-links [--repair]                                # Sweep / repair li
 
 ### Path Resolution & Two-Repo Architecture
 - Two sibling repos: `Aperas/` (code/skills; symlink `Aperas/AperasKG -> ../AperasKG`) and `AperasKG/` (graph `Apeiron/`, markdown `artifacts/`).
-- Resolution Rule: CLI paths resolve relative to `artifacts/` in `AperasKG/`, never against `$CWD` or code root (`npm run aperas -- project discussion/foo.md` is correct; resolving `.threads/` against `$CWD` fails).
+- Resolution Rule: CLI paths resolve relative to `artifacts/` in `AperasKG/`, never against `$CWD` or code root (`aperas project discussion/foo.md` is correct; resolving `.threads/` against `$CWD` fails).
 
 ### Verification Scope — Code vs. Skills
 - **Code/Engine changes**: Run `npm run verify` (from `monorepo/`) to execute build, lint, and tests.
-- **Skill-only changes**: Strictly **NEVER** run `npm run verify`! Running full test suites on skill edits causes unnecessary hangs, compute waste, and test timeouts. Verify using: `python3 skills/aperas/scripts/skill_drift.py && npm run aperas -- check-links`.
+- **Skill-only changes**: Strictly **NEVER** run `npm run verify`! Running full test suites on skill edits causes unnecessary hangs, compute waste, and test timeouts. Verify by running the two checks as separate commands:
+  ```bash
+  python3 skills/aperas/scripts/skill_drift.py   # expected to fail at Step 7, naming the edited units; passes after the Grapher's Step 8 records the delta
+  aperas check-links
+  ```
 ---
 
 ## 5. Reference

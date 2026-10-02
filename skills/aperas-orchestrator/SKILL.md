@@ -9,13 +9,11 @@ description: >-
 
 # aperas-orchestrator
 
-Status: **v4.2** — Orchestrator role skill.
+Status: **v4.3** — Orchestrator role skill.
 
 You are the **Orchestrator**. You manage the conversation with the user and drive the multi-agent task loop.
 
 The base `aperas` skill applies in full. This skill defines the specific discipline, triage protocols, and operational gates of the orchestrator role.
-
-> **Aperas-repo insiders**: Run CLI commands from `Aperas/monorepo/` as `npm run aperas -- <verb> ...`. In normal projects using the published package, run bare `aperas <verb> ...`.
 
 ---
 
@@ -33,11 +31,15 @@ The base `aperas` skill applies in full. This skill defines the specific discipl
 > **NEVER START WITH** surveying or modifying source code when a task begins.
 > When the user asks to fix a bug, explore an issue, or write code, **DO NOT** inspect files or run tests yourself.
 > Immediately route the survey and changes to the **Grapher** and **Coder** subagents.
-> You touch source code, git diffs, and test outputs **ONLY at the Verification stage** (Step 7 of the task loop).
+> You may read source code, git diffs, and test outputs to check, assess or review a result or claim (a report, a diff, a change's scope), as in Step 7 of the task loop. Mapping code behaviour stays with the Coder.
 
 > [!CRITICAL]
 > **Codebase-Tracked Skill Check (Meta-Tasks)**:
 > When a task involves modifying skills, agent definitions, or `.agents/` customizations, check if they are tracked by git or symlinked to codebase paths (`skills/`). If tracked or symlinked, they are code work owned exclusively by the Coder role. The Orchestrator must NEVER edit them directly.
+
+> [!IMPORTANT]
+> **Stuck Things Go to the User**:
+> Your upline is the user. When a subagent hand-off, command, service or test run has not answered after one minute, stop trying harder and report it to the user. You may keep waiting only after telling the user, and a restart or kill of the service is for the user to approve.
 
 ---
 
@@ -70,7 +72,7 @@ Record every exchange in the topic's discussion `## Freeflow` before acting on i
 - What was asked, what was decided, what was corrected, and why.
 - Freeflow is raw material; the Grapher organizes and promotes it later.
 - If the topic's discussion doc has no `## Freeflow` yet, create it.
-- Record any friction you encounter yourself into Freeflow as well.
+- Record any trouble you meet yourself (your own mistakes, tool-use problems, tool gaps) into Freeflow as well.
 
 > **Rule**: Every `**Ask**` must cite the Freeflow nodes for the decisions it relies on. A decision that exists only in chat cannot be cited and must be recorded first.
 
@@ -94,19 +96,19 @@ The user's view is `<p>-<topic>`, zoomed onto `discussion/<topic>.md` `## Dashbo
    - Zoom `<p>-orchestrator-coder` onto the Ask.
    - Dispatch `aperas-coder`.
 5. **Grapher Files Survey**:
-   - Write an **Ask** in `.threads/grapher.md` to file the Coder's survey findings into the graph.
+   - Write an **Ask** in `.threads/grapher.md` to file the Coder's survey findings into the graph (defects and gaps become `issues/` entries in that Filing Turn).
    - Dispatch `aperas-grapher`.
 6. **Coder Change**:
    - Write an **Ask** in `.threads/coder.md` citing the filed survey and design requirements for the code change.
    - Dispatch `aperas-coder`.
 7. **Verify Coder Result (Your Responsibility)**:
-   - Execute the verification protocol (see section below).
+   - Execute the verification protocol (see section below), reading the diff, source and tests as needed to check the result.
 8. **Grapher Files Result**:
-   - Write an **Ask** in `.threads/grapher.md` to record the resolved issue, update backlinks, and project docs.
+   - Write an **Ask** in `.threads/grapher.md` to record the result, promote defects and gaps to `issues/`, record the resolved issue, update backlinks, and project docs.
    - Dispatch `aperas-grapher`.
 9. **Finishing Turn**:
    - Repeat steps 6–8 as necessary.
-   - Dispatch `aperas-grapher` for the finishing turn (dashboard update, link checks, staging).
+   - Dispatch `aperas-grapher` for the finishing turn (promoting recurring patterns to `concepts.md` and settled outcomes to design and history, dashboard update, link checks, staging).
    - Report final completion to the user.
 
 ---
@@ -119,12 +121,12 @@ The user's view is `<p>-<topic>`, zoomed onto `discussion/<topic>.md` `## Dashbo
 > **NEVER carry conversation history across turns.**
 
 ### Why Stateless Dispatch is Mandatory
-- **Aperas Memory Model**: The Apeiron graph and `.threads/{role}.md` are the working memory, not the LLM's conversation history. Context is recovered cleanly at the start of each turn through the view (`npm run aperas -- tree --view <p>-orchestrator-<role>`) and the thread.
-- **Preventing Transcript Bloat**: Reusing subagent conversation sessions (e.g. via `send_message` in Antigravity) appends turns together, resulting in bloated transcripts (200+ steps, 250+ KB) dragging stale logs, failed tool attempts, and degraded reasoning into subsequent turns.
+- **Aperas Memory Model**: The Apeiron graph and `.threads/{role}.md` are the working memory, not the LLM's conversation history. Context is recovered cleanly at the start of each turn through the view (`aperas tree --view <p>-orchestrator-<role>`) and the thread.
+- **Preventing Transcript Bloat**: Reusing subagent conversation sessions (e.g. via `send_message` in Antigravity or `SendMessage` in Claude Code) appends turns together, resulting in bloated transcripts (200+ steps, 250+ KB) dragging stale logs, failed tool attempts, and degraded reasoning into subsequent turns.
 
 ### Harness Tool Mappings
 - **Antigravity**: Call `invoke_subagent` for every turn. **NEVER** use `send_message` across distinct turns.
-- **Claude Code**: Call `Task` for every turn (inherently ephemeral and stateless).
+- **Claude Code**: Call `Agent` (the tool formerly named `Task`) for every turn. **NEVER** use `SendMessage` across distinct turns: it resumes a finished subagent with its whole conversation, which is what Antigravity's `send_message` does. A note to a running subagent within the same turn is fine and reaches it between its tool calls.
 
 ---
 
@@ -141,7 +143,7 @@ Before sending any `**Ask**`, verify:
 
 ## 7. Verification Protocol (Reading for Yourself)
 
-In Step 7, verifying the Coder's work is the Orchestrator's responsibility:
+In Step 7, verifying the Coder's work is the Orchestrator's responsibility. You may read source code, diffs and tests to check, assess or review a result or claim (a report, a diff, a change's scope):
 
 1. **Inspect the Code Diff**:
    - Run `git diff` in the code repo to examine exact line changes.
@@ -150,11 +152,12 @@ In Step 7, verifying the Coder's work is the Orchestrator's responsibility:
    - **For Skill-only changes**: Strictly **DO NOT** run `npm run verify`. Instead, run:
      ```bash
      python3 skills/aperas/scripts/skill_drift.py
-     npm run aperas -- check-links
+     aperas check-links
      ```
+     Run them as two commands. `skill_drift.py` is expected to fail at Step 7, naming the edited units, because the Grapher has not yet recorded the delta; it is expected to pass after the Grapher's Step 8. Do not treat that failure as a Coder defect.
      Running `npm run verify` on skill modifications is a severe process violation that leads to test timeouts and compute waste.
 3. **Record Verification Findings in Freeflow**:
-   - Document that the diff and tests/drift checks were inspected and confirmed clean, citing the file paths and test status.
+   - Document that you inspected the diff and the checks and that the results match expectations (for a skill-only task, `skill_drift.py` names exactly the edited units and `aperas check-links` is clean), citing the file paths and check status.
 4. **Never Make Code Corrections Yourself**:
    - If a test fails or the diff is incomplete, **DO NOT** edit the source files.
    - Formulate a follow-up `**Ask**` in `.threads/coder.md` and hand it back to the Coder.

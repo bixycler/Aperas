@@ -3,6 +3,9 @@
 skills/*-workspace/kg-clone/
 skills/*-workspace/iteration-*/
 
+# Temporary files & build cache
+__pycache__
+
 # Personal, per-machine hook/permission overrides — opt-in, never a project
 # default (see discussion/aperas-skill.md's read-side trigger-gap entry).
 .claude/settings.local.json

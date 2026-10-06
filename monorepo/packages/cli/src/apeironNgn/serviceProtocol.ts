@@ -19,6 +19,10 @@ export const CONFLICT_RESOLUTION_HINT =
 
 export type ServiceRequest =
   | { op: 'ping' }
+  // The same graceful shutdown SIGTERM triggers, asked for over the socket instead — what
+  // `aperas service stop` uses on Windows, where `process.kill(pid, 'SIGTERM')` is an immediate,
+  // unhandleable TerminateProcess that would skip the final flush entirely.
+  | { op: 'shutdown' }
   // The revived TDB-era `kg:import`'s equivalent: discards the in-memory `Store` and rehydrates a
   // fresh one from `AperasKG/Apeiron/` (content mirror + `.state/`) — the only way to pick up a
   // change landing on disk after the service started (e.g. a `git pull` merging someone else's

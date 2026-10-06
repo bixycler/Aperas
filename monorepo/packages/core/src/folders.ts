@@ -24,7 +24,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { parseMarkdownTree, extractAbstract, parseFrontmatterFields, collectLinkCodesFromText, type ParsedBlockNode } from './astParser';
 import { isReadmeFilename, type PendingLinkCodes } from './artifacts';
 import { generateNodeId } from './snowflake';
@@ -50,7 +50,7 @@ export function buildFolderTree(
   pendingTombstones: any[] = [],
   pendingDescriptionLinks: PendingLinkCodes[] = []
 ): ParsedFolderNode {
-  const relPath = relative(artifactsDir, absoluteDir);
+  const relPath = relative(artifactsDir, absoluteDir).split(sep).join('/'); // '/'-separated on every platform
   const isRoot = relPath === '';
   const path = isRoot ? '.' : relPath;
   const title = isRoot ? 'Artifacts' : relPath.split('/').pop()!;
@@ -122,7 +122,7 @@ export function buildFolderTree(
       // stamps each top-level child's real `parent` to this folder automatically, as a side effect
       // of the containment write, once this parsed tree reaches `node.ts`'s `hydrateFromParsed`.
     } else {
-      const artifactPath = relative(artifactsDir, fullPath);
+      const artifactPath = relative(artifactsDir, fullPath).split(sep).join('/');
       // Reference an independently tracked/ingested ArtifactNode by its actual (Snowflake)
       // id rather than by path — path is no longer the key, so `ArtifactNode:${path}` would
       // be a broken reference. A file not yet tracked (no artifactId assigned) is skipped

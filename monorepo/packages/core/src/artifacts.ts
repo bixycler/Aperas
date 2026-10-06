@@ -8,7 +8,7 @@
  */
 
 import { readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ParsedBlockNode, LinkOccurrence } from './astParser';
 import { resolveEffectiveArtifactsRoot } from './graphConfig';
@@ -51,7 +51,7 @@ export function listArtifactFiles(artifactsDir: string = getArtifactsDir()): str
       } else if (entry.endsWith('.md') && !entry.startsWith('.') && !isReadmeFilename(entry)) {
         // Only tracked markdown artifacts — excludes editor swap/lock files (.foo.md.swp),
         // dotfiles, and any other transient junk that can appear alongside real content.
-        files.push(relative(artifactsDir, fullPath));
+        files.push(relative(artifactsDir, fullPath).split(sep).join('/')); // artifact paths are always '/'-separated, even on Windows
       }
     }
   }

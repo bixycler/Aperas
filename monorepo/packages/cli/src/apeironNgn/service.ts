@@ -471,6 +471,10 @@ export function main(): void {
     switch (req.op) {
       case 'ping':
         return { pong: true, codeFingerprint };
+      case 'shutdown':
+        // Deferred so this request's own response is written before the shutdown starts.
+        setImmediate(() => shutdown(0));
+        return { stopping: true };
       case 'reload':
         return reloadStore(req.discard);
       case 'flush':
@@ -778,10 +782,12 @@ export function main(): void {
   process.on('SIGINT', () => shutdown(0));
 
   const socketPath = getSocketPath();
-  try {
-    unlinkSync(socketPath);
-  } catch (err: any) {
-    if (err.code !== 'ENOENT') throw err;
+  if (process.platform !== 'win32') { // a named pipe (see `getSocketPath`) leaves no file behind
+    try {
+      unlinkSync(socketPath);
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err;
+    }
   }
   server.listen(socketPath, () => {
     httpServer.listen(httpPort, '127.0.0.1');

@@ -127,8 +127,10 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
   const rootDir = resolve(__dirname, '..', '..', '..', '..');
 
   if (existsSync(serviceEntry)) {
-    const tsxBin = resolve(rootDir, 'node_modules', '.bin', 'tsx');
-    const child = spawn(tsxBin, [serviceEntry], { cwd: rootDir, detached: true, stdio: 'ignore', env });
+    // `tsx`'s own JS entry under plain `node`, not the `.bin/tsx` shim: on Windows that shim is a
+    // shell script plus a `.cmd` wrapper, neither of which `spawn` can run without a shell.
+    const tsxCli = resolve(rootDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    const child = spawn(process.execPath, [tsxCli, serviceEntry], { cwd: rootDir, detached: true, stdio: 'ignore', windowsHide: true, env });
     child.unref();
     return;
   }
@@ -138,6 +140,7 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
     cwd: dirname(bundlePath),
     detached: true,
     stdio: 'ignore',
+    windowsHide: true, // `detached` alone opens a fresh console window for the child on Windows
     env,
   });
   child.unref();

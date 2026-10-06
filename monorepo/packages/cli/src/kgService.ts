@@ -13,7 +13,7 @@
  */
 
 import { readLock, isProcessAlive, clearLock, claimLock, resolveHttpPort } from './apeironNgn/serviceLock';
-import { ping, spawnService, waitForReady } from './apeironNgn/serviceClient';
+import { ping, request, spawnService, waitForReady } from './apeironNgn/serviceClient';
 import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot, resolveEffectiveGraphName } from '@aperas/core/graphConfig';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -66,7 +66,17 @@ async function stopIfRunning(): Promise<boolean> {
   const lock = readLock();
   if (lock && isProcessAlive(lock.pid)) {
     console.log(`[ApeironNgn kg:service] Stopping service (pid ${lock.pid})...`);
-    process.kill(lock.pid, 'SIGTERM');
+    if (process.platform === 'win32') {
+      // SIGTERM on Windows is an immediate TerminateProcess that skips the service's own flush —
+      // ask over the socket instead, falling back to a hard kill only if that request fails.
+      try {
+        await request({ op: 'shutdown' });
+      } catch {
+        if (isProcessAlive(lock.pid)) process.kill(lock.pid, 'SIGTERM');
+      }
+    } else {
+      process.kill(lock.pid, 'SIGTERM');
+    }
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline && isProcessAlive(lock.pid)) await sleep(100);
     if (isProcessAlive(lock.pid)) {

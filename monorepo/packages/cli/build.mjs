@@ -28,7 +28,7 @@ import { build } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, cpSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliDir = __dirname;
@@ -56,7 +56,8 @@ await build({
 chmodSync(join(distDir, 'aperas.js'), 0o755);
 
 console.log('[build:aperas] Building packages/web (vite build)...');
-execFileSync('npm', ['run', 'build'], { cwd: webDir, stdio: 'inherit' });
+// Through a shell: on Windows `npm` is `npm.cmd`, which can't be spawned without one.
+execSync('npm run build', { cwd: webDir, stdio: 'inherit' });
 cpSync(join(webDir, 'dist'), join(distDir, 'web'), { recursive: true });
 console.log(`[build:aperas] Copied ${join(webDir, 'dist')} -> ${join(distDir, 'web')}`);
 

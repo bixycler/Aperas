@@ -23,7 +23,8 @@ function aperasDevApiProxy() {
     configureServer() {
       child = spawn(
         process.execPath,
-        [resolve(monorepoRoot, 'node_modules/.bin/tsx'), resolve(__dirname, 'devApiServer.ts'), String(API_PORT)],
+        // `tsx`'s JS entry, not `.bin/tsx` — on Windows that's a shell script `node` can't run.
+        [resolve(monorepoRoot, 'node_modules/tsx/dist/cli.mjs'), resolve(__dirname, 'devApiServer.ts'), String(API_PORT)],
         { cwd: monorepoRoot, stdio: 'inherit' },
       );
       const stop = () => child?.kill();

@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, openSync, writeSync, closeSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { resolve } from 'node:path';
 
 const STARTING_GRACE_MS = 10_000;
@@ -48,7 +48,12 @@ export function getLockPath(): string {
   return resolve(getRunDir(), 'apeironngn.lock');
 }
 
+/** Windows can't `listen()` on a filesystem path (`EACCES`) — libuv implements local sockets there
+ *  as named pipes, which must live under `\\.\pipe\`. Namespaced by username, standing in for the
+ *  uid that `getRunDir` uses on POSIX (`process.getuid` doesn't exist on Windows). A named pipe
+ *  disappears with its owning process, so there's never a stale file to unlink. */
 export function getSocketPath(): string {
+  if (process.platform === 'win32') return `\\\\.\\pipe\\aperas-${userInfo().username}-apeironngn`;
   return resolve(getRunDir(), 'apeironngn.sock');
 }
 
@@ -152,7 +157,8 @@ export function isLockStale(lock: LockInfo): boolean {
 }
 
 export function clearLock(): void {
-  for (const p of [getLockPath(), getSocketPath(), getTokenPath()]) {
+  const paths = process.platform === 'win32' ? [getLockPath(), getTokenPath()] : [getLockPath(), getSocketPath(), getTokenPath()];
+  for (const p of paths) {
     try {
       unlinkSync(p);
     } catch (err: any) {

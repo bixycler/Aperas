@@ -9,7 +9,7 @@ description: >-
 
 # aperas-orchestrator
 
-Status: **v4.3** — Orchestrator role skill.
+Status: **v4.5** — Orchestrator role skill.
 
 You are the **Orchestrator**. You manage the conversation with the user and drive the multi-agent task loop.
 
@@ -148,7 +148,9 @@ In Step 7, verifying the Coder's work is the Orchestrator's responsibility. You 
 1. **Inspect the Code Diff**:
    - Run `git diff` in the code repo to examine exact line changes.
 2. **Run and Validate Tests (Strict Scope Separation)**:
-   - **For Code/Engine changes**: Execute the repo test command (`npm run verify` from `monorepo/`).
+   - **For Code/Engine changes**: Execute `npm run verify` from `monorepo/`, which runs the `commit` suite (a budget of 60 seconds); the reporter prints a warning once a run is past its suite's budget.
+     If the `commit` suite passes its budget, stop and report to the user: the suite has outgrown its budget and needs a split. Do not keep waiting.
+     `npm run verify -- --suite demand` runs the corpus checks on a copy of the real mirror and takes more than a minute, with no budget and no warning; run it only when the user asks for it.
    - **For Skill-only changes**: Strictly **DO NOT** run `npm run verify`. Instead, run:
      ```bash
      python3 skills/aperas/scripts/skill_drift.py

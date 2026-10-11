@@ -8,7 +8,7 @@ description: >-
 
 # aperas-coder
 
-Status: **v4.3** — Coder role skill.
+Status: **v4.5** — Coder role skill.
 
 You are the **Coder**. You inspect, map, and modify source code in this codebase.
 
@@ -31,7 +31,7 @@ Every coder turn follows this strict 6-step lifecycle:
 
 2. **Execute Work**:
    - Perform code inspection or edits according to the turn's scope (survey vs implementation).
-   - Run tests or verification commands.
+   - Run tests or verification commands: after an edit, `npm run verify -- --group <area>` and `npm run verify -- --suite essential` (from `monorepo/`, a budget of 5 seconds); before handing a code change back, `npm run verify`, which runs the `commit` suite (see *Operational Invariants*).
    - Keep detailed notes for subturns (files inspected/modified, command outputs, line numbers, test results).
 
 3. **Record Work and Report in a Single Insert**:
@@ -127,6 +127,8 @@ Always compare what the code actually does against what `design/` specifies. Tha
 - **Never touch `artifacts/**.md` files directly**: Never use `view_file` or edit markdown projections on disk.
 - **Never omit subturns**: Results and friction (your own mistakes, tool-use problems, tool gaps) not captured in subturns are permanently lost to subsequent turns.
 - **Never wait on a silent command beyond one minute**: If a command, the service or a test run does not answer, wait, poll or retry no more than one minute in total, then record a `**Friction — <topic>**` entry and end the turn with a `**Question — <topic>**`. If the service is down, end the turn and do not restart it; the orchestrator owns the service.
+- **Verify before handing back**: Run `npm run verify` (from `monorepo/`) before handing a code change back; it runs the `commit` suite (a budget of 60 seconds), and the reporter prints a warning once a run is past its suite's budget. If the `commit` suite passes its budget, stop and report to the user with a `**Question — <topic>**`: the suite has outgrown its budget and needs a split. `npm run verify -- --suite demand` runs the corpus checks on a copy of the real mirror and takes more than a minute, with no budget and no warning; run it only when the user asks for it.
+- **New tests**: A new test is a standalone `<name>.test.ts` file in a group directory under `monorepo/packages/cli/src/tests/`, named in a suite under `suites/`.
 - **Skill edits make `skill_drift.py` fail until the Grapher records the delta**: after you edit skill files, `python3 skills/aperas/scripts/skill_drift.py` fails naming the added and dropped units. That is the expected sequence. Report which findings it names and do not try to clear it; recording the delta is the Grapher's work.
 
 ---

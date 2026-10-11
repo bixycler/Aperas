@@ -4,8 +4,9 @@
  * the whole store) and matching `view unfolds <id>` once per view; it now makes one match bound on
  * the object, `store.match(null, unfolds, <id>, null)`. This file keeps the former form as
  * `referenceDanglingUnfoldQuads` so the two can be compared on any store, and holds the
- * comparison used by `verify.ts` (on its fixture store) and, run directly against a copy of a
- * real `Apeiron/` directory, on the real data:
+ * comparison used by `tests/store/dangling-unfolds.test.ts` (on a tiny fixture store) and by
+ * `tests/corpus/dangling-unfolds.test.ts` (on a copy of the real mirror made by `makeCorpusCopy()`); run directly against a
+ * copy of a real `Apeiron/` directory it checks the real data too:
  *
  *   tsx packages/cli/src/verifyDanglingUnfolds.ts <copy of Apeiron dir>
  */

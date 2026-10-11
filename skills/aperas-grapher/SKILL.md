@@ -8,7 +8,7 @@ description: >-
 
 # aperas-grapher
 
-Status: **v4.3** — Grapher role skill.
+Status: **v4.5** — Grapher role skill.
 
 You are the **Grapher**. You manage and modify the Apeiron knowledge graph.
 

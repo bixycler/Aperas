@@ -1,7 +1,7 @@
 /**
  * Test-only checks for the link refusals, the stored bad-target report of `check-links` and the
  * single-anchor preview rendering (issues/linking.md, issues/treeview.md). Written as functions of a
- * `Store` so `verify.ts` runs them on its fixture store as steps 5g and 13, and also runnable on
+ * `Store` so `tests/links/refusals.test.ts` runs them on a tiny fixture store, and also runnable on
  * their own on a tiny scratch store (an empty Apeiron directory and a scratch artifacts root, never
  * the real mirror):
  *

@@ -7,7 +7,7 @@ description: >-
 
 # aperas
 
-Status: **v4.3** — Base skill for all Aperas roles.
+Status: **v4.5** — Base skill for all Aperas roles.
 
 Aperas is an evidence-based knowledge-graph documentation system. This skill establishes the common mental model, traversal discipline, multi-agent protocol, and CLI mechanics used across all roles (`aperas-orchestrator`, `aperas-grapher`, `aperas-coder`).
 
@@ -130,7 +130,7 @@ Every graph traversal moves along three distinct axes:
 4. **Coder Survey**: Orchestrator asks Coder to map code behavior (no code edits). Coder reports in `.threads/coder.md`.
 5. **Grapher Files Survey**: Grapher records Coder findings into graph, promoting defects and gaps to `issues/` in the same Filing Turn.
 6. **Coder Change**: Coder applies fix and runs tests, reporting diff and results.
-7. **Orchestrator Verification**: Orchestrator checks the diff and test output directly, reading source, diffs and tests as needed to assess the result (`npm run verify` for code/engine changes; for skill-only tasks, strictly run `python3 skills/aperas/scripts/skill_drift.py` and `aperas check-links` as two separate commands, expecting drift to fail here naming the edited units until the Grapher records the delta at Step 8 — never run `npm run verify` on skill tasks).
+7. **Orchestrator Verification**: Orchestrator checks the diff and test output directly, reading source, diffs and tests as needed to assess the result (`npm run verify` for code/engine changes, which runs the `commit` suite; for skill-only tasks, strictly run `python3 skills/aperas/scripts/skill_drift.py` and `aperas check-links` as two separate commands, expecting drift to fail here naming the edited units until the Grapher records the delta at Step 8 — never run `npm run verify` on skill tasks).
 8. **Grapher Files Result**: Grapher records the result, promotes defects and gaps to `issues/`, marks issues resolved.
 9. **Finishing Turn**: Repeat steps 6–8 as needed, then Grapher executes the finishing turn (recurring patterns to `concepts.md`, settled outcomes to design and history).
 
@@ -275,7 +275,12 @@ aperas check-links [--repair]                                # Sweep / repair li
 - Resolution Rule: CLI paths resolve relative to `artifacts/` in `AperasKG/`, never against `$CWD` or code root (`aperas project discussion/foo.md` is correct; resolving `.threads/` against `$CWD` fails).
 
 ### Verification Scope — Code vs. Skills
-- **Code/Engine changes**: Run `npm run verify` (from `monorepo/`) to execute build, lint, and tests.
+- **Code/Engine changes** (run from `monorepo/`):
+  - After an edit, run the tests of what you changed with `npm run verify -- --group <area>` and `npm run verify -- --suite essential` (a budget of 5 seconds).
+  - Before handing a code change back, and at Step 7, run `npm run verify`, which runs the `commit` suite (a budget of 60 seconds); the reporter prints a warning once a run is past its suite's budget.
+  - If the `commit` suite passes its budget, stop and report to the user: the suite has outgrown its budget and needs a split. Do not keep waiting.
+  - `npm run verify -- --suite demand` runs the corpus checks on a copy of the real mirror; it takes more than a minute, has no budget and prints no warning, so run it only when the user asks for it.
+  - A new test is a standalone `<name>.test.ts` file in a group directory under `monorepo/packages/cli/src/tests/`, named in a suite under `suites/`.
 - **Skill-only changes**: Strictly **NEVER** run `npm run verify`! Running full test suites on skill edits causes unnecessary hangs, compute waste, and test timeouts. Verify by running the two checks as separate commands:
   ```bash
   python3 skills/aperas/scripts/skill_drift.py   # expected to fail at Step 7, naming the edited units; passes after the Grapher's Step 8 records the delta

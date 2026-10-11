@@ -248,12 +248,13 @@ function hardDeleteNode(store: Store, id: string): void {
  *  it's untouched unless swept separately here) — every deletion path (wikilink regeneration, Step
  *  9's tombstone-consistency cleanup, `pruneUnreachableTombstones`'s GC) gets this for free, with no
  *  new call site needed anywhere. */
-function removeDanglingUnfolds(store: Store, deletedId: string): void {
-  const deletedIri = nodeIri(deletedId);
-  for (const viewId of allIdsOfKind(store, 'TreeView')) {
-    for (const m of store.match(nodeIri(viewId), predIri('unfolds'), deletedIri, null)) {
-      store.delete(m);
-    }
+export function removeDanglingUnfolds(store: Store, deletedId: string): void {
+  // One match bound on the object: `unfolds` appears only on `TreeView`s, so every quad this
+  // returns is a view's reference to `deletedId`, with no need to list the views first (that took
+  // a scan of the whole store per call). `verifyDanglingUnfolds.ts` keeps the former per-view form
+  // as a reference and checks the two agree.
+  for (const m of store.match(null, predIri('unfolds'), nodeIri(deletedId), null)) {
+    store.delete(m);
   }
 }
 
@@ -1705,7 +1706,7 @@ export interface RenderLinkItem {
  *  fragment already sitting in the href text (design/linking.md's node-ID addressing), so a bare
  *  href needs one baked in before the client can make it navigable at all. Scoped to exactly the
  *  href shape `astParser.ts`'s matching extraction branch captures (`./`/`../`-leading, no existing
- *  fragment) — anything else (already fragment-form, `aperas://`, a bare id) is left untouched,
+ *  `#id/` anchor) — anything else (already anchored, `aperas://`, a bare id) is left untouched,
  *  either already navigable or out of scope here. */
 function bakeResolvedLinkIds(text: string, links: ApeironNode[] | undefined): string {
   if (!links || links.length === 0) return text;
@@ -1718,7 +1719,11 @@ function bakeResolvedLinkIds(text: string, links: ApeironNode[] | undefined): st
       const match = /^\[([^\]]+)\]\(([^)]+)\)/.exec(text.slice(position));
       if (!match) continue;
       const href = match[2];
+      // A `./`/`../` path only, and not one that already carries an `#id/` anchor (`path#id/<ID>`): that
+      // is navigable as it stands, and appending a second would hand the reader a doubled anchor to
+      // copy. Any other fragment (`path#slug`) is still baked, as before.
       if (!(href.startsWith('./') || href.startsWith('../'))) continue;
+      if (href.includes('#id/')) continue;
       const hrefStart = position + match[0].indexOf('(') + 1;
       insertions.push({ at: hrefStart + href.length, text: `#id/${targetId}` });
     }

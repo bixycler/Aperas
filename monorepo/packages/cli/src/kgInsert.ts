@@ -29,7 +29,7 @@ import { displayLabel } from '@aperas/core/apeironNgn/tree';
 import { parseMarkdownTree } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
 import { getProp, type HasProps, type PropEntry } from '@aperas/core/props';
-import { resolveBlockLinks, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
+import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -137,6 +137,10 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
   // `oldLinkTargets`/`oldWikilinksByBlock` are left at their empty defaults.
   const pendingLinks: PendingLinkCodes[] = [];
   for (const child of topLevel) extractLinkCodes(child, pendingLinks);
+  // Refused here, before the first mutation of the store (the list-run strip below touches only the
+  // parse): a refused link leaves the store exactly as it was. `resolveBlockLinks` keeps its own check
+  // as the backstop.
+  assertLinksAcceptable(store, pendingLinks);
 
   // A lone piped `listItem` always parses as its own one-item list (`astParser.ts`'s
   // `convertChildren`), so it unconditionally comes out of the parse carrying its own

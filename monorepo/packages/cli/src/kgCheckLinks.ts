@@ -11,10 +11,10 @@ export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
-      description: 'Run a drift-style link integrity check comparing live block text against stored .links quads in Oxigraph Store.',
+      description: 'Run a drift-style link integrity check comparing live block text against stored .links quads in Oxigraph Store, and listing stored links whose target names no node.',
       usage: 'aperas check-links [--repair|--fix] [--verbose] [--json] [--reload]',
       flags: [
-        { name: '--repair, --fix', description: 'Automatically re-resolve and flush missing links for affected artifacts.' },
+        { name: '--repair, --fix', description: 'Automatically re-resolve and flush missing links for affected artifacts. Never changes a stored link whose target names no node.' },
         { name: '--verbose', description: 'Print full discrepancy details per node.' },
         { name: '--json', description: 'Output result as JSON.' },
         { name: '--reload', description: 'Reload the store from disk first before running the check.' },
@@ -45,6 +45,8 @@ export async function main(): Promise<void> {
     console.log(`  Discrepancies before: ${result.reportBefore.discrepancies.length}`);
     console.log(`  Repaired artifacts: ${result.repairedArtifacts.length}`);
     console.log(`  Discrepancies after: ${result.reportAfter.discrepancies.length}`);
+    // Repair never touches these (it re-resolves only the blocks named in the discrepancies).
+    console.log(`  Links whose target names no node (left as they are): ${result.reportAfter.unresolvedTargets.length}`);
     return;
   }
 
@@ -57,10 +59,22 @@ export async function main(): Promise<void> {
 
   console.log(`[ApeironNgn check-links] Scanned ${report.totalLiveBlocks} live blocks (${report.blocksWithLinkText} with internal link text).`);
 
-  if (report.discrepancies.length === 0) {
+  const unresolved = report.unresolvedTargets;
+  if (report.discrepancies.length === 0 && unresolved.length === 0) {
     console.log(`[ApeironNgn check-links] Clean pass: 0 link integrity discrepancies found.`);
     return;
   }
+
+  if (unresolved.length > 0) {
+    console.warn(`[ApeironNgn check-links] WARNING: Found ${unresolved.length} stored link(s) whose target names no node (--repair leaves these alone):`);
+    for (const u of unresolved) {
+      console.warn(`  • Node ${u.blockId} (${u.artifactPath ?? 'unknown'}): ${u.kind}`);
+      console.warn(`    Link: ${u.linkId}${u.linkText !== undefined ? ` "${u.linkText}"` : ''}`);
+      console.warn(`    Target: ${u.targetId ?? '(none)'}`);
+    }
+  }
+
+  if (report.discrepancies.length === 0) return;
 
   console.warn(`[ApeironNgn check-links] WARNING: Found ${report.discrepancies.length} link integrity discrepancies:`);
   for (const disc of report.discrepancies) {

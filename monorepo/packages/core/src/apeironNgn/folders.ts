@@ -163,7 +163,7 @@ export function ingestFolderTree(store: Store, force: boolean = false): { folder
   console.log(`[ApeironNgn Folders] Ingesting folder tree (${folderCount} folder(s))...`);
   (wrap(store, `FolderNode:${tree.folderId}`) as unknown as FolderNode).hydrateFromParsed(tree);
 
-  const linkResolution = resolveBlockLinks(store, pendingDescriptionLinks, oldLinkTargets, oldWikilinksByBlock);
+  const linkResolution = resolveBlockLinks(store, pendingDescriptionLinks, oldLinkTargets, oldWikilinksByBlock, undefined, 'skip');
   if (linkResolution.resolved > 0 || linkResolution.dangling > 0) {
     console.log(`[ApeironNgn Folders]   description links: ${linkResolution.resolved} resolved, ${linkResolution.dangling} dangling, ${linkResolution.changed} changed.`);
   }

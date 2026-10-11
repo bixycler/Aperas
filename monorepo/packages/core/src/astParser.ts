@@ -68,6 +68,9 @@ export interface LinkOccurrence {
    *  Anchor-Matching Requirement), and a miss here is routine (not a dangling-link warning) —
    *  most `#fragment` links in the corpus are ordinary anchors, not internal references at all. */
   requiresAnchorMatch?: boolean;
+  /** The link's visible text (`[this](…)`), flattened from its mdast children — only so a refusal or
+   *  a report can name the link a reader wrote; never part of how it resolves. */
+  text?: string;
 }
 
 // `list` never survives as its own node, in any case — see convertChildren's adoption logic
@@ -433,6 +436,17 @@ export function findLeadInSpliceOffset(text: string, lang: DocLang): number | nu
  */
 export const WIKILINK_PREDICATE = '[[wikilink]]';
 
+/** A `link` node's visible text, flattened from its children's `value`s — see `LinkOccurrence.text`. */
+function linkLabel(linkNode: any): string {
+  const parts: string[] = [];
+  const visit = (n: any): void => {
+    if (typeof n.value === 'string') parts.push(n.value);
+    for (const c of n.children ?? []) visit(c);
+  };
+  visit(linkNode);
+  return parts.join('');
+}
+
 /**
  * Recursively collects internal-code link occurrences from a raw mdast (sub)tree: a `link` node
  * whose `url` is wrapped in `[[...]]` — the convention marking a target as an internal code
@@ -468,10 +482,11 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
       const url: string = mdastNode.url ?? '';
       const match = LINK_URL_RE.exec(url);
       const position = () => relativeOffset(containerNode, mdastNode, markdown);
+      const text = linkLabel(mdastNode);
       if (match) {
-        out.push({ code: match[1], position: position() });
+        out.push({ code: match[1], position: position(), text });
       } else if (url.startsWith(APERAS_TREE_PREFIX) || url.startsWith(APERAS_ID_PREFIX)) {
-        out.push({ code: url, position: position() });
+        out.push({ code: url, position: position(), text });
       } else if (url.includes('#') && !url.includes('://')) {
         // A bare `#fragment` (same-document) or `path#fragment` (cross-file) link — excludes any
         // other `scheme://` (an ordinary external URL that happens to carry a fragment, e.g.
@@ -479,13 +494,13 @@ function collectLinkCodes(containerNode: any, markdown: string): LinkOccurrence[
         // the resolver only to fail. See `LinkOccurrence.requiresAnchorMatch`'s own doc comment for
         // why what's left still can't be trusted as an internal reference until the resolver checks
         // for a matching anchor.
-        out.push({ code: url, position: position(), requiresAnchorMatch: true });
+        out.push({ code: url, position: position(), requiresAnchorMatch: true, text });
       } else if (url.startsWith('./') || url.startsWith('../')) {
         // A bare relative path with no fragment — cross-file navigation to the whole target
         // artifact/folder (design/linking.md's Topology: splitting "which file" from "which block
         // within it," the latter being the `#fragment` branch above). Unambiguous once
         // canonicalized, unlike a fragment match — no anchor-matching gate needed.
-        out.push({ code: url, position: position() });
+        out.push({ code: url, position: position(), text });
       }
       return;
     }

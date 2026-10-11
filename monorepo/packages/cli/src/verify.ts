@@ -50,7 +50,7 @@ import { serializeBlock } from '@aperas/core/project';
 import { reconcileTree } from '@aperas/core/reconcile';
 import { getProp, getProps } from '@aperas/core/props';
 import { rehydrateStore } from '@aperas/core/apeironNgn/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/apeironNgn/dehydrate';
+import { dehydrateToJsonLd, dehydrateStateToJsonLd, allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
 import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts';
 import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folders';
 import { findByExactPath } from '@aperas/core/apeironNgn/tree';
@@ -58,7 +58,9 @@ import { wrap, ensureDefaultView, pruneUnreachableTombstones, pruneStaleUnfolds,
 import { nodeExists } from '@aperas/core/apeironNgn/vocab';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runAddBlockLink, runRemoveBlockLink } from './kgLink';
+import { checkLinkRefusals, checkSingleAnchorRendering } from './verifyLinkRefusals';
 import { runBacklinks } from './kgBacklinks';
+import { compareDanglingUnfoldForms, unfoldedIds } from './verifyDanglingUnfolds';
 import { DEMO_DIR, resetDemoState, findHeadingByTitle, findByText, instrumentStepTiming } from './verifySupport';
 const DEMO_ARTIFACT_PATH = `${DEMO_DIR}/demo.md`;
 const DEMO_README_PATH = `${DEMO_DIR}/README.md`;
@@ -456,6 +458,10 @@ const separatorBetweenRuns = true;
     console.log(`   - Same Link (${dedupLinkId}) after position drift — positions updated to [${positionsAfterDrift.join(', ')}], id unchanged.`);
     console.log("   [✓] Position-drift identity stability verified successfully.\n");
 
+    console.log("5g. Testing link refusals and stored bad-target detection (issues/linking.md; verifyLinkRefusals.ts)...");
+    const linkTargetCitedId = checkLinkRefusals(store, DEMO_DIR);
+    console.log("   [✓] Link refusals and bad-target detection verified successfully.\n");
+
     console.log("6. Ingesting FolderNode structural tree...");
     const { folderCount } = ingestFolderTree(store);
     console.log(`   - Folders in tree: ${folderCount}`);
@@ -626,6 +632,19 @@ Intro sentence for the demo folder.
     console.log(`   - unfold() refused a never-existed ref at write time; pruneStaleUnfolds swept 1 entry that went stale afterward, leaving ${afterSweepIds.length} live.`);
     console.log("   [✓] Stale unfolds handling verified successfully.\n");
 
+    console.log("9c. Testing `removeDanglingUnfolds`'s object-bound match against the former per-view scan (verifyDanglingUnfolds.ts)...");
+    // Same quads found and removed as the previous implementation, on this fixture store: two ids
+    // some view unfolds (ids with a hit) and a `BlockNode` with none (the reference form scans the
+    // whole store once per id, about 20 s each by this point in the run, so the sample stays small;
+    // `verifyDanglingUnfolds.ts` run against a copy of the real store covers a larger one).
+    const danglingSampleIds = Array.from(new Set([...unfoldedIds(store).slice(0, 2), ...allIdsOfKind(store, 'BlockNode').slice(0, 1)]));
+    const danglingCmp = compareDanglingUnfoldForms(store, danglingSampleIds);
+    if (danglingCmp.mismatches.length > 0 || danglingCmp.idsWithHits === 0) {
+      throw new Error(`Expected removeDanglingUnfolds to agree with the reference scan on ${danglingCmp.ids} ids with at least one hit, got ${danglingCmp.idsWithHits} hit(s), mismatches: ${JSON.stringify(danglingCmp.mismatches)}.`);
+    }
+    console.log(`   - ${danglingCmp.ids} ids compared (${danglingCmp.idsWithHits} with a hit, ${danglingCmp.quadsRemoved} unfolds quad(s) removed and restored), no differences.`);
+    console.log("   [✓] removeDanglingUnfolds equivalence verified successfully.\n");
+
     console.log("10. Testing mark-and-sweep GC collects a cyclic dead cluster but spares a referenced tombstone...");
     // The naive design considered for this (drop a tombstoned node once it has *zero* incoming
     // references, dead or alive) fails exactly like refcounting GC fails on a cycle: two
@@ -725,6 +744,10 @@ Intro sentence for the demo folder.
     }
     console.log(`   - Found ${backlinkResults.length} backlink(s) to ${backlinkTargetId}: ${bl.linkId}  [${bl.label}]  ${bl.title}`);
     console.log("   [✓] kg:backlinks verified successfully.\n");
+
+    console.log("13. Testing that the preview renderer leaves an anchored link's single anchor alone (issues/treeview.md; verifyLinkRefusals.ts)...");
+    checkSingleAnchorRendering(store, DEMO_DIR, linkTargetCitedId);
+    console.log("   [✓] Single-anchor rendering verified successfully.\n");
 
     console.log("   [✓] ApeironNgn Substrate Integration complete & verified!");
   } finally {

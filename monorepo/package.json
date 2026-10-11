@@ -12,7 +12,9 @@
     "aperas": "tsx packages/cli/src/aperas.ts",
     "build:aperas": "node packages/cli/build.mjs",
     "verify": "tsx packages/cli/src/verify.ts",
-    "verify:slow": "tsx packages/cli/src/verifyExtended.ts"
+    "verify:slow": "tsx packages/cli/src/verifyExtended.ts",
+    "svc:sample": "python3 packages/cli/diagnostics/svc_sampler.py",
+    "svc:sample:test": "python3 -m unittest packages/cli/diagnostics/test_svc_sampler.py"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

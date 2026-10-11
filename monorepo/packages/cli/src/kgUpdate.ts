@@ -57,7 +57,7 @@ import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
 import { parseMarkdownTree, headingDepth, parseFrontmatterFields, collectLinkCodesFromText, type ParsedBlockNode, type LinkOccurrence } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
 import { reconcileTree } from '@aperas/core/reconcile';
-import { resolveBlockLinks, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
+import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
 import { carryForwardProp, type PropEntry } from '@aperas/core/props';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
@@ -255,6 +255,48 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     }
   }
 
+  // Everything up to the refusal below is a pure computation on the parsed input (`reconcileTree` works
+  // on plain objects, `extractLinkCodes` strips `linkCodes` off the parse in place): the pending link
+  // codes of the text about to be written are known before the store has been touched, so a refused
+  // link (`assertLinksAcceptable`, the same check `resolveBlockLinks` keeps as its backstop) changes
+  // nothing — not `target.text`, not a tombstone, not a hydrate.
+  let pendingLinks: PendingLinkCodes[];
+  let reconciliation: ReturnType<typeof reconcileTree> | undefined;
+  if (req.textOnly) {
+    // Extracted *before* `hydrateFromParsed` runs on any of `overflow` below — `extractLinkCodes`
+    // strips the (schema-unknown) `linkCodes` field off each node as it walks, in place, the same
+    // order `ingestFromDisk` uses (extract first, hydrate after).
+    pendingLinks = extractLinkCodes({
+      blockId: target.key,
+      type: target.type,
+      children: overflow,
+      linkCodes: rootLinkCodes,
+    } as unknown as ParsedBlockNode);
+  } else {
+    // `props` defaults to `oldShape`'s own (preserving whatever `target` already had, e.g. a
+    // heading's tree-anchor, or a listItem's `orderedList`/`startIndex`) unless an actual heading
+    // retitle or a single-item adopt (`retitling`/`singleItemAdopt`) explicitly supplied a new value
+    // — a plain multi-item overflow push was never asked to touch props, and `carryForwardFields`'s
+    // own prop-id-preservation only activates when both sides have props to compare in the first
+    // place (leaving it out here, as this used to, silently dropped it).
+    const newShape = {
+      blockId: target.key,
+      type: target.type,
+      title: title ?? target.title,
+      text,
+      children: overflow,
+      props: (retitling || singleItemAdopt) ? props : oldShape.props,
+      linkCodes: rootLinkCodes,
+    };
+    reconciliation = reconcileTree(oldShape, newShape);
+    // Same extract-before-hydrate ordering as the --text-only branch — `finalTree` is `newShape`,
+    // mutated in place by `reconcileTree` (carried-forward `blockId`s etc.), so it still carries
+    // every node's own `linkCodes` from the fresh parse, root included.
+    pendingLinks = extractLinkCodes(reconciliation.finalTree as unknown as ParsedBlockNode);
+  }
+  pendingLinks.push(...artifactDescriptionLinks(kind, target, frontmatter));
+  assertLinksAcceptable(store, pendingLinks, oldWikilinksByBlock);
+
   target.text = text;
   // Real content just arrived at `target` regardless of which mode runs below — promoting a holder
   // is orthogonal to how carefully the overflow gets merged in. The reconcile branch below gets
@@ -274,15 +316,6 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     if (retitling || singleItemAdopt) {
       target.props = props?.length ? (props as unknown as ApeironNode[]) : undefined;
     }
-    // Extracted *before* `hydrateFromParsed` runs on any of `overflow` below — `extractLinkCodes`
-    // strips the (schema-unknown) `linkCodes` field off each node as it walks, in place, the same
-    // order `ingestFromDisk` uses (extract first, hydrate after).
-    const pendingLinks = extractLinkCodes({
-      blockId: target.key,
-      type: target.type,
-      children: overflow,
-      linkCodes: rootLinkCodes,
-    } as unknown as ParsedBlockNode);
     const overflowIds = overflow.map((c) => {
       const id = `BlockNode:${c.blockId}`;
       (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(c);
@@ -290,34 +323,15 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     });
     const existing = (target.children as TreeNode[] | undefined) ?? [];
     target.children = [...overflowIds, ...existing];
-    applyArtifactFrontmatter(kind, target, frontmatter, pendingLinks);
+    applyArtifactFrontmatter(kind, target, frontmatter);
     const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, artifactId);
     return { reconciled: false, linkResolution };
   }
 
-  // `props` defaults to `oldShape`'s own (preserving whatever `target` already had, e.g. a
-  // heading's tree-anchor, or a listItem's `orderedList`/`startIndex`) unless an actual heading
-  // retitle or a single-item adopt (`retitling`/`singleItemAdopt`) explicitly supplied a new value
-  // — a plain multi-item overflow push was never asked to touch props, and `carryForwardFields`'s
-  // own prop-id-preservation only activates when both sides have props to compare in the first
-  // place (leaving it out here, as this used to, silently dropped it).
-  const newShape = {
-    blockId: target.key,
-    type: target.type,
-    title: title ?? target.title,
-    text,
-    children: overflow,
-    props: (retitling || singleItemAdopt) ? props : oldShape.props,
-    linkCodes: rootLinkCodes,
-  };
-  const { finalTree, tombstones, stats } = reconcileTree(oldShape, newShape);
+  const { finalTree, tombstones, stats } = reconciliation!;
   for (const tombstone of tombstones) applyTombstone(store, tombstone);
-  // Same extract-before-hydrate ordering as the --text-only branch above — `finalTree` is
-  // `newShape`, mutated in place by `reconcileTree` (carried-forward `blockId`s etc.), so it still
-  // carries every node's own `linkCodes` from the fresh parse, root included.
-  const pendingLinks = extractLinkCodes(finalTree as unknown as ParsedBlockNode);
   target.hydrateFromParsed(finalTree);
-  applyArtifactFrontmatter(kind, target, frontmatter, pendingLinks);
+  applyArtifactFrontmatter(kind, target, frontmatter);
   const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, artifactId);
 
   return { reconciled: true, ...stats, linkResolution };
@@ -334,15 +348,22 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
  *  for that key in the ordinary case (a heading/non-paragraph leading child never gives `target`'s
  *  own key a `pendingLinks` entry from body content at all); see `fullIdForKey`'s own doc
  *  comment in `apeironNgn/artifacts.ts` for the matching resolver-side fix this depends on. */
-function applyArtifactFrontmatter(kind: string, target: BlockNode, frontmatter: string | undefined, pendingLinks: PendingLinkCodes[]): void {
+function applyArtifactFrontmatter(kind: string, target: BlockNode, frontmatter: string | undefined): void {
   if (kind !== 'ArtifactNode' || frontmatter === undefined) return;
   const fields = parseFrontmatterFields(frontmatter);
   const oldProps = target.props as unknown as PropEntry[] | undefined;
   target.props = Object.keys(fields).length > 0
     ? (Object.entries(fields).map(([key, value]) => carryForwardProp(oldProps, key, value)) as unknown as ApeironNode[])
     : undefined;
-  const descriptionLinkCodes = collectLinkCodesFromText(fields.description ?? '');
-  if (descriptionLinkCodes.length > 0) pendingLinks.push({ blockId: target.key, codes: descriptionLinkCodes });
+}
+
+/** The pending link codes of an `ArtifactNode` target's `description`, empty for anything else — the
+ *  read-only half of `applyArtifactFrontmatter`, so the caller can have them (and refuse a bad one)
+ *  before `applyArtifactFrontmatter` writes any prop. */
+function artifactDescriptionLinks(kind: string, target: BlockNode, frontmatter: string | undefined): PendingLinkCodes[] {
+  if (kind !== 'ArtifactNode' || frontmatter === undefined) return [];
+  const codes = collectLinkCodesFromText(parseFrontmatterFields(frontmatter).description ?? '');
+  return codes.length > 0 ? [{ blockId: target.key, codes }] : [];
 }
 
 /** `kg:update` on a `FolderNode` target is frontmatter-only — a folder's README *body* is edited on
@@ -371,15 +392,17 @@ function runFolderUpdate(store: Store, targetId: string, markdown: string): Upda
   collectOldWikilinksByBlock(target, oldWikilinksByBlock, false);
 
   const fields = parseFrontmatterFields(frontmatter);
-  const oldProps = target.props as unknown as PropEntry[] | undefined;
-  target.props = Object.keys(fields).length > 0
-    ? (Object.entries(fields).map(([key, value]) => carryForwardProp(oldProps, key, value)) as unknown as ApeironNode[])
-    : undefined;
-
   const descriptionLinkCodes = collectLinkCodesFromText(fields.description ?? '');
   const pendingLinks: PendingLinkCodes[] = descriptionLinkCodes.length > 0
     ? [{ blockId: target.key, codes: descriptionLinkCodes }]
     : [];
+  // Before the props are written, so a refused description link changes nothing.
+  assertLinksAcceptable(store, pendingLinks, oldWikilinksByBlock);
+
+  const oldProps = target.props as unknown as PropEntry[] | undefined;
+  target.props = Object.keys(fields).length > 0
+    ? (Object.entries(fields).map(([key, value]) => carryForwardProp(oldProps, key, value)) as unknown as ApeironNode[])
+    : undefined;
   const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock);
   return { reconciled: false, linkResolution };
 }

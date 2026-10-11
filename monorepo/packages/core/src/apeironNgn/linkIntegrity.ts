@@ -13,7 +13,8 @@ import { wrap, collectOldWikilinksByBlock, type BlockNode, type Link, type TreeN
 import { allIdsOfKind } from './dehydrate';
 import { collectLinkCodesFromText, type LinkOccurrence } from '../astParser';
 import { resolveBlockLinks, retryDanglingRefs, resolveOneCode } from './artifacts';
-import { nodeKindFromId } from './vocab';
+import { nodeKindFromId, nodeExists } from './vocab';
+import { getProps, type HasProps } from '../props';
 import { findByExactPath } from './tree';
 import type { PendingLinkCodes } from '../artifacts';
 
@@ -34,6 +35,25 @@ export interface LinkDiscrepancy {
   resolvedLinks: { id: string; targetId: string | null }[];
 }
 
+/** Why a stored `Link`'s target names no node: `repeated-anchor` (the target is an id followed by
+ *  another `#id/<id>`, the shape the doubled-anchor defect stored), `id-names-no-node` (a plain id
+ *  with no node behind it), `other` (the `Link` carries no target at all). */
+export type UnresolvedTargetKind = 'repeated-anchor' | 'id-names-no-node' | 'other';
+
+/** A live block's stored `Link` whose target names no node — found by looking at the `Link` itself,
+ *  not at a code in the block's text, so it is reported whether or not the text still says so. */
+export interface UnresolvedLinkTarget {
+  /** The live BlockNode that owns the `Link` */
+  blockId: string;
+  artifactPath: string | null;
+  linkId: string;
+  /** The stored target, verbatim (may be `null` for `other`) */
+  targetId: string | null;
+  kind: UnresolvedTargetKind;
+  /** The link's visible text, when the block's text still carries it at the `Link`'s recorded position */
+  linkText?: string;
+}
+
 export interface LinkIntegrityReport {
   /** Total live BlockNodes inspected */
   totalLiveBlocks: number;
@@ -41,6 +61,8 @@ export interface LinkIntegrityReport {
   blocksWithLinkText: number;
   /** Discrepancies found */
   discrepancies: LinkDiscrepancy[];
+  /** Stored `Link`s whose target names no node — detection only, `--repair` never touches them */
+  unresolvedTargets: UnresolvedLinkTarget[];
 }
 
 /** Walks .parent up to find the enclosing ArtifactNode's path */
@@ -126,10 +148,47 @@ export function owningArtifactId(store: Store, nodeId: string): string | null {
   }
 }
 
+/** The visible text of the link written at `position` in `text` (`[text](href)`), or `undefined`. */
+function linkTextAt(text: string | undefined, position: number): string | undefined {
+  if (!text || !Number.isFinite(position)) return undefined;
+  return /^\[([^\]]*)\]\(/.exec(text.slice(position))?.[1];
+}
+
+/** `block`'s stored `Link`s whose target names no node (`UnresolvedLinkTarget`). A target is looked
+ *  up by its id as stored, so an id that has `#id/…` glued onto it (never a node's id) is found here
+ *  even though the code in the text resolves "consistently" to that same non-existent id. */
+function unresolvedTargetsOf(store: Store, block: BlockNode, links: Link[], artifactPath: string | null): UnresolvedLinkTarget[] {
+  const out: UnresolvedLinkTarget[] = [];
+  for (const link of links) {
+    const targetId = (link.target as unknown as { id?: string } | undefined)?.id ?? null;
+    let exists = false;
+    if (targetId) {
+      try {
+        exists = nodeExists(store, targetId);
+      } catch {
+        exists = false;
+      }
+    }
+    if (exists) continue;
+    const kind: UnresolvedTargetKind = targetId === null ? 'other' : targetId.includes('#id/') ? 'repeated-anchor' : 'id-names-no-node';
+    const positions = getProps(link as unknown as HasProps, 'position').map(Number);
+    out.push({
+      blockId: block.id,
+      artifactPath,
+      linkId: link.id,
+      targetId,
+      kind,
+      linkText: positions.length > 0 ? linkTextAt(block.text, positions[0]) : undefined,
+    });
+  }
+  return out;
+}
+
 function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
   let totalLiveBlocks = 0;
   let blocksWithLinkText = 0;
   const discrepancies: LinkDiscrepancy[] = [];
+  const unresolvedTargets: UnresolvedLinkTarget[] = [];
   const debug = !!process.env.APERAS_DEBUG_TIMING;
   let parseMs = 0;
   let resolveMs = 0;
@@ -138,6 +197,11 @@ function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
   for (const block of blocks) {
     if (block.tombstonedAt) continue;
     totalLiveBlocks++;
+
+    const storedLinks = (block.links as unknown as Link[] | undefined) ?? [];
+    if (storedLinks.length > 0) {
+      unresolvedTargets.push(...unresolvedTargetsOf(store, block, storedLinks, artifactPathOfBlock(block)));
+    }
 
     const text = block.text;
     if (!text) continue;
@@ -149,7 +213,7 @@ function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
 
     blocksWithLinkText++;
 
-    const actualLinks = (block.links as unknown as Link[] | undefined) ?? [];
+    const actualLinks = storedLinks;
     const actualTargetIds = new Set(actualLinks.map((l) => l.target?.id).filter((tid): tid is string => !!tid));
     const tb0 = debug ? Date.now() : 0;
     const basePath = block.toPath();
@@ -198,6 +262,7 @@ function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
     totalLiveBlocks,
     blocksWithLinkText,
     discrepancies,
+    unresolvedTargets,
   };
 }
 
@@ -233,6 +298,13 @@ export interface RepairLinkIntegrityResult {
  * became 16 on a single repair of `issues/linking.md`. `collectOldWikilinksByBlock`'s own doc
  * comment carries the general version of this invariant — its `recursive` parameter exists because
  * of this exact incident.
+ *
+ * A stored `Link` whose target names no node (`LinkIntegrityReport.unresolvedTargets`) is reported,
+ * never repaired, and repair does nothing destructive to it: only the blocks named in `discrepancies`
+ * are re-resolved, a block named only in `unresolvedTargets` is not touched at all, and in a block
+ * that is re-resolved, a bad `Link` its text still produces is kept as it is (`findRefusedLinks`
+ * leaves a block's already-stored link alone; a *new* bad code is set aside with a warning, `'skip'`,
+ * rather than aborting the whole repair). It disappears only when the block's text no longer has it.
  */
 export function repairLinkIntegrity(store: Store, knownReportBefore?: LinkIntegrityReport): RepairLinkIntegrityResult {
   const reportBefore = knownReportBefore ?? checkLinkIntegrity(store);
@@ -268,7 +340,7 @@ export function repairLinkIntegrity(store: Store, knownReportBefore?: LinkIntegr
     }
 
     if (pendingLinks.length > 0) {
-      resolveBlockLinks(store, pendingLinks, undefined, oldWikilinksByBlock, artifactId);
+      resolveBlockLinks(store, pendingLinks, undefined, oldWikilinksByBlock, artifactId, 'skip');
     }
   }
 

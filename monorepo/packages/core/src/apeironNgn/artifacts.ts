@@ -417,17 +417,153 @@ function fullIdForKey(store: Store, key: string): string {
   return `BlockNode:${key}`;
 }
 
+/** A strict full node id (`Kind:` + a valid 13-character snowflake, optionally `:` and a deeper
+ *  embedded id) — the shape `resolveCreate.ts`'s `resolveDirectOrSnowflake` passes through unchecked. */
+const DIRECT_ID_RE = /^(BlockNode|ArtifactNode|FolderNode):[0-9A-HJKMNP-TV-Z]{13}(:.*)?$/;
+
+/** What is wrong with a link code, when anything is — see `classifyLinkCode`. */
+export type LinkCodeProblem =
+  | { kind: 'repeated-anchor'; code: string; fragment: string; suggestion: string }
+  | { kind: 'unknown-id'; code: string; id: string };
+
+/** The id a code addresses directly, for the three direct-id spellings (`[[BlockNode:X]]`,
+ *  `aperas://id/BlockNode:X`, `path#id/BlockNode:X`); `null` for every other code. Deliberately the
+ *  same slicing the resolvers do (`resolveFragmentCode`, `resolveCreate.ts`'s `aperas://id/` branch),
+ *  so what is checked here is exactly the id that would become the `Link`'s target. */
+function directIdOfCode(code: string): string | null {
+  if (code.startsWith(APERAS_ID_PREFIX)) return code.slice(APERAS_ID_PREFIX.length);
+  if (code.startsWith(APERAS_TREE_PREFIX)) return null;
+  const hashIndex = code.indexOf('#');
+  if (hashIndex !== -1) {
+    const fragment = code.slice(hashIndex + 1);
+    return fragment.startsWith('id/') ? fragment.slice(3) : null;
+  }
+  return DIRECT_ID_RE.test(code) ? code : null;
+}
+
+function idNamesANode(store: Store, id: string): boolean {
+  try {
+    return nodeExists(store, id);
+  } catch {
+    return false; // an id that is not even a well-formed IRI part names nothing
+  }
+}
+
+/** Whether `code` is one the writer must refuse, and why (`null` when it is fine): (1) an address
+ *  that repeats `#id/` (`path#id/X#id/X`, `aperas://id/X#id/X`), whatever the repeated ids are — the
+ *  shape a link takes when copied back from a preview that appended its own anchor; (2) a direct-id
+ *  spelling whose id names no node in `store`. A link to a not-yet-existing *deep path* is neither:
+ *  it places a holder, as it always has. Pure and read-only. */
+export function classifyLinkCode(store: Store, code: string): LinkCodeProblem | null {
+  const parts = code.split('#id/');
+  const directId = directIdOfCode(code);
+  if (parts.length > 2 || (directId !== null && directId.includes('#id/'))) {
+    const repeated = parts.slice(1).map((id) => `#id/${id}`);
+    const unique = [...new Set(repeated)];
+    return {
+      kind: 'repeated-anchor',
+      code,
+      // `aperas://id/X#id/X` has one `#id/` fragment, repeating the id the scheme already names.
+      fragment: repeated.length > 1 && unique.length === 1 ? `${unique[0]} (${repeated.length} times)` : repeated.join(' '),
+      suggestion: parts.length > 2 ? `${parts[0]}#id/${parts[1]}` : parts[0],
+    };
+  }
+  if (directId !== null && !idNamesANode(store, directId)) return { kind: 'unknown-id', code, id: directId };
+  return null;
+}
+
+/** One refused link, ready to print. */
+export interface RefusedLink {
+  blockId: string;
+  artifactPath: string | null;
+  linkText: string | undefined;
+  problem: LinkCodeProblem;
+}
+
+function describeRefusal(r: RefusedLink): string {
+  const where = `block ${r.blockId}${r.artifactPath ? ` (${r.artifactPath})` : ''}`;
+  const label = r.linkText !== undefined ? `link "${r.linkText}"` : 'a link';
+  if (r.problem.kind === 'repeated-anchor') {
+    return `${where}: ${label} repeats the anchor ${r.problem.fragment} in "${r.problem.code}" — an address carries its id once; use "${r.problem.suggestion}".`;
+  }
+  return `${where}: ${label} points to id "${r.problem.id}", which names no node in the graph ("${r.problem.code}").`;
+}
+
+/** The links among `pending` that must not become a `Link`: each classified by `classifyLinkCode`,
+ *  except one the block already has stored. A block's existing wikilink to exactly the target such a
+ *  code would resolve to (`oldWikilinksByBlock`) is left alone — refusing it would make unchanged
+ *  content unwritable (an ingest of a file, or an edit of a heading above it, re-extracts every code
+ *  in the subtree), and it costs nothing to keep: no new bad `Link` appears. Those remain visible to
+ *  `check-links`, which is what the repair of stored bad targets starts from. Read-only; touches nothing
+ *  in `store`. */
+export function findRefusedLinks(
+  store: Store,
+  pending: PendingLinkCodes[],
+  oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map()
+): RefusedLink[] {
+  const refused: RefusedLink[] = [];
+  for (const { blockId, codes } of pending) {
+    let context: { fullId: string; basePath: string | null; artifactPath: string | null } | null = null;
+    for (const occ of codes) {
+      const problem = classifyLinkCode(store, occ.code);
+      if (!problem) continue;
+      if (!context) {
+        const fullId = fullIdForKey(store, blockId);
+        const block = wrap(store, fullId) as unknown as BlockNode;
+        context = { fullId, basePath: nodeExists(store, fullId) ? block.toPath() : null, artifactPath: nodeExists(store, fullId) ? artifactPathOfBlock(block) : null };
+      }
+      let wouldTarget: string | null = null;
+      try {
+        wouldTarget = resolveOneCode(store, occ.code, context.basePath, context.artifactPath, false);
+      } catch {
+        wouldTarget = null;
+      }
+      if (wouldTarget !== null && (oldWikilinksByBlock.get(blockId) ?? []).some((w) => w.target === wouldTarget)) continue;
+      refused.push({ blockId: context.fullId, artifactPath: context.artifactPath, linkText: occ.text, problem });
+    }
+  }
+  return refused;
+}
+
+/** Throws one `Error` naming every link `findRefusedLinks` returns for `pending` (block, link text,
+ *  and the repeated fragment or the id that names no node); does nothing when there are none.
+ *  Exported so a write path can call it *before* it changes anything. */
+export function assertLinksAcceptable(
+  store: Store,
+  pending: PendingLinkCodes[],
+  oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map()
+): void {
+  const refused = findRefusedLinks(store, pending, oldWikilinksByBlock);
+  if (refused.length === 0) return;
+  throw new Error(
+    `Refusing to store ${refused.length} link(s) that cannot point anywhere:\n` + refused.map((r) => `  - ${describeRefusal(r)}`).join('\n')
+  );
+}
+
+/** What `resolveBlockLinks` does with a link `findRefusedLinks` flags: `'throw'` (the default, every
+ *  write path) refuses the whole call before any `Link` is touched; `'skip'` (ingest from disk, where
+ *  the tree is already written and its hash recorded, so a throw would strand the file) leaves that
+ *  one link unlinked, warns naming it, and carries on. */
+export type BadLinkPolicy = 'throw' | 'skip';
+
 export function resolveBlockLinks(
   store: Store,
   pending: PendingLinkCodes[],
   oldLinkTargets: Map<string, Set<string>> = new Map(),
   oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map(),
-  artifactId?: string
+  artifactId?: string,
+  onBadLink: BadLinkPolicy = 'throw'
 ): LinkResolutionStats {
   let resolved = 0;
   let dangling = 0;
   let changed = 0;
   const danglingCodes = new Set<string>();
+  // Before any block's `.links` is rewritten: a link that cannot point anywhere is refused (or, for
+  // ingest, set aside) here, so the throw never leaves some blocks relinked and others not.
+  const refused = findRefusedLinks(store, pending, oldWikilinksByBlock);
+  if (refused.length > 0 && onBadLink === 'throw') assertLinksAcceptable(store, pending, oldWikilinksByBlock);
+  const skipped = new Set<string>(refused.map((r) => `${r.blockId}\u0000${r.problem.code}`));
+  for (const r of refused) console.warn(`[ApeironNgn Artifacts] Link not stored — ${describeRefusal(r)}`);
   const codesByBlock = new Map(pending.map((p) => [p.blockId, p.codes]));
   const blockIds = new Set([...codesByBlock.keys(), ...oldWikilinksByBlock.keys()]);
   for (const blockId of blockIds) {
@@ -439,6 +575,7 @@ export function resolveBlockLinks(
     const newTargets = new Set<string>();
     const positionsByTarget = new Map<string, number[]>();
     for (const { code, position, requiresAnchorMatch } of codes) {
+      if (skipped.has(`${fullId}\u0000${code}`)) continue;
       let target: string | null = null;
       try {
         target = resolveOneCode(store, code, basePath, artifactPath);
@@ -606,7 +743,7 @@ export function ingestArtifact(store: Store, artifactPath: string, force: boolea
   const result = record.ingestFromDisk(force, bypassUnchangedCheck);
   if (!result) return null;
   const { pendingLinks, oldLinkTargets, oldWikilinksByBlock, ...rest } = result;
-  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, existingId);
+  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, existingId, 'skip');
   return { ...rest, linkResolution };
 }
 

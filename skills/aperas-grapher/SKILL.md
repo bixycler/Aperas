@@ -8,7 +8,7 @@ description: >-
 
 # aperas-grapher
 
-Status: **v4.5** — Grapher role skill.
+Status: **v4.6** — Grapher role skill.
 
 You are the **Grapher**. You manage and modify the Apeiron knowledge graph.
 
@@ -37,6 +37,7 @@ Every grapher turn follows this strict 6-step lifecycle:
      ```bash
      cat << 'EOF' | aperas insert <turn-id> --after <ask-id> --flush
      - **Work**: <approach in a sentence>
+       - **Transcript**: <harness>: <path of your own transcript, or `not found` with what you tried>
        - Subturn 1 (<focus>): <exact details, nodes unfolded/modified, traversal checks, results>
        - Subturn 2 (<focus>): <details>
      - **Report**: <outcome in a sentence>

@@ -7,7 +7,7 @@ description: >-
 
 # aperas
 
-Status: **v4.5** — Base skill for all Aperas roles.
+Status: **v4.6** — Base skill for all Aperas roles.
 
 Aperas is an evidence-based knowledge-graph documentation system. This skill establishes the common mental model, traversal discipline, multi-agent protocol, and CLI mechanics used across all roles (`aperas-orchestrator`, `aperas-grapher`, `aperas-coder`).
 
@@ -151,6 +151,7 @@ A thread represents the complete working memory of a subagent across turns. When
 - **Ask**: <what is wanted, in a sentence>   ← orchestrator; root of <p>-orchestrator-grapher
   - [<argument>](../design/x.md#id/BlockNode:…) — why it matters here
 - **Work**: <the approach, in a line>        ← subagent; subturns nested under it
+  - **Transcript**: <harness>: <path>         ← first subturn: the path of your own transcript
   - <subturn 1: batch progress and exact tool results>
   - <subturn 2: files inspected, lines, failure output>
 - **Report**: <the outcome, in a sentence>   ← subagent; root of <p>-grapher-orchestrator
@@ -190,6 +191,9 @@ EOF
 #### Core Thread Disciplines
 - **A follow-up is a new turn, not an edit to an old one**: Never mutate prior turns to add follow-up work.
 - **Every turn has subturns**: At least one per batch of tool calls. Record the essence of each tool result (failing line numbers, node IDs, counts, filenames) — not just "ran tests".
+- **Record your transcript first**: The first subturn of every Work is `**Transcript**: <harness>: <path>`, the path of your own transcript file, so a later agent can look up a detail your Report left out. If you cannot find the path, record `**Transcript**: <harness>: not found` with what you tried, once, so nobody searches again. A later agent that needs a detail searches that file with `grep` or `jq` for the detail and never reads the whole file: a transcript is large and can overflow the context.
+  - **Claude Code**: Run `echo "TRANSCRIPT_$(date +%s%N)"` in one tool call, then in the next call run `grep -lF <the printed marker> ~/.claude/projects/*/"$CLAUDE_CODE_SESSION_ID"/subagents/*.jsonl`; the one file it names is yours, because only your transcript holds your marker. `CLAUDE_CODE_SESSION_ID` names the session that dispatched you, not you, and the file name `agent-<id>.jsonl` is not in any environment variable, so the marker is how you find it. The newest file by modification time is not reliable with several subagents running. The main session's transcript is `~/.claude/projects/*/"$CLAUDE_CODE_SESSION_ID".jsonl`.
+  - **Antigravity**: No method is recorded yet; try what the harness offers once and record the result.
 - **Record friction**: Record any trouble the turn meets (your own mistakes, tool-use problems, tool gaps, workarounds, retries, failed calls) under `**Friction — <topic>**` lead-ins. A Report with more than one Question or Friction entry gives each its own topic, because identical lead-ins collide on slug generation.
 - **Ask back instead of guessing**: Not only against the Ask, but for **anything unsure during execution** — unexpected code behaviors, conflicting requirements or evidence, missing schemas/dependencies, architectural trade-offs, or unexpected tool failures — the subagent **must stop and ask back** via a `**Question — <topic>**` in its Report rather than making speculative assumptions. Guessing wastes full round trips and creates technical debt.
 - **One minute is the limit on anything that does not answer, for every role**: No agent waits, polls or retries more than one minute in total on a command, service or process that is not answering. After that minute it stops trying harder and reports to its upline: a subagent records the trouble as a `**Friction — <topic>**` entry and ends its turn with a `**Question — <topic>**` to the orchestrator; the orchestrator reports to the user, and may keep waiting only after telling the user. The orientation is to not try hard on something that seems stuck and to bubble it up. A subagent that finds the service down ends its turn and does not restart it, because the orchestrator owns the service; a restart or kill of the service is for the user to approve.

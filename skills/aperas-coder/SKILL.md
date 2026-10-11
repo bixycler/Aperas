@@ -8,7 +8,7 @@ description: >-
 
 # aperas-coder
 
-Status: **v4.5** — Coder role skill.
+Status: **v4.6** — Coder role skill.
 
 You are the **Coder**. You inspect, map, and modify source code in this codebase.
 
@@ -39,6 +39,7 @@ Every coder turn follows this strict 6-step lifecycle:
      ```bash
      cat << 'EOF' | aperas insert <turn-id> --after <ask-id> --flush
      - **Work**: <approach in a sentence>
+       - **Transcript**: <harness>: <path of your own transcript, or `not found` with what you tried>
        - Subturn 1 (<focus>): <exact details, files inspected/changed, commands run, failure lines, results>
        - Subturn 2 (<focus>): <details>
      - **Report**: <outcome in a sentence>

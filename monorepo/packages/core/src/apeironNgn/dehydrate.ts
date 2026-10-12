@@ -9,18 +9,8 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
-import {
-  NODE_BASE,
-  nodeIri,
-  predIri,
-  idFromNodeIri,
-  decodeLiteral,
-  isLiteralTerm,
-  isNamedNodeTerm,
-  nodeKindFromId,
-  PARENT_PRED,
-  SIBLING_INDEX_PRED,
-} from './vocab';
+import { idFromNodeIri, nodeKindFromId } from './vocab';
+import { allSubjectIds, objectsOf, orderedChildIds } from './storeAccess';
 import { isThreadScopedId } from './threadScope';
 import { SHAPE_BY_KIND, type FieldSpec } from './shape';
 import { getApeironExportDir } from './store';
@@ -47,38 +37,15 @@ export const STATE_CLASSES = ['TreeView'] as const;
 export const THREAD_PARTITIONED_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
 
 export function allIdsOfKind(store: Store, kind: string): string[] {
-  const ids = new Set<string>();
-  for (const q of store.match(null, null, null, null)) {
-    if (q.subject.termType !== 'NamedNode') continue;
-    const raw = q.subject.value;
-    if (!raw.startsWith(NODE_BASE)) continue;
-    const id = idFromNodeIri(raw);
-    if (nodeKindFromId(id) === kind) ids.add(id);
-  }
-  return [...ids];
-}
-
-/** Reified containment's inverse (`node.ts`'s `childrenOf`, but returning bare ids — dehydrate
- *  writes the plain reference-id array shape, not wrapped nodes). */
-function orderedChildIds(store: Store, id: string): string[] {
-  const parentMatches = store.match(null, PARENT_PRED, nodeIri(id), null);
-  const withIndex = parentMatches.map((m) => {
-    const childId = idFromNodeIri(String(m.subject.value));
-    const idxMatches = store.match(nodeIri(childId), SIBLING_INDEX_PRED, null, null);
-    const idx = idxMatches.length > 0 && isLiteralTerm(idxMatches[0].object) ? Number(idxMatches[0].object.value) : 0;
-    return { childId, idx };
-  });
-  withIndex.sort((a, b) => a.idx - b.idx);
-  return withIndex.map(({ childId }) => childId);
+  return allSubjectIds(store).filter((id) => nodeKindFromId(id) === kind);
 }
 
 function decodeField(store: Store, id: string, field: string, spec: FieldSpec): unknown {
-  const matches = store.match(nodeIri(id), predIri(field), null, null);
-  const decodeOne = (m: (typeof matches)[number]) => {
-    const obj = m.object;
-    if (isLiteralTerm(obj)) return decodeLiteral(obj);
-    if (isNamedNodeTerm(obj)) {
-      const refId = idFromNodeIri(obj.value);
+  const matches = objectsOf(store, id, field);
+  const decodeOne = (obj: (typeof matches)[number]) => {
+    if (obj.kind === 'literal') return obj.value;
+    if (obj.kind === 'ref') {
+      const refId = idFromNodeIri(obj.iri);
       return spec.storageKind === 'embed' ? serializeDoc(store, refId) : refId;
     }
     return undefined;

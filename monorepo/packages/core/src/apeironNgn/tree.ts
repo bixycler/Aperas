@@ -7,7 +7,8 @@
  */
 
 import type { Store } from 'oxigraph';
-import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId } from './vocab';
+import { nodeKindFromId } from './vocab';
+import { firstSubjectWhere } from './storeAccess';
 import type { TreeView } from './node';
 
 /** An exact match on a stored `path` literal — only ever true for an `ArtifactNode`/`FolderNode`
@@ -17,9 +18,7 @@ import type { TreeView } from './node';
  *  grammar — `kg:tree`/`kg:path`'s own public ref resolution is `resolveDeepPath` (`resolve.ts`),
  *  not this function directly. */
 export function findByExactPath(store: Store, path: string): string | null {
-  const matches = store.match(null, predIri('path'), encodeLiteral(path), null);
-  if (matches.length === 0) return null;
-  return idFromNodeIri(String(matches[0].subject.value));
+  return firstSubjectWhere(store, 'path', { lit: path });
 }
 
 export function displayLabel(id: string, node: any): string {

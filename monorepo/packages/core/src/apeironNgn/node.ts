@@ -28,22 +28,19 @@
 
 import { readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import type { Store, Quad } from 'oxigraph';
-import { quad } from 'oxigraph';
+import type { Store } from 'oxigraph';
 import { generateNodeId } from '../snowflake';
+import { idFromNodeIri, nodeKindFromId, nodeExists, PARENT_FIELD, SIBLING_INDEX_FIELD } from './vocab';
 import {
-  nodeIri,
-  idFromNodeIri,
-  predIri,
-  encodeLiteral,
-  decodeLiteral,
-  isLiteralTerm,
-  isNamedNodeTerm,
-  nodeKindFromId,
-  nodeExists,
-  PARENT_PRED,
-  SIBLING_INDEX_PRED,
-} from './vocab';
+  type Obj,
+  objectsOf,
+  subjectsWhere,
+  firstSubjectWhere,
+  orderedChildIds,
+  countMatches,
+  deleteMatches,
+  addQuad,
+} from './storeAccess';
 import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIFACT_NODE_SHAPE, FOLDER_NODE_SHAPE, LINK_SHAPE, PROP_SHAPE, PROFILE_SHAPE, TREE_VIEW_SHAPE } from './shape';
 import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
@@ -71,15 +68,7 @@ export interface ApeironNode {
 // ---------------------------------------------------------------------------------------------
 
 function childrenOf(store: Store, id: string): ApeironNode[] {
-  const parentMatches = store.match(null, PARENT_PRED, nodeIri(id), null);
-  const withIndex = parentMatches.map((m) => {
-    const childId = idFromNodeIri(String(m.subject.value));
-    const idxMatches = store.match(nodeIri(childId), SIBLING_INDEX_PRED, null, null);
-    const idx = idxMatches.length > 0 && isLiteralTerm(idxMatches[0].object) ? Number(idxMatches[0].object.value) : 0;
-    return { childId, idx };
-  });
-  withIndex.sort((a, b) => a.idx - b.idx);
-  return withIndex.map(({ childId }) => wrap(store, childId));
+  return orderedChildIds(store, id).map((childId) => wrap(store, childId));
 }
 
 /** A true incremental append for reified `orderedContainment` — writes only `childId`'s own
@@ -96,12 +85,11 @@ function childrenOf(store: Store, id: string): ApeironNode[] {
  *  ever cleared the *target* parent's existing children, not whatever the moving child used to
  *  belong to — so this closes that gap too, for free, without querying or touching any sibling. */
 function appendOrderedChild(store: Store, parentId: string, childId: string): void {
-  const childSubject = nodeIri(childId);
-  for (const m of store.match(childSubject, PARENT_PRED, null, null)) store.delete(m);
-  for (const m of store.match(childSubject, SIBLING_INDEX_PRED, null, null)) store.delete(m);
-  const siblingCount = store.match(null, PARENT_PRED, nodeIri(parentId), null).length;
-  store.add(quad(childSubject, PARENT_PRED, nodeIri(parentId)));
-  store.add(quad(childSubject, SIBLING_INDEX_PRED, encodeLiteral(siblingCount)));
+  deleteMatches(store, childId, PARENT_FIELD, null);
+  deleteMatches(store, childId, SIBLING_INDEX_FIELD, null);
+  const siblingCount = countMatches(store, null, PARENT_FIELD, { ref: parentId });
+  addQuad(store, childId, PARENT_FIELD, { ref: parentId });
+  addQuad(store, childId, SIBLING_INDEX_FIELD, { lit: siblingCount });
 }
 
 /** The **(p)** channel's primitive (Aperas-crud-design.md §7, alongside `appendOrderedChild`
@@ -116,15 +104,7 @@ function appendOrderedChild(store: Store, parentId: string, childId: string): vo
  *  currently a child of `parentId` — no silent fallback to append, since that would silently
  *  discard the caller's actual positioning intent. */
 function insertOrderedChild(store: Store, parentId: string, childId: string, anchorId: string, side: 'before' | 'after'): void {
-  const parentMatches = store.match(null, PARENT_PRED, nodeIri(parentId), null);
-  const withIndex = parentMatches.map((m) => {
-    const id = idFromNodeIri(String(m.subject.value));
-    const idxMatches = store.match(nodeIri(id), SIBLING_INDEX_PRED, null, null);
-    const idx = idxMatches.length > 0 && isLiteralTerm(idxMatches[0].object) ? Number(idxMatches[0].object.value) : 0;
-    return { id, idx };
-  });
-  withIndex.sort((a, b) => a.idx - b.idx);
-  const currentIds = withIndex.map(({ id }) => id).filter((id) => id !== childId);
+  const currentIds = orderedChildIds(store, parentId).filter((id) => id !== childId);
 
   const anchorPos = currentIds.indexOf(anchorId);
   if (anchorPos === -1) {
@@ -133,32 +113,31 @@ function insertOrderedChild(store: Store, parentId: string, childId: string, anc
   const finalIds = [...currentIds];
   finalIds.splice(side === 'before' ? anchorPos : anchorPos + 1, 0, childId);
 
-  for (const m of store.match(nodeIri(childId), PARENT_PRED, null, null)) store.delete(m);
-  for (const m of store.match(nodeIri(childId), SIBLING_INDEX_PRED, null, null)) store.delete(m);
+  deleteMatches(store, childId, PARENT_FIELD, null);
+  deleteMatches(store, childId, SIBLING_INDEX_FIELD, null);
   for (const id of currentIds) {
-    for (const m of store.match(nodeIri(id), PARENT_PRED, null, null)) store.delete(m);
-    for (const m of store.match(nodeIri(id), SIBLING_INDEX_PRED, null, null)) store.delete(m);
+    deleteMatches(store, id, PARENT_FIELD, null);
+    deleteMatches(store, id, SIBLING_INDEX_FIELD, null);
   }
 
   finalIds.forEach((id, index) => {
-    store.add(quad(nodeIri(id), PARENT_PRED, nodeIri(parentId)));
-    store.add(quad(nodeIri(id), SIBLING_INDEX_PRED, encodeLiteral(index)));
+    addQuad(store, id, PARENT_FIELD, { ref: parentId });
+    addQuad(store, id, SIBLING_INDEX_FIELD, { lit: index });
   });
 }
 
-function decodeTerm(store: Store, m: Quad): unknown {
-  const obj = m.object;
-  if (isLiteralTerm(obj)) return decodeLiteral(obj);
-  if (isNamedNodeTerm(obj)) return wrap(store, idFromNodeIri(obj.value));
+function decodeObj(store: Store, obj: Obj): unknown {
+  if (obj.kind === 'literal') return obj.value;
+  if (obj.kind === 'ref') return wrap(store, idFromNodeIri(obj.iri));
   return undefined;
 }
 
 function readField(store: Store, id: string, field: string, spec: FieldSpec): unknown {
   if (spec.cardinality === 'orderedContainment') return childrenOf(store, id);
-  const matches = store.match(nodeIri(id), predIri(field), null, null);
-  if (spec.cardinality === 'set') return matches.map((m) => decodeTerm(store, m));
+  const matches = objectsOf(store, id, field);
+  if (spec.cardinality === 'set') return matches.map((m) => decodeObj(store, m));
   if (matches.length === 0) return undefined;
-  return decodeTerm(store, matches[0]);
+  return decodeObj(store, matches[0]);
 }
 
 /** Any of: a raw id string, an `ApeironNode` (reads `.id`), or a plain object already carrying
@@ -175,7 +154,7 @@ function idOf(value: unknown): string {
 }
 
 function clearField(store: Store, id: string, field: string): void {
-  for (const m of store.match(nodeIri(id), predIri(field), null, null)) store.delete(m);
+  deleteMatches(store, id, field, null);
 }
 
 /** Mints a fresh embedded subdocument (`StringProp` under `props`, `Link` under `links`) and
@@ -198,9 +177,9 @@ function mintEmbedded(store: Store, parentId: string, field: string, entry: Reco
     // reference (silently breaking every freshly-minted `Link.target`: it decodes back as a bare
     // string on read, not a wrapped node, so `.target.id`/backlinks on it come back `undefined`).
     if (shape[k]?.storageKind === 'reference') {
-      store.add(quad(nodeIri(newId), predIri(k), nodeIri(idOf(v))));
+      addQuad(store, newId, k, { ref: idOf(v) });
     } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      store.add(quad(nodeIri(newId), predIri(k), encodeLiteral(v)));
+      addQuad(store, newId, k, { lit: v });
     }
   }
   return newId;
@@ -228,13 +207,13 @@ function hardDeleteNode(store: Store, id: string): void {
   if (shape) {
     for (const [field, spec] of Object.entries(shape)) {
       if (spec.storageKind !== 'embed') continue;
-      for (const m of store.match(nodeIri(id), predIri(field), null, null)) {
-        if (isNamedNodeTerm(m.object)) hardDeleteNode(store, idFromNodeIri(m.object.value));
+      for (const o of objectsOf(store, id, field)) {
+        if (o.kind === 'ref') hardDeleteNode(store, idFromNodeIri(o.iri));
       }
     }
   }
   removeDanglingUnfolds(store, id);
-  for (const m of store.match(nodeIri(id), null, null, null)) store.delete(m);
+  deleteMatches(store, id, null, null);
 }
 
 /** Sweeps every `TreeView`'s `unfolds` set for a reference to `deletedId` and removes it —
@@ -253,26 +232,21 @@ export function removeDanglingUnfolds(store: Store, deletedId: string): void {
   // returns is a view's reference to `deletedId`, with no need to list the views first (that took
   // a scan of the whole store per call). `verifyDanglingUnfolds.ts` keeps the former per-view form
   // as a reference and checks the two agree.
-  for (const m of store.match(null, predIri('unfolds'), nodeIri(deletedId), null)) {
-    store.delete(m);
-  }
+  deleteMatches(store, null, 'unfolds', { ref: deletedId });
 }
 
 function writeField(store: Store, id: string, field: string, spec: FieldSpec, value: unknown): void {
   if (spec.cardinality === 'orderedContainment') {
     if (!Array.isArray(value)) throw new Error(`ApeironNgn: '${field}' is ordered containment — expected an array.`);
     // Detach every current child first (both the parent/index quads live on the child's own id).
-    for (const m of store.match(null, PARENT_PRED, nodeIri(id), null)) {
-      const childId = String(m.subject.value);
-      store.delete(m);
-      for (const idxQuad of store.match(nodeIri(idFromNodeIri(childId)), SIBLING_INDEX_PRED, null, null)) {
-        store.delete(idxQuad);
-      }
+    for (const childId of subjectsWhere(store, PARENT_FIELD, { ref: id })) {
+      deleteMatches(store, childId, PARENT_FIELD, { ref: id });
+      deleteMatches(store, childId, SIBLING_INDEX_FIELD, null);
     }
     value.forEach((entry, index) => {
       const childId = idOf(entry);
-      store.add(quad(nodeIri(childId), PARENT_PRED, nodeIri(id)));
-      store.add(quad(nodeIri(childId), SIBLING_INDEX_PRED, encodeLiteral(index)));
+      addQuad(store, childId, PARENT_FIELD, { ref: id });
+      addQuad(store, childId, SIBLING_INDEX_FIELD, { lit: index });
     });
     return;
   }
@@ -291,9 +265,9 @@ function writeField(store: Store, id: string, field: string, spec: FieldSpec, va
       const survivingId = typeof entry === 'string' ? entry : (entry as any)?.['@id'] ?? (entry as any)?.id;
       if (typeof survivingId === 'string') survivingIds.add(survivingId);
     }
-    for (const m of store.match(nodeIri(id), predIri(field), null, null)) {
-      if (!isNamedNodeTerm(m.object)) continue;
-      const oldId = idFromNodeIri(m.object.value);
+    for (const o of objectsOf(store, id, field)) {
+      if (o.kind !== 'ref') continue;
+      const oldId = idFromNodeIri(o.iri);
       if (!survivingIds.has(oldId)) hardDeleteNode(store, oldId);
     }
   }
@@ -310,12 +284,12 @@ function writeField(store: Store, id: string, field: string, spec: FieldSpec, va
       if (typeof entry !== 'string' && typeof entry !== 'number' && typeof entry !== 'boolean') {
         throw new Error(`ApeironNgn: '${field}' expects a literal value, got ${JSON.stringify(entry)}`);
       }
-      store.add(quad(nodeIri(id), predIri(field), encodeLiteral(entry)));
+      addQuad(store, id, field, { lit: entry });
     } else if (storageKind === 'reference') {
       const refId = typeof entry === 'string' || (entry && typeof entry === 'object' && !('@type' in (entry as object)))
         ? idOf(entry)
         : mintEmbedded(store, id, field, entry as Record<string, unknown>); // a fresh literal object for a reference field
-      store.add(quad(nodeIri(id), predIri(field), nodeIri(refId)));
+      addQuad(store, id, field, { ref: refId });
     } else {
       // embed — a bare string (e.g. reconcile.ts's carryForwardFields handing back an existing
       // Link's own id, materialized as a plain ref-id string by toReconcileShape) means "this
@@ -324,7 +298,7 @@ function writeField(store: Store, id: string, field: string, spec: FieldSpec, va
       const refId = typeof entry === 'string' || (entry && typeof entry === 'object' && ((entry as any)['@id'] || (entry as any).id))
         ? idOf(entry)
         : mintEmbedded(store, id, field, entry as Record<string, unknown>);
-      store.add(quad(nodeIri(id), predIri(field), nodeIri(refId)));
+      addQuad(store, id, field, { ref: refId });
     }
   };
 
@@ -1420,8 +1394,7 @@ function structuralParentOf(store: Store, id: string): string | null {
  *  `kgBacklinks.ts`'s own reverse-lookup use (Aperas-apeironngn-design.md §4 Step 13), alongside
  *  this file's own view-rendering use above. */
 export function ownerOfLink(store: Store, linkId: string): string | null {
-  const m = store.match(null, predIri('links'), nodeIri(linkId), null);
-  return m.length > 0 && isNamedNodeTerm(m[0].subject) ? idFromNodeIri(m[0].subject.value) : null;
+  return firstSubjectWhere(store, 'links', { ref: linkId });
 }
 
 /** `'upward'` (§13.3): the target is an ancestor of some cone already active in the current
@@ -2037,8 +2010,7 @@ function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: 
  *  pattern as `ensureDefaultView`'s/`resolveTreeView`'s own `name` lookups. `kg:profile`'s own
  *  addressing: every subcommand takes a `handle`, never a raw node id. */
 export function findProfileByHandle(store: Store, handle: string): Profile | null {
-  const found = store.match(null, predIri('handle'), encodeLiteral(handle), null)
-    .map((m) => idFromNodeIri(String(m.subject.value)))
+  const found = subjectsWhere(store, 'handle', { lit: handle })
     .find((id) => nodeKindFromId(id) === 'Profile');
   return found ? (wrap(store, found) as unknown as Profile) : null;
 }
@@ -2047,8 +2019,7 @@ export function findProfileByHandle(store: Store, handle: string): Profile | nul
  *  `One`, and now globally unique, the same "stable addressable handle" role `Profile.handle`
  *  plays). Exact-literal lookup, same pattern as `findProfileByHandle`. */
 export function findTreeViewByName(store: Store, name: string): TreeView | null {
-  const found = store.match(null, predIri('name'), encodeLiteral(name), null)
-    .map((m) => idFromNodeIri(String(m.subject.value)))
+  const found = subjectsWhere(store, 'name', { lit: name })
     .find((id) => nodeKindFromId(id) === 'TreeView');
   return found ? (wrap(store, found) as unknown as TreeView) : null;
 }
@@ -2158,7 +2129,7 @@ export function wrap(store: Store, id: string): ApeironNode {
  *  reference — the one query shape `parentId`/`resolveIdToPath`'s reverse-lookup gap under
  *  TerminusDB had no equivalent for. */
 export function backlinks(store: Store, id: string, field: string): ApeironNode[] {
-  return store.match(null, predIri(field), nodeIri(id), null).map((m) => wrap(store, idFromNodeIri(String(m.subject.value))));
+  return subjectsWhere(store, field, { ref: id }).map((subjectId) => wrap(store, subjectId));
 }
 
 /** Mark-and-sweep GC for tombstoned top-level documents (`BlockNode`/`ArtifactNode`/`FolderNode`)

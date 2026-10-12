@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import type { Store } from 'oxigraph';
 import { wrap, tombstoneLiveSubtree } from './node';
 import type { ArtifactNode, BlockNode, TreeNode, Link, ApeironNode, IngestResult } from './node';
-import { predIri, encodeLiteral, idFromNodeIri, nodeKindFromId, nodeExists } from './vocab';
+import { nodeKindFromId, nodeExists } from './vocab';
+import { subjectsWhere } from './storeAccess';
 import { allIdsOfKind } from './dehydrate';
 import { resolveDeepPathDetail } from './resolveCreate';
 import { generateNodeId } from '../snowflake';
@@ -185,10 +186,7 @@ function resolveFragmentCode(store: Store, code: string, currentArtifactPath: st
  *  its old `path` value forever, so a plain `path`-literal lookup alone (`tree.ts`'s
  *  `findByExactPath`) isn't enough once a path has been reused after a rename/removal. */
 function findLiveByKindAndPath(store: Store, kind: string, path: string): string | null {
-  const matches = store
-    .match(null, predIri('path'), encodeLiteral(path), null)
-    .map((m) => idFromNodeIri(String(m.subject.value)))
-    .filter((id) => nodeKindFromId(id) === kind);
+  const matches = subjectsWhere(store, 'path', { lit: path }).filter((id) => nodeKindFromId(id) === kind);
   return matches.find((id) => !(wrap(store, id) as unknown as ArtifactNode).tombstonedAt) ?? null;
 }
 

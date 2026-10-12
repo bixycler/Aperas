@@ -6,17 +6,9 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { Store, quad } from 'oxigraph';
-import {
-  NODE_BASE,
-  nodeIri,
-  predIri,
-  encodeLiteral,
-  isNodeRef,
-  ORDERED_CONTAINMENT_FIELD,
-  PARENT_PRED,
-  SIBLING_INDEX_PRED,
-} from './vocab';
+import { Store } from 'oxigraph';
+import { isNodeRef, ORDERED_CONTAINMENT_FIELD, PARENT_FIELD, SIBLING_INDEX_FIELD } from './vocab';
+import { addQuad, allObjectRefIds } from './storeAccess';
 import { resolveEffectiveApeironRoot } from '../graphConfig';
 
 // The top-level-addressable content kinds (Aperas-apeironngn-design.md §4 rollout step 3's
@@ -80,7 +72,6 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>,
   if (!id) return;
   if (seenIds.has(id)) duplicateIds.push(id);
   seenIds.add(id);
-  const subject = nodeIri(id);
 
   for (const [field, value] of Object.entries(doc)) {
     if (field === '@id' || field === '@type') continue;
@@ -92,8 +83,8 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>,
       // already-fetched set rather than walking a `Cons` chain.
       value.forEach((childId: string, index: number) => {
         if (typeof childId !== 'string') return; // no inline-literal children observed in practice
-        store.add(quad(nodeIri(childId), PARENT_PRED, subject));
-        store.add(quad(nodeIri(childId), SIBLING_INDEX_PRED, encodeLiteral(index)));
+        addQuad(store, childId, PARENT_FIELD, { ref: id });
+        addQuad(store, childId, SIBLING_INDEX_FIELD, { lit: index });
       });
       continue;
     }
@@ -104,16 +95,16 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>,
       if (typeof item === 'object' && item['@id']) {
         // Embedded subdocument (props: StringProp) — its own subject, recurse, plus a forward
         // link from the owner so `owner.props` can find it.
-        store.add(quad(subject, predIri(field), nodeIri(item['@id'])));
+        addQuad(store, id, field, { ref: item['@id'] });
         encodeDoc(store, item, seenIds, duplicateIds);
         continue;
       }
       if (isNodeRef(item)) {
-        store.add(quad(subject, predIri(field), nodeIri(item)));
+        addQuad(store, id, field, { ref: item });
         continue;
       }
       if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') {
-        store.add(quad(subject, predIri(field), encodeLiteral(item)));
+        addQuad(store, id, field, { lit: item });
       }
     }
   }
@@ -129,7 +120,6 @@ function encodeDoc(store: Store, doc: Record<string, any>, seenIds: Set<string>,
 export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: string = join(dir, '.state')): RehydrateResult {
   const store = new Store();
   const seenIds = new Set<string>();
-  const referencedIds = new Set<string>();
   const duplicateIds: string[] = [];
 
   for (const file of INSTANCE_FILES) {
@@ -151,12 +141,7 @@ export function rehydrateStore(dir: string = getApeironExportDir(), stateDir: st
 
   // Second pass for dangling-reference detection: any object-position node reference that never
   // showed up as a document's own `@id` above.
-  for (const q of store.match(null, null, null, null)) {
-    if (q.object.termType === 'NamedNode') {
-      const raw = q.object.value;
-      if (raw.startsWith(NODE_BASE)) referencedIds.add(raw.slice(NODE_BASE.length));
-    }
-  }
+  const referencedIds = allObjectRefIds(store);
   const danglingRefs = [...referencedIds].filter((id) => !seenIds.has(id)).sort();
 
   return { store, quadCount: store.size, nodeCount: seenIds.size, danglingRefs, duplicateIds: [...new Set(duplicateIds)].sort() };

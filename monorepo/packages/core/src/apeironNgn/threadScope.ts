@@ -11,15 +11,14 @@
  */
 
 import type { Store } from 'oxigraph';
-import { nodeIri, predIri, idFromNodeIri, decodeLiteral, isLiteralTerm, isNamedNodeTerm, nodeKindFromId, PARENT_PRED } from './vocab';
+import { idFromNodeIri, nodeKindFromId, PARENT_FIELD } from './vocab';
+import { firstLiteralOf, firstRefIriOf } from './storeAccess';
 
 export const THREADS_PATH_PREFIX = '.threads/';
 
 function pathOf(store: Store, id: string): string | undefined {
-  const matches = store.match(nodeIri(id), predIri('path'), null, null);
-  if (matches.length === 0) return undefined;
-  const obj = matches[0].object;
-  return isLiteralTerm(obj) ? String(decodeLiteral(obj)) : undefined;
+  const path = firstLiteralOf(store, id, 'path');
+  return path === undefined ? undefined : String(path);
 }
 
 function isThreadScopedPath(path: string | undefined): boolean {
@@ -35,11 +34,9 @@ function owningArtifactOrFolderId(store: Store, id: string): string | null {
     const kind = nodeKindFromId(current);
     if (kind === 'ArtifactNode' || kind === 'FolderNode') return current;
     if (kind !== 'BlockNode') return null;
-    const parentMatches = store.match(nodeIri(current), PARENT_PRED, null, null);
-    if (parentMatches.length === 0) return null;
-    const obj = parentMatches[0].object;
-    if (!isNamedNodeTerm(obj)) return null;
-    current = idFromNodeIri(obj.value);
+    const parentIri = firstRefIriOf(store, current, PARENT_FIELD);
+    if (parentIri === undefined) return null;
+    current = idFromNodeIri(parentIri);
   }
 }
 

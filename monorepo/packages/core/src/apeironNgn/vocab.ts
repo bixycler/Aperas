@@ -63,7 +63,24 @@ export function nodeIri(id: string): NamedNode {
  *  store" check every write path needs before mutating (`getDocument` returning `null` under
  *  TerminusDB's equivalent). */
 export function nodeExists(store: import('oxigraph').Store, id: string): boolean {
-  return store.match(nodeIri(id), null, null, null).length > 0;
+  const subject = nodeIri(id);
+  let quads: import('oxigraph').Quad[] = [];
+  try {
+    quads = store.match(subject, null, null, null);
+    return quads.length > 0;
+  } finally {
+    for (const q of quads) freeWasm(q);
+    freeWasm(subject);
+  }
+}
+
+/** Frees one wasm-backed Oxigraph object (a `Quad` or a term) now, instead of leaving it to the
+ *  `FinalizationRegistry` after it is unreachable. Call only on an object created for the call and
+ *  never used again; never on a shared constant (`PARENT_PRED` and the like), which would make every
+ *  later use throw. `storeAccess.ts` has the full rule. A no-op for anything without a `free`. */
+export function freeWasm(handle: unknown): void {
+  const f = (handle as { free?: () => void } | null | undefined)?.free;
+  if (typeof f === 'function') f.call(handle);
 }
 
 export function idFromNodeIri(iri: string): string {
@@ -97,7 +114,9 @@ export function encodeLiteral(value: string | number | boolean): Literal {
 }
 
 export function decodeLiteral(term: Literal): string | number | boolean {
-  const dt = term.datatype?.value;
+  const datatype = term.datatype;
+  const dt = datatype?.value;
+  freeWasm(datatype);
   if (dt === XSD_INTEGER.value) return Number(term.value);
   if (dt === XSD_BOOLEAN.value) return term.value === 'true';
   return term.value;
@@ -136,5 +155,7 @@ export const ORDERED_CONTAINMENT_FIELD = 'children';
  *  after this merge ever assigns `.parent` directly any more (every write site went through
  *  `.children`/`appendChild` already) — but if that ever changes, go through containment, not a
  *  direct `.parent =` assignment. */
-export const PARENT_PRED = predIri('parent');
-export const SIBLING_INDEX_PRED = predIri('__siblingIndex');
+export const PARENT_FIELD = 'parent';
+export const SIBLING_INDEX_FIELD = '__siblingIndex';
+export const PARENT_PRED = predIri(PARENT_FIELD);
+export const SIBLING_INDEX_PRED = predIri(SIBLING_INDEX_FIELD);

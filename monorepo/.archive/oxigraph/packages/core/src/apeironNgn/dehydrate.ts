@@ -1,0 +1,143 @@
+/**
+ * ApeironNgn dehydrate: the in-process `Store` -> AperasKG/Apeiron/'s JSON-LD mirror — rehydration's
+ * inverse (Aperas-apeironngn-design.md §3 "Field shape"/§4 rollout). Rewrites a whole class's file
+ * at a time, same as `export.ts` does today against TerminusDB — no git commit here either; that
+ * stays a separate, existing step (`AperasKG/Apeiron/` already lives inside a real git repo, per
+ * §3's "Versioning" bullet).
+ */
+
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Store } from 'oxigraph';
+import { idFromNodeIri, nodeKindFromId } from './vocab';
+import { allSubjectIds, objectsOf, orderedChildIds } from './storeAccess';
+import { isThreadScopedId } from './threadScope';
+import { SHAPE_BY_KIND, type FieldSpec } from './shape';
+import { getApeironExportDir } from './store';
+
+// Which SHAPE_BY_KIND entries get their own top-level file — the top-level-addressable content
+// kinds (Aperas-apeironngn-design.md §4 rollout step 3), plus `Profile` (Aperas-treeview-design.md
+// §8/§11 — stable identity, not ephemeral, so it rides the tracked content mirror's cadence, unlike
+// `TreeView` below). `Link`/`StringProp` are both subdocuments (`storageKind: 'embed'`) —
+// `decodeField`/`serializeDoc` below already recurse into either one generically wherever a
+// `links`/`props`/`preferences` field references it, so neither gets its own file. `Assertion`
+// never appears here at all (removed from the model entirely, not merely unwritten).
+export const DEHYDRATE_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Profile'] as const;
+
+// `TreeView` (Aperas-treeview-design.md §8) — per-viewer UI state, genuinely ephemeral, dehydrated
+// separately via `dehydrateStateToJsonLd` into a gitignored `.state/` subfolder rather than
+// alongside `DEHYDRATE_CLASSES` above. Every `TreeView` goes here, unconditionally.
+export const STATE_CLASSES = ['TreeView'] as const;
+
+// A `.threads/`-scoped `BlockNode`/`ArtifactNode`/`FolderNode` (design/aperas-skill.md's Threads;
+// design/treeview.md's thread persistence) also goes to `.state/` instead of the tracked content
+// mirror — but only the thread-scoped subset of each kind, unlike `STATE_CLASSES` above, which
+// takes every node of its kind. `dehydrateToJsonLd` excludes this subset from the content mirror;
+// `dehydrateStateToJsonLd` writes it, under the same kind name, into `.state/` instead.
+export const THREAD_PARTITIONED_CLASSES = ['BlockNode', 'ArtifactNode', 'FolderNode'] as const;
+
+export function allIdsOfKind(store: Store, kind: string): string[] {
+  return allSubjectIds(store).filter((id) => nodeKindFromId(id) === kind);
+}
+
+function decodeField(store: Store, id: string, field: string, spec: FieldSpec): unknown {
+  const matches = objectsOf(store, id, field);
+  const decodeOne = (obj: (typeof matches)[number]) => {
+    if (obj.kind === 'literal') return obj.value;
+    if (obj.kind === 'ref') {
+      const refId = idFromNodeIri(obj.iri);
+      return spec.storageKind === 'embed' ? serializeDoc(store, refId) : refId;
+    }
+    return undefined;
+  };
+  if (spec.cardinality === 'set') {
+    // `store.match()`'s order for a Set-typed field isn't stable across a rehydrate/dehydrate
+    // cycle -- sorted here so re-serializing unchanged content doesn't reshuffle `links`/`props`
+    // into git-diff noise, same principle `dehydrateToJsonLd` already applies to top-level
+    // documents (sorted by @id, via `stableId` below).
+    return matches.map(decodeOne).sort((a, b) => stableId(a).localeCompare(stableId(b)));
+  }
+  if (matches.length === 0) return undefined;
+  return decodeOne(matches[0]);
+}
+
+/** Exported for `kg:show` (issues/treeview.md's "no raw single-node inspection command") — the
+ *  exact same per-kind shape walk `dehydrateToJsonLd`/`dehydrateStateToJsonLd` use to write the
+ *  on-disk mirror, reused rather than re-implemented so "what `kg:show` prints" and "what's
+ *  actually on disk" can never drift apart into two competing ideas of a node's raw state. */
+export function serializeDoc(store: Store, id: string): Record<string, unknown> {
+  const kind = nodeKindFromId(id);
+  const shape = SHAPE_BY_KIND[kind];
+  if (!shape) throw new Error(`ApeironNgn dehydrate: no shape declared for kind '${kind}' (id '${id}')`);
+  const doc: Record<string, unknown> = { '@id': id, '@type': kind };
+  for (const [field, spec] of Object.entries(shape)) {
+    if (spec.cardinality === 'orderedContainment') {
+      doc[field] = orderedChildIds(store, id); // always present, even `[]` — matches List's real serialization
+      continue;
+    }
+    const value = decodeField(store, id, field, spec);
+    if (value === undefined) continue; // Optional/one, unset — omit
+    if (spec.cardinality === 'set' && Array.isArray(value) && value.length === 0) continue; // Set, empty — omit
+    doc[field] = value;
+  }
+  return doc;
+}
+
+/** Sort key for anything `dehydrateToJsonLd` needs a stable order for: a top-level document or a
+ *  `set`-cardinality field's decoded entry (an embed object with its own `@id`, a bare reference-id
+ *  string, or a plain literal). */
+function stableId(value: unknown): string {
+  if (value && typeof value === 'object' && '@id' in (value as Record<string, unknown>)) {
+    return String((value as Record<string, unknown>)['@id'] ?? '');
+  }
+  return String(value ?? '');
+}
+
+/** Rewrites a whole class's JSON-LD file from the `Store`'s current content, for each of
+ *  `DEHYDRATE_CLASSES` — full replace, matching `export.ts`'s own behavior against TerminusDB.
+ *  Excludes any `THREAD_PARTITIONED_CLASSES` member whose owning artifact/folder sits under
+ *  `.threads/` — that subset goes to `.state/` instead, via `dehydrateStateToJsonLd`. */
+export function dehydrateToJsonLd(store: Store, dir: string = getApeironExportDir()): { dir: string; counts: Record<string, number> } {
+  const counts: Record<string, number> = {};
+  for (const kind of DEHYDRATE_CLASSES) {
+    const docs = allIdsOfKind(store, kind)
+      .filter((id) => !isThreadScopedId(store, id, kind))
+      .map((id) => serializeDoc(store, id))
+      .sort((a, b) => stableId(a).localeCompare(stableId(b)));
+    writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify(docs, null, 2) + '\n');
+    counts[kind] = docs.length;
+  }
+  return { dir, counts };
+}
+
+/** `TreeView`'s own dehydrate pass (Aperas-treeview-design.md §8) — same
+ *  `serializeDoc`/`allIdsOfKind`/`stableId` machinery as `dehydrateToJsonLd`, writing
+ *  `STATE_CLASSES` into a separate, gitignored directory instead (default: `.state/` under the
+ *  main mirror dir) so genuinely ephemeral per-viewer UI state never lands in the git-tracked
+ *  content mirror. `mkdirSync(..., { recursive: true })` since `.state/` won't exist on a fresh
+ *  checkout.
+ *
+ *  Also writes the thread-scoped subset of each `THREAD_PARTITIONED_CLASSES` kind here, under the
+ *  same `<Kind>.jsonld` filename `dehydrateToJsonLd` uses for the tracked mirror — the two files
+ *  hold disjoint id sets by construction (a node is thread-scoped or it isn't), so `rehydrateStore`
+ *  reading both back is an ordinary merge, never a collision. */
+export function dehydrateStateToJsonLd(store: Store, dir: string = join(getApeironExportDir(), '.state')): { dir: string; counts: Record<string, number> } {
+  mkdirSync(dir, { recursive: true });
+  const counts: Record<string, number> = {};
+  for (const kind of STATE_CLASSES) {
+    const docs = allIdsOfKind(store, kind)
+      .map((id) => serializeDoc(store, id))
+      .sort((a, b) => stableId(a).localeCompare(stableId(b)));
+    writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify(docs, null, 2) + '\n');
+    counts[kind] = docs.length;
+  }
+  for (const kind of THREAD_PARTITIONED_CLASSES) {
+    const docs = allIdsOfKind(store, kind)
+      .filter((id) => isThreadScopedId(store, id, kind))
+      .map((id) => serializeDoc(store, id))
+      .sort((a, b) => stableId(a).localeCompare(stableId(b)));
+    writeFileSync(join(dir, `${kind}.jsonld`), JSON.stringify(docs, null, 2) + '\n');
+    counts[kind] = docs.length;
+  }
+  return { dir, counts };
+}

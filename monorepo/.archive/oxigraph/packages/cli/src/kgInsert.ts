@@ -1,0 +1,310 @@
+/**
+ * `kg:insert` — position, promote, or create a Block node (Aperas-crud-design.md §7), via the
+ * shared ApeironNgn service. Concrete-only: never mints an abstract placeholder (that stays
+ * `kg:resolve --create-holder`'s job) and never scaffolds a missing Folder/Artifact parent chain —
+ * `<path>`'s parent (implied or explicit) must already exist, holder or real.
+ *
+ * Two modes, distinguished by whether markdown was piped to stdin:
+ * - No stdin: `<path>` names an *existing* Block node. Repositions it relative to `--after`/
+ *   `--before <anchor>` (the anchor's current parent becomes the node's new parent — cross-parent
+ *   moves work for free) and unconditionally clears `.holder` — a no-op if it was already real, in
+ *   which case this is a plain move. Omitting both flags is a bare in-place promote. A `FolderNode`
+ *   target is accepted for this bare-promote case only (never with `--after`/`--before` — a
+ *   folder's position comes from its own path, not list order) — the one channel issues/core.md's
+ *   "Folder/Artifact-tier holders have no promotion channel" turned out still to be missing;
+ *   `ArtifactNode` already gets this for free through `kg:update` (it extends `BlockNode`).
+ * - Stdin piped: `<path>` names the *parent* to create under. The piped markdown is parsed via the
+ *   same `parseMarkdownTree` real artifacts use; each new node's type/title/text/children come
+ *   entirely from that parse (no `--type`/`--titles`). If the parse has more than one top-level
+ *   block, all of them are created and inserted as a sequence at the anchor position (or appended,
+ *   in order, if no anchor given) — never merged into one node, never rejected.
+ */
+
+import type { Store } from 'oxigraph';
+import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
+import { wrap, rejectSlugPathCollisions, findEnclosingArtifactId } from '@aperas/core/apeironNgn/node';
+import type { BlockNode, TreeNode } from '@aperas/core/apeironNgn/node';
+import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
+import { displayLabel } from '@aperas/core/apeironNgn/tree';
+import { parseMarkdownTree } from '@aperas/core/astParser';
+import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
+import { getProp, type HasProps, type PropEntry } from '@aperas/core/props';
+import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
+import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { wantsHelp, printHelp } from './kgHelp';
+
+export interface InsertReq {
+  path: string;
+  base?: string;
+  /** Present (even `''`) => create mode; absent => move/promote mode. Set by the CLI client only
+   *  when stdin wasn't a TTY — see `readStdinIfPiped` below. */
+  markdown?: string;
+  after?: string;
+  before?: string;
+}
+
+function resolveOne(store: Store, ref: string, base: string | undefined, label: string): string {
+  let id: string | null;
+  try {
+    id = resolveDeepPath(store, ref, { base });
+  } catch (err: any) {
+    throw new Error(`${label} '${ref}': ${err.message || err}`);
+  }
+  if (!id) {
+    throw new Error(`${label} '${ref}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
+  }
+  return id;
+}
+
+export function runInsert(store: Store, req: InsertReq): { lines: string[]; linkResolution?: LinkResolutionStats } {
+  if (req.after !== undefined && req.before !== undefined) {
+    throw new Error('--after and --before are mutually exclusive.');
+  }
+  const side: 'before' | 'after' | undefined = req.after !== undefined ? 'after' : req.before !== undefined ? 'before' : undefined;
+  const anchorRef = req.after ?? req.before;
+
+  if (req.markdown === undefined) {
+    // Move/promote mode: `path` names the existing node itself.
+    const targetId = resolveOne(store, req.path, req.base, 'Target');
+    const targetKind = nodeKindFromId(targetId);
+    // `FolderNode` gets one narrow exception: a bare (anchor-less) promote, clearing a holder
+    // folder's own `.holder` flag once every real artifact/subfolder it was scaffolded to hold has
+    // actually landed underneath it — the only gap "Folder/Artifact-tier holders have no promotion
+    // channel" (issues/core.md) turned out to still be open for. An `ArtifactNode` already passes
+    // through `kg:update` today (it `extends BlockNode`, so `kg:update`'s own type check accepts
+    // it, and piping any content through it already clears `.holder`) — no fix needed there. A
+    // folder's position comes from its own path, never from list order among siblings the way a
+    // Block's does, so repositioning was never the missing piece; reject that combination outright
+    // rather than silently ignoring `--after`/`--before`.
+    if (targetKind === 'FolderNode') {
+      if (anchorRef !== undefined) {
+        throw new Error(`'${req.path}' resolves to a FolderNode — kg:insert can only bare-promote a folder holder (no --after/--before, its position comes from its own path); reposition the real directory on disk instead.`);
+      }
+      (wrap(store, targetId) as unknown as { holder?: boolean }).holder = undefined;
+      const folder = wrap(store, targetId) as unknown as { title?: string };
+      return { lines: [`aperas://id/${targetId}  [FolderNode]  ${folder.title}  (promoted in place)`] };
+    }
+    if (targetKind !== 'BlockNode') {
+      throw new Error(`'${req.path}' resolves to a ${targetKind} — kg:insert only positions Block-level nodes, or bare-promotes a FolderNode holder (Aperas-crud-design.md §4.1/§6).`);
+    }
+    const target = wrap(store, targetId) as unknown as BlockNode;
+
+    if (anchorRef === undefined) {
+      (target as unknown as { holder?: boolean }).holder = undefined;
+      return { lines: [`aperas://id/${targetId}  [${displayLabel(targetId, target)}]  ${target.title}  (promoted in place)`] };
+    }
+
+    const anchorId = resolveOne(store, anchorRef, req.base, 'Anchor');
+    if (anchorId === targetId) throw new Error('The anchor cannot be the same node as the target.');
+    const anchorParent = (wrap(store, anchorId) as unknown as TreeNode).parent;
+    if (!anchorParent) throw new Error(`Anchor '${anchorRef}' has no parent to insert relative to.`);
+    (anchorParent as unknown as BlockNode).insertChild(targetId, anchorId, side!);
+    return { lines: [`aperas://id/${targetId}  [${displayLabel(targetId, target)}]  ${target.title}  (moved ${side} ${anchorId})`] };
+  }
+
+  // Create mode: `path` names the parent.
+  const parentId = resolveOne(store, req.path, req.base, 'Parent');
+  const parentKind = nodeKindFromId(parentId);
+  if (parentKind !== 'BlockNode' && parentKind !== 'ArtifactNode' && parentKind !== 'FolderNode') {
+    throw new Error(`'${req.path}' isn't a valid parent to create under.`);
+  }
+  const parent = wrap(store, parentId) as unknown as BlockNode; // insertChild/appendChild: TreeNode's own overridden contract
+
+  const { root } = parseMarkdownTree(req.markdown);
+  const topLevel = root.children ?? [];
+  if (topLevel.length === 0) {
+    throw new Error('Piped markdown produced no content to insert.');
+  }
+
+  // Full-slug-path collision rejection (design/linking.md's Full-Path Collisions) — the same
+  // writer-facing hard reject `ingestFromDisk` applies to a whole artifact's fresh parse, applied
+  // here to a new subtree inserted directly into the graph: `parent.toPath()` already returns the
+  // right prefix uniformly whether `parent` is a Block/Artifact/FolderNode (`toPath()`'s own kind
+  // check handles the latter two). Must run before any of `topLevel` is hydrated.
+  const parentPath = parent.toPath();
+  if (parentPath) rejectSlugPathCollisions(store, parentPath, topLevel);
+
+  // Resolved before any of `topLevel` is hydrated below, alongside the collision check just above —
+  // a bad anchor must be rejected before anything is written, not after (issues/cli.md's
+  // non-transactional-`kg:insert` gap: hydration used to run before anchor resolution, so a bad
+  // anchor left the freshly-hydrated nodes live in the store with no rollback).
+  const anchorId = anchorRef !== undefined ? resolveOne(store, anchorRef, req.base, 'Anchor') : undefined;
+
+  // Extracted *before* any of `topLevel` is hydrated below — `extractLinkCodes` strips the
+  // (schema-unknown) `linkCodes` field off each node as it walks, in place, the same order
+  // `ingestFromDisk`/`kg:update` use (extract first, hydrate after). Every node here is brand new
+  // (create mode), so there's no "old" resolved state to diff against — `resolveBlockLinks`'s
+  // `oldLinkTargets`/`oldWikilinksByBlock` are left at their empty defaults.
+  const pendingLinks: PendingLinkCodes[] = [];
+  for (const child of topLevel) extractLinkCodes(child, pendingLinks);
+  // Refused here, before the first mutation of the store (the list-run strip below touches only the
+  // parse): a refused link leaves the store exactly as it was. `resolveBlockLinks` keeps its own check
+  // as the backstop.
+  assertLinksAcceptable(store, pendingLinks);
+
+  // A lone piped `listItem` always parses as its own one-item list (`astParser.ts`'s
+  // `convertChildren`), so it unconditionally comes out of the parse carrying its own
+  // `orderedList`/`startIndex` — correct for a genuinely new list, wrong when it's landing right
+  // after an existing run: the render-time boundary rule ("a next item's own explicit prop starts
+  // a new run") then reads the freshly-parsed prop as a second run starting immediately, and
+  // renders a spurious blank line before it (issues/list-consumption.md). Scoped to appending at
+  // the end of an existing run only — not every possible position; a real middle-of-the-list
+  // insertion still needs the parent-plus-complete-list renumbering route
+  // (discussion/aperas-skill.md's v2.10 delta).
+  if (topLevel.length === 1 && topLevel[0].type === 'listItem') {
+    const siblings = parent.treeChildren;
+    const precedingIdx = anchorId === undefined
+      ? siblings.length - 1
+      : side === 'after'
+        ? siblings.findIndex((s) => s.id === anchorId)
+        : siblings.findIndex((s) => s.id === anchorId) - 1;
+    const preceding = precedingIdx >= 0 ? (wrap(store, siblings[precedingIdx].id) as unknown as BlockNode) : undefined;
+    if (preceding?.type === 'listItem') {
+      // Walk back to this run's leader — the nearest listItem (`preceding` itself, or an earlier
+      // sibling) carrying its own explicit `orderedList` prop; every real run has one, minted by
+      // `convertChildren` for whichever item started it.
+      let leaderIdx = precedingIdx;
+      while (leaderIdx > 0) {
+        const candidate = wrap(store, siblings[leaderIdx].id) as unknown as BlockNode;
+        if (candidate.type !== 'listItem' || getProp(candidate as unknown as HasProps, 'orderedList') !== undefined) break;
+        leaderIdx--;
+      }
+      const leader = wrap(store, siblings[leaderIdx].id) as unknown as HasProps;
+      const leaderOrdered = getProp(leader, 'orderedList');
+      // Only treat this as *continuing* that run when the piped item's own freshly-parsed shape
+      // actually matches it — landing next to an unordered run with a piped `1. ...` (or the
+      // reverse) means a new, different-shaped run is genuinely starting right there, not
+      // continuing the old one; stripping its props then would silently make a real ordered item
+      // render as an unordered continuation (or vice versa). Confirmed live: a fresh `1. ...` item
+      // landing after an unordered run's own continuation item lost its ordering entirely before
+      // this guard existed.
+      const pipedOrdered = getProp(topLevel[0] as unknown as HasProps, 'orderedList');
+      if (pipedOrdered !== leaderOrdered) {
+        // Different shape — leave the freshly-parsed props exactly as they are.
+      } else if (leaderOrdered === 'false') {
+        // Unordered run — no number to validate, so it's safe to strip whether landing next to
+        // the leader itself or one of its plain continuations (this used to only cover the
+        // continuation case).
+        topLevel[0].props = (topLevel[0].props ?? []).filter((p: PropEntry) => p.key !== 'orderedList' && p.key !== 'startIndex');
+      } else if (leaderOrdered === 'true') {
+        // Ordered run — the expected next number is the leader's own `startIndex` plus how many
+        // items separate `preceding` from the leader (1 if `preceding` *is* the leader, 2 for its
+        // immediate successor, and so on). A match strips the piped item's props, making it a
+        // clean continuation; a mismatch is refused rather than silently discarded (this used to
+        // never check the piped number at all).
+        const leaderStart = Number(getProp(leader, 'startIndex') ?? '1');
+        const expectedNext = leaderStart + (precedingIdx - leaderIdx) + 1;
+        const pipedNext = Number(getProp(topLevel[0] as unknown as HasProps, 'startIndex') ?? '1');
+        if (pipedNext !== expectedNext) {
+          throw new Error(
+            `Appending to this ordered list expected item number ${expectedNext} (continuing the existing run) — got ${pipedNext}. ` +
+            `Pipe the correct next number, or use 'aperas update' on the list's parent heading with the complete, renumbered list for anything but a plain append.`
+          );
+        }
+        topLevel[0].props = (topLevel[0].props ?? []).filter((p: PropEntry) => p.key !== 'orderedList' && p.key !== 'startIndex');
+      }
+    }
+  }
+
+  const newIds = topLevel.map((child) => {
+    const id = `BlockNode:${child.blockId}`;
+    (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(child);
+    return id;
+  });
+  const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
+
+  if (anchorId !== undefined) {
+    let insertRef = anchorId;
+    for (const newId of newIds) {
+      parent.insertChild(newId, insertRef, side!);
+      if (side === 'after') insertRef = newId; // chain forward so the sequence lands in parse order
+      // side === 'before': every entry anchors to the same original anchor, in forward order, which
+      // already accumulates in the right order (each new entry lands right before the anchor,
+      // after whatever was already placed there).
+    }
+  } else {
+    for (const newId of newIds) parent.appendChild(newId);
+  }
+
+  const lines = newIds.map((id) => {
+    const node = wrap(store, id) as unknown as BlockNode;
+    return `aperas://id/${id}  [${displayLabel(id, node)}]  ${node.title}  (created)`;
+  });
+  return { lines, linkResolution };
+}
+
+/** `isTTY` alone isn't reliable — confirmed live: a non-interactive harness (no controlling
+ *  terminal at all, nothing actually piped either) also reads `isTTY` as falsy, so relying on it
+ *  alone put a bare `kg:insert <path>` into create mode with empty content instead of falling back
+ *  to move/promote. Content presence is the real signal: no legitimate create ever has zero bytes
+ *  of markdown, so an empty read (regardless of why) means "nothing was piped." */
+async function readStdinIfPiped(): Promise<string | undefined> {
+  if (process.stdin.isTTY) return undefined;
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const content = Buffer.concat(chunks).toString('utf-8');
+  return content.length > 0 ? content : undefined;
+}
+
+export async function main(): Promise<void> {
+  const rawArgs = process.argv.slice(2);
+  if (wantsHelp(rawArgs)) {
+    printHelp({
+      description: 'Position, promote, or (with piped markdown) create a Block node.',
+      usage: [
+        'aperas insert [--base <path>] <path> [--after <anchor>|--before <anchor>]',
+        'cat new-node.md | aperas insert [--base <path>] <parent-path> [--after <anchor>|--before <anchor>]',
+      ],
+      args: [
+        { name: '<path>', description: 'No stdin: the existing node to move/promote — any Block, or a FolderNode holder for a bare (anchor-less) promote only. With piped markdown: the parent to create under.' },
+      ],
+      flags: [
+        { name: '--base <path>', description: 'Base path deep-path resolution is relative to.' },
+        { name: '--after <anchor>', description: "Position immediately after <anchor>, becoming a child of <anchor>'s current parent — even if that's a different parent/artifact than the node has now. Cross-parent moves work this way; there is no separate move flag." },
+        { name: '--before <anchor>', description: "Position immediately before <anchor>, becoming a child of <anchor>'s current parent — even if that's a different parent/artifact than the node has now. Cross-parent moves work this way; there is no separate move flag." },
+        { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
+        { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
+      ],
+    });
+    return;
+  }
+  const flush = rawArgs.includes('--flush');
+  const reload = rawArgs.includes('--reload');
+  const args = rawArgs.filter((a) => a !== '--flush' && a !== '--reload');
+
+  const baseIdx = args.indexOf('--base');
+  const base = baseIdx !== -1 ? args[baseIdx + 1] : undefined;
+  const afterIdx = args.indexOf('--after');
+  const after = afterIdx !== -1 ? args[afterIdx + 1] : undefined;
+  const beforeIdx = args.indexOf('--before');
+  const before = beforeIdx !== -1 ? args[beforeIdx + 1] : undefined;
+
+  const consumed = new Set<number>();
+  if (baseIdx !== -1) { consumed.add(baseIdx); consumed.add(baseIdx + 1); }
+  if (afterIdx !== -1) { consumed.add(afterIdx); consumed.add(afterIdx + 1); }
+  if (beforeIdx !== -1) { consumed.add(beforeIdx); consumed.add(beforeIdx + 1); }
+  const rest = args.filter((_, i) => !consumed.has(i));
+
+  const [path] = rest;
+  if (!path) {
+    console.error('Usage: aperas insert [--base <path>] <path> [--after <anchor>|--before <anchor>]');
+    process.exit(1);
+  }
+
+  const markdown = await readStdinIfPiped();
+
+  await ensureServiceRunning();
+  const result = await request<ReturnType<typeof runInsert>>({ op: 'insert', path, base, markdown, after, before, flush, reload });
+  for (const line of result.lines) console.log(line);
+  const links = result.linkResolution;
+  if (links && links.resolved + links.dangling > 0) {
+    console.log(`[aperas insert]   Links: ${links.resolved} resolved, ${links.dangling} dangling, ${links.changed} changed.`);
+  }
+}
+
+if (process.argv[1]?.endsWith('kgInsert.ts')) {
+  main().catch((err) => {
+    console.error('[aperas insert] Failed:', err.message || err);
+    process.exit(1);
+  });
+}

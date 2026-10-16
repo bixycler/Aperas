@@ -7,7 +7,7 @@ description: >-
 
 # aperas
 
-Status: **v4.6** — Base skill for all Aperas roles.
+Status: **v4.7** — Base skill for all Aperas roles.
 
 Aperas is an evidence-based knowledge-graph documentation system. This skill establishes the common mental model, traversal discipline, multi-agent protocol, and CLI mechanics used across all roles (`aperas-orchestrator`, `aperas-grapher`, `aperas-coder`).
 
@@ -260,7 +260,7 @@ High-level cheatsheet for daily CLI use. For the exhaustive reference manual —
 | **Insert Turn** | `cat turn.md \| aperas insert <id> --after <a>`| Pipes markdown AST subtree after anchor child |
 | **Zoom View** | `aperas zoom <id> --view <name> --flush` | Re-roots view onto current Ask or Report |
 | **Update Node** | `echo "text" \| aperas update <id> [--text-only]`| `--text-only` preserves kids; bare tombstones |
-| **Insert / Reposition**| `aperas insert <par> [--after <sib>]` | Bullet `- ` inserts; no stdin moves node |
+| **Insert / Reposition**| `aperas insert <par> [--after <sib>]` | Bullet `- ` inserts; no body and `< /dev/null` moves node |
 | **Sweep / Service** | `aperas check-links` / `service restart` | Sweeps internal links; restarts daemon |
 
 ### Common Command Patterns
@@ -271,6 +271,7 @@ cat turn.md | aperas insert <turn-id> --after <ask> --flush  # Insert Work + Rep
 aperas zoom <id> --view <name> --flush                       # Re-root view onto Ask/Report
 echo "text" | aperas update <id> --text-only --flush         # Update node (preserves kids)
 echo "- text" | aperas insert <par> --after <sib> --flush    # Insert list item (needs bullet)
+aperas insert <id> --after <sib> --flush < /dev/null         # Move node (a move reads stdin to its end; a harness can leave it open)
 aperas check-links [--repair]                                # Sweep / repair link integrity
 ```
 

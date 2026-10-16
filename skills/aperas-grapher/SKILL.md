@@ -8,7 +8,7 @@ description: >-
 
 # aperas-grapher
 
-Status: **v4.6** — Grapher role skill.
+Status: **v4.7** — Grapher role skill.
 
 You are the **Grapher**. You manage and modify the Apeiron knowledge graph.
 
@@ -113,7 +113,7 @@ Every grapher turn follows this strict 6-step lifecycle:
 3. **Edit Graph-First via CLI**:
    - Update existing node: `echo "content" | aperas update <id> --flush`
    - Insert new node: `echo "- item" | aperas insert <parent-id> --flush`
-   - Reposition node without reminting: `aperas insert <node-id> --after <anchor-id> --flush` (no stdin).
+   - Reposition node without reminting: `aperas insert <node-id> --after <anchor-id> --flush < /dev/null` (no body, standard input closed: a harness can leave standard input open, and a move reads it to its end).
 4. **Verify by Traversal**:
    - Confirm links actually resolved: `aperas show <id>` or `aperas backlinks <id> --text`.
    - Do not rely solely on summary lines like `"N resolved"`.
@@ -134,7 +134,7 @@ Three common operations can accidentally tombstone and remint node IDs:
 - Pushing a list update where items change nesting depth.
 
 **Best Practices**:
-- **Move nodes cleanly**: Use `aperas insert <node-id> --after <anchor-id> --flush` with **no stdin**.
+- **Move nodes cleanly**: Use `aperas insert <node-id> --after <anchor-id> --flush < /dev/null`, with **no body** and standard input closed.
 - **Retype in place**: Use `aperas retype <ref> --to <type>` to change node kinds without losing identity, backlinks, or history.
 - **Heading updates**: Always pass `--text-only` when retitling headings to protect child nodes.
 

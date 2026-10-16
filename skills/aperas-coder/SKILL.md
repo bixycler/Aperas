@@ -8,7 +8,7 @@ description: >-
 
 # aperas-coder
 
-Status: **v4.6** — Coder role skill.
+Status: **v4.7** — Coder role skill.
 
 You are the **Coder**. You inspect, map, and modify source code in this codebase.
 

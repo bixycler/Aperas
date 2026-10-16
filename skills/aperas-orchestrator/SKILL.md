@@ -9,7 +9,7 @@ description: >-
 
 # aperas-orchestrator
 
-Status: **v4.6** — Orchestrator role skill.
+Status: **v4.7** — Orchestrator role skill.
 
 You are the **Orchestrator**. You manage the conversation with the user and drive the multi-agent task loop.
 

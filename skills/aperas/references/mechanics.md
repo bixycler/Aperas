@@ -1,6 +1,6 @@
 # Aperas CLI Mechanics Reference
 
-Status: **v4.2** — On-demand reference manual for advanced graph mutations, AST parsing rules, CLI syntax subtleties, and troubleshooting. Consulted by subagents when executing non-trivial graph operations.
+Status: **v4.7** — On-demand reference manual for advanced graph mutations, AST parsing rules, CLI syntax subtleties, and troubleshooting. Consulted by subagents when executing non-trivial graph operations.
 
 ---
 
@@ -10,6 +10,7 @@ Status: **v4.2** — On-demand reference manual for advanced graph mutations, AS
 - [Anchor Placement — The Bold-Colon Rule](#anchor-placement--the-bold-colon-rule)
 - [Sketching a Structure](#sketching-a-structure)
 - [Markdown Subtree AST Parsing & Multi-Node Piping](#markdown-subtree-ast-parsing--multi-node-piping)
+- [Moving a Node (`insert` with No Body)](#moving-a-node-insert-with-no-body)
 - [Inserting into Lists](#inserting-into-lists)
 - [Updating an Existing List Item (`aperas update <item-id>`)](#updating-an-existing-list-item-aperas-update-item-id)
 - [Updating a Heading (`--text-only`)](#updating-a-heading---text-only)
@@ -62,6 +63,15 @@ Markdown piped into `aperas insert <parent-id> [--after <anchor-id>]` parses int
 - **Hierarchical nesting**: Nested sub-bullets beneath piped items parse into child BlockNodes cleanly attached to their parent items.
 - **Anchor positioning**: The `--after <anchor-id>` flag positions the inserted batch directly after the specified anchor child (e.g. inserting Work and Report after the turn's `**Ask**` node).
 - **Anchor constraint**: The anchor node must be a **direct child** of `<parent-id>`, not a descendant. Check tree structure first via `aperas tree` or `aperas show <parent-id>`. If an anchor is invalid, the insert fails after hydrating nodes into memory, leaving live orphans. Recover by running `aperas reload -- --discard`.
+
+---
+
+## Moving a Node (`insert` with No Body)
+`aperas insert <node-id> --after <anchor-id>` (or `--before <anchor-id>`) with no body moves the existing node next to the anchor, keeping its ID, backlinks and history; the anchor's parent becomes the node's new parent:
+```bash
+aperas insert <node-id> --after <anchor-id> --flush < /dev/null
+```
+- **Close standard input**: A move reads standard input to its end before acting, and a harness can leave standard input open, so a move without `< /dev/null` can wait on it indefinitely.
 
 ---
 

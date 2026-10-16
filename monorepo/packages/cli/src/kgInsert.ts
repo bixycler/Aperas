@@ -21,16 +21,16 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, rejectSlugPathCollisions, findEnclosingArtifactId } from '@aperas/core/apeironNgn/node';
-import type { BlockNode, TreeNode } from '@aperas/core/apeironNgn/node';
-import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
-import { displayLabel } from '@aperas/core/apeironNgn/tree';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, rejectSlugPathCollisions, findEnclosingArtifactId } from '@aperas/core/shell/node';
+import type { BlockNode, TreeNode } from '@aperas/core/shell/node';
+import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { displayLabel } from '@aperas/core/shell/tree';
 import { parseMarkdownTree } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
 import { getProp, type HasProps, type PropEntry } from '@aperas/core/props';
-import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/shell/artifacts';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export interface InsertReq {

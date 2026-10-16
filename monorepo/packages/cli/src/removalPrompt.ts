@@ -8,7 +8,7 @@
  */
 
 import { createInterface } from 'node:readline/promises';
-import { createLineReader } from '@aperas/core/lineReader';
+import { createLineReader } from './lineReader';
 
 export interface ConfirmRemovalOptions {
   noPrompt?: boolean;

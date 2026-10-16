@@ -1,6 +1,6 @@
 /**
  * Aperas node addressing — pure/engine-agnostic pieces (Aperas-basic-assertion-skill-design.md
- * §2, Aperas-deep-path-resolution-design.md §2). `apeironNgn/node.ts`/`resolveCreate.ts`/
+ * §2, Aperas-deep-path-resolution-design.md §2). `shell/node.ts`/`resolveCreate.ts`/
  * `resolve.ts` import `slugify`/`tokenize`/`pathToNameTokens`/`Token` directly. The TerminusDB
  * `client`-based resolver (`resolveNodeRefDetail`/`resolveNodeRefOrNull`/`resolveIdToPath`, and
  * everything they call) moved to `nodeRefTdb.ts` (Aperas-apeironngn-design.md §4 rollout,

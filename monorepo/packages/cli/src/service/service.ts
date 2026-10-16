@@ -46,15 +46,14 @@ import { createServer as createHttpServer } from 'node:http';
 import { unlinkSync, readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/apeironNgn/dehydrate';
+import { rehydrateStore, getApeironExportDir } from '@aperas/core/shell/store';
+import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/shell/dehydrate';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
-import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds, wrap, type TreeNode } from '@aperas/core/apeironNgn/node';
-import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/apeironNgn/linkIntegrity';
-import { runMigrateFrontmatter } from '@aperas/core/apeironNgn/artifacts';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
-import { isThreadScopedId } from '@aperas/core/apeironNgn/threadScope';
+import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds, wrap, type TreeNode } from '@aperas/core/shell/node';
+import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/shell/linkIntegrity';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { isThreadScopedId } from '@aperas/core/shell/threadScope';
 import { resolveEffectiveThreadSizeCap } from '@aperas/core/graphConfig';
 import { getRunDir, getSocketPath, markReady, clearLock, writeToken, resolveHttpPort } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
@@ -74,7 +73,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 function resolveWebRoot(): string {
   const builtPath = resolve(__dirname, 'web');
   if (existsSync(builtPath)) return builtPath;
-  return resolve(__dirname, '..', '..', '..', 'web', 'dist'); // apeironNgn -> src -> cli -> packages -> web/dist
+  return resolve(__dirname, '..', '..', '..', 'web', 'dist'); // service -> src -> cli -> packages -> web/dist
 }
 import { runTrack, runReverseTrack } from '../kgTrack';
 import { runIngest } from '../kgIngest';
@@ -682,13 +681,6 @@ export function main(): void {
           return res;
         }
         return checkLinkIntegrity(store);
-      }
-      case 'migrateFrontmatter': {
-        if (req.reload) reloadStore();
-        const result = runMigrateFrontmatter(store);
-        dirty = true;
-        if (req.flush) flushIfDirty();
-        return result;
       }
       default:
         throw new Error(`ApeironNgn service: unknown op '${(req as { op?: string }).op}'`);

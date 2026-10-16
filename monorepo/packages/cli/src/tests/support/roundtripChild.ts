@@ -7,8 +7,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
-import { rehydrateStore } from '@aperas/core/apeironNgn/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/apeironNgn/dehydrate';
+import { rehydrateStore } from '@aperas/core/shell/store';
+import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
 
 /** Every quad of the store as a sorted line (a JSON array of its terms, so a newline in a literal stays inside the line), so two stores compare as sets of quads. */
 const quadLines = (store: Store): string[] =>

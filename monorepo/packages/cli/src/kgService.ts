@@ -12,8 +12,8 @@
  * did as its own first half, just without the respawn after.
  */
 
-import { readLock, isProcessAlive, clearLock, claimLock, resolveHttpPort } from './apeironNgn/serviceLock';
-import { ping, spawnService, waitForReady } from './apeironNgn/serviceClient';
+import { readLock, isProcessAlive, clearLock, claimLock, resolveHttpPort } from './service/serviceLock';
+import { ping, spawnService, waitForReady } from './service/serviceClient';
 import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot, resolveEffectiveGraphName } from '@aperas/core/graphConfig';
 import { wantsHelp, printHelp } from './kgHelp';
 

@@ -8,7 +8,7 @@
  */
 
 import { runStart } from './kgService';
-import { readLock } from './apeironNgn/serviceLock';
+import { readLock } from './service/serviceLock';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export async function main(): Promise<void> {

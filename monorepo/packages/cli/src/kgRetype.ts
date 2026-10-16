@@ -39,16 +39,16 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, findEnclosingArtifactId, type BlockNode } from '@aperas/core/apeironNgn/node';
-import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, findEnclosingArtifactId, type BlockNode } from '@aperas/core/shell/node';
+import { nodeKindFromId } from '@aperas/core/shell/vocab';
 import {
   parseMarkdownTree, headingDepth, extractLangFromFrontmatter, findLeadInSpliceOffset,
   HEADING_TREE_ANCHOR_PROP, type DocLang,
 } from '@aperas/core/astParser';
 import { getProp, type HasProps } from '@aperas/core/props';
-import type { ApeironNode } from '@aperas/core/apeironNgn/node';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import type { ApeironNode } from '@aperas/core/shell/node';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 /** Every block type this command will convert to. `list` is deliberately absent: it's a bare

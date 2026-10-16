@@ -13,12 +13,12 @@
  */
 
 import type { Store } from 'oxigraph';
-import { trackAllArtifacts, trackArtifactsScoped } from '@aperas/core/apeironNgn/artifacts';
+import { trackAllArtifacts, trackArtifactsScoped } from '@aperas/core/shell/artifacts';
 import { isReadmeFilename, expandArtifactPaths, listArtifactFiles, computeFileHash } from '@aperas/core/artifacts';
-import { wrap, type ArtifactNode, type FolderNode } from '@aperas/core/apeironNgn/node';
-import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
+import { wrap, type ArtifactNode, type FolderNode } from '@aperas/core/shell/node';
+import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
 import { confirmRemoval } from './removalPrompt';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export interface TrackResult {

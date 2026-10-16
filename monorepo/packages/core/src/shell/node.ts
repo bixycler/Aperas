@@ -729,12 +729,12 @@ export class ArtifactNode extends BlockNode {
       : undefined;
     // `description`'s own markdown links, extracted the same way any block's text is
     // (`collectLinkCodesFromText`) and keyed by this artifact's own bare snowflake — `resolveBlockLinks`
-    // (`apeironNgn/artifacts.ts`) unions this key set with `oldWikilinksByBlock`'s, which already
+    // (`shell/artifacts.ts`) unions this key set with `oldWikilinksByBlock`'s, which already
     // captures this same key's *prior* wikilinks (collected below) — so a `description` edit that
     // doesn't change a link's target reuses that `Link`'s id rather than reminting it. Scoped
     // assumption: in the ordinary case (a heading/non-paragraph leading child), this artifact's own
     // bare snowflake never separately appears as a `pendingLinks` key from body content, so this is
-    // the only entry for it — see `fullIdForKey`'s own doc comment (`apeironNgn/artifacts.ts`) for
+    // the only entry for it — see `fullIdForKey`'s own doc comment (`shell/artifacts.ts`) for
     // the matching resolver-side fix this depends on.
     const descriptionLinkCodes = collectLinkCodesFromText(frontmatterFields.description ?? '');
 
@@ -1671,7 +1671,7 @@ export interface RenderLinkItem {
  *  appended — wherever the href doesn't already carry one. Render-tree-only: never touches the
  *  stored `text` or a projected file, just the string this function's caller sends to the webapp.
  *
- *  `apeironNgn/artifacts.ts`'s resolver already turns a `./`/`../`-leading href with no fragment
+ *  `shell/artifacts.ts`'s resolver already turns a `./`/`../`-leading href with no fragment
  *  (design/linking.md's Topology "cross-file navigation" form) into a real `Link`, with the exact
  *  block-relative start offset of its `[...](...)` syntax stashed as a `position` prop per
  *  occurrence — reused here, not re-resolved. The webapp's `Inline.tsx` has no server round trip of

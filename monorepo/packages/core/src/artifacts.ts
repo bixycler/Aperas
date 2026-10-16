@@ -2,7 +2,7 @@
  * Aperas Artifact filesystem helpers — engine-agnostic (Aperas-apeironngn-design.md §4 rollout,
  * archiving step). This file used to also hold the TerminusDB-backed track/ingest functions;
  * those moved to `artifactsTdb.ts` (with `kgCli.ts`/`client.ts`/etc., all headed to `.archive/`)
- * since `apeironNgn/artifacts.ts`/`apeironNgn/node.ts`/`apeironNgn/folders.ts` depend directly on
+ * since `shell/artifacts.ts`/`shell/node.ts`/`shell/folders.ts` depend directly on
  * what's left here (`getArtifactsDir`, `listArtifactFiles`, `computeFileHash`, `isReadmeFilename`,
  * `extractLinkCodes`) and can't move with them.
  */
@@ -17,7 +17,7 @@ import { resolveEffectiveArtifactsRoot } from './graphConfig';
  *  before `aperas.config.json` discovery/the fixed fallback (`graphConfig.ts`'s own doc comment
  *  has the full reasoning). That env-var check is what makes every call site below correct with no
  *  argument at all when running inside a service process `aperas service start` bound — including
- *  `apeironNgn/artifacts.ts`/`folders.ts`/`node.ts`'s own bare `getArtifactsDir()` calls, several
+ *  `shell/artifacts.ts`/`folders.ts`/`node.ts`'s own bare `getArtifactsDir()` calls, several
  *  layers removed from here. A standalone tool with no such process (`verify.ts`,
  *  `apeironNgn/smokeTest.ts`) falls through to the same cwd-or-fallback resolution as before. */
 export function getArtifactsDir(dir: string = resolveEffectiveArtifactsRoot()): string {
@@ -97,7 +97,7 @@ export interface PendingLinkCodes {
  * has no such field, so leaving it in on the big write below fails schema check with
  * `unknown_property_for_type`, confirmed live), collecting `{blockId, codes}` pairs along the
  * way for a caller to resolve in its own separate pass afterward (`artifactsTdb.ts`'s
- * `resolveBlockLinks`, `apeironNgn/artifacts.ts`'s own version). Called *before* the write; link
+ * `resolveBlockLinks`, `shell/artifacts.ts`'s own version). Called *before* the write; link
  * resolution itself runs *after* it (see either resolveBlockLinks's own doc comment).
  */
 export function extractLinkCodes(node: ParsedBlockNode, out: PendingLinkCodes[] = []): PendingLinkCodes[] {

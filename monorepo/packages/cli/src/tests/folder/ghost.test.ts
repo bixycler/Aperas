@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
-import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folders';
-import { trackAllArtifacts } from '@aperas/core/apeironNgn/artifacts';
-import { wrap, type FolderNode } from '@aperas/core/apeironNgn/node';
+import { ingestFolderTree, getFolderRecord } from '@aperas/core/shell/folders';
+import { trackAllArtifacts } from '@aperas/core/shell/artifacts';
+import { wrap, type FolderNode } from '@aperas/core/shell/node';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 
 describe('ghost folder', () => {

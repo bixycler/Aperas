@@ -2,7 +2,7 @@
 // hand-built blocks: a target and a paragraph that references it. Independent of every other case.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, type BlockNode } from '@aperas/core/apeironNgn/node';
+import { wrap, type BlockNode } from '@aperas/core/shell/node';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runBacklinks } from '../../kgBacklinks';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';

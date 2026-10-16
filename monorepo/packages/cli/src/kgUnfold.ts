@@ -9,12 +9,12 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
-import { nodeKindFromId, nodeExists } from '@aperas/core/apeironNgn/vocab';
-import { displayLabel } from '@aperas/core/apeironNgn/tree';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { nodeKindFromId, nodeExists } from '@aperas/core/shell/vocab';
+import { displayLabel } from '@aperas/core/shell/tree';
 import { truncateForPreviewWithHint } from '@aperas/core/astParser';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 /** `ref` for a `TreeNode` resolves the normal deep-path way; for a `Link`, only a bare id

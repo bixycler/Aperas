@@ -20,10 +20,10 @@ import {
   type Profile,
   type TreeView,
   type ApeironNode,
-} from '@aperas/core/apeironNgn/node';
-import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
+} from '@aperas/core/shell/node';
+import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
 import { generateNodeId } from '@aperas/core/snowflake';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runProfileCreate(store: Store, handle: string, name?: string, kind?: string): { id: string } {

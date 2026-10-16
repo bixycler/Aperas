@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** `apeironNgn` -> `src` -> `cli` -> `packages` -> the two source trees the service actually runs:
+/** `service` -> `src` -> `cli` -> `packages` -> the two source trees the service actually runs:
  *  its own package (`packages/cli/src`) and the engine it depends on (`packages/core/src`) — split
  *  into two packages since this file was first written (when one `web/src/lib` covered both), so a
  *  single "one hop up" root no longer sees the whole picture; missing `core` here would mean an

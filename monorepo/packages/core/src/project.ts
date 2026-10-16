@@ -10,7 +10,7 @@
  * and any contiguous run of `listItem`s among a node's children is rendered as a list using
  * *that node's own* `orderedList`/`startIndex` props, wherever in `children` the run occurs.
  *
- * Engine-agnostic (Aperas-apeironngn-design.md §4 rollout, archiving step): `apeironNgn/node.ts`
+ * Engine-agnostic (Aperas-apeironngn-design.md §4 rollout, archiving step): `shell/node.ts`
  * imports `serializeBlock`/`renderChildren`/`withFrontmatter` directly. The TerminusDB-backed
  * GraphQL fetch-then-serialize wrappers that used to live here moved to `projectTdb.ts`, headed
  * to `.archive/` with `kgCli.ts`.

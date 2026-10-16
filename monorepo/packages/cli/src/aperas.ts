@@ -52,7 +52,6 @@ const COMMANDS: Record<string, CommandSpec> = {
   identity: { description: "Show or set this machine's identity.json (currently just machineNumber).", load: () => import('./kgIdentity') },
   skill: { description: "Install this package's bundled skills (aperas, kg-doc-ingest) into an agent's skill directory.", load: () => import('./kgSkill') },
   'check-links': { description: 'Run a drift-style link integrity sweep comparing stored .links against live block text.', load: () => import('./kgCheckLinks') },
-  'migrate-frontmatter': { description: "One-time migration: split every ArtifactNode's opaque frontmatter prop into per-key props (description, lang, ...).", load: () => import('./kgMigrateFrontmatter') },
 };
 
 function printTopLevelHelp(): void {
@@ -77,7 +76,7 @@ async function main(): Promise<void> {
   // dynamic import here is what makes `esbuild` actually include `service.ts`'s code in the single
   // output bundle at all — nothing else reachable from this file ever imports it.
   if (verb === '--__service') {
-    const { main: startService } = await import('./apeironNgn/service');
+    const { main: startService } = await import('./service/service');
     startService();
     return;
   }

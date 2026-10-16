@@ -12,10 +12,10 @@
  */
 
 import type { Quad, Store } from 'oxigraph';
-import { rehydrateStore } from '@aperas/core/apeironNgn/store';
-import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
-import { removeDanglingUnfolds } from '@aperas/core/apeironNgn/node';
-import { idFromNodeIri, nodeIri, predIri } from '@aperas/core/apeironNgn/vocab';
+import { rehydrateStore } from '@aperas/core/shell/store';
+import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
+import { removeDanglingUnfolds } from '@aperas/core/shell/node';
+import { idFromNodeIri, nodeIri, predIri } from '@aperas/core/shell/vocab';
 
 /** The previous implementation's lookup: one match per `TreeView` found by a full scan. */
 export function referenceDanglingUnfoldQuads(store: Store, deletedId: string): Quad[] {

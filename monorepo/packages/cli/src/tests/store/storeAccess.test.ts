@@ -1,4 +1,4 @@
-// The store access helpers (`core/src/apeironNgn/storeAccess.ts`): reads that return plain values and writes that
+// The store access helpers (`core/src/shell/storeAccess.ts`): reads that return plain values and writes that
 // take strings, each owning and freeing every wasm object it creates. The reads are compared with the former form
 // (raw `store.match` and the terms read from its quads, never freed) over a tiny fixture store, and the shared
 // constants (`PARENT_PRED`, `SIBLING_INDEX_PRED`, `XSD_*`) are shown to survive repeated use, since freeing one
@@ -20,7 +20,7 @@ import {
   fieldFromPredIri,
   nodeExists,
   nodeKindFromId,
-} from '@aperas/core/apeironNgn/vocab';
+} from '@aperas/core/shell/vocab';
 import {
   objectsOf,
   subjectsWhere,
@@ -35,8 +35,8 @@ import {
   deleteMatches,
   type Obj,
   type ObjArg,
-} from '@aperas/core/apeironNgn/storeAccess';
-import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
+} from '@aperas/core/shell/storeAccess';
+import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { ingestLinkedDemo } from '../support/linkedDemo.ts';
 

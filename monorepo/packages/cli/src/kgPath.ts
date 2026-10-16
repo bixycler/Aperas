@@ -4,9 +4,9 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, type TreeNode } from '@aperas/core/apeironNgn/node';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, type TreeNode } from '@aperas/core/shell/node';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runPath(store: Store, idArg: string): string {

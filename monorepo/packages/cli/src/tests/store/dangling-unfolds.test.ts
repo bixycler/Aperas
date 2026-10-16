@@ -6,11 +6,11 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
-import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
-import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts';
-import { ingestFolderTree } from '@aperas/core/apeironNgn/folders';
-import { findByExactPath } from '@aperas/core/apeironNgn/tree';
-import { wrap, ensureDefaultView } from '@aperas/core/apeironNgn/node';
+import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
+import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
+import { ingestFolderTree } from '@aperas/core/shell/folders';
+import { findByExactPath } from '@aperas/core/shell/tree';
+import { wrap, ensureDefaultView } from '@aperas/core/shell/node';
 import { compareDanglingUnfoldForms, unfoldedIds } from '../../verifyDanglingUnfolds.ts';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 

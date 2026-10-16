@@ -47,19 +47,19 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import {
   wrap, applyTombstone, rejectSlugPathCollisions,
   collectLinkTargetsByBlock, collectOldWikilinksByBlock, findEnclosingArtifactId,
-} from '@aperas/core/apeironNgn/node';
-import type { BlockNode, FolderNode, TreeNode, ApeironNode } from '@aperas/core/apeironNgn/node';
-import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
+} from '@aperas/core/shell/node';
+import type { BlockNode, FolderNode, TreeNode, ApeironNode } from '@aperas/core/shell/node';
+import { nodeKindFromId } from '@aperas/core/shell/vocab';
 import { parseMarkdownTree, headingDepth, parseFrontmatterFields, collectLinkCodesFromText, type ParsedBlockNode, type LinkOccurrence } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
 import { reconcileTree } from '@aperas/core/reconcile';
-import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/apeironNgn/artifacts';
+import { resolveBlockLinks, assertLinksAcceptable, type LinkResolutionStats } from '@aperas/core/shell/artifacts';
 import { carryForwardProp, type PropEntry } from '@aperas/core/props';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export interface UpdateReq {
@@ -210,7 +210,7 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
   const oldShape = target.toReconcileShape();
 
   // Snapshot of `target`'s own current live tree, taken before any of the mutations below —
-  // `resolveBlockLinks` (`apeironNgn/artifacts.ts`) needs each touched block's *previous* resolved
+  // `resolveBlockLinks` (`shell/artifacts.ts`) needs each touched block's *previous* resolved
   // targets/wikilinks to decide what changed and which `Link` ids can be reused, the same snapshot
   // `ingestArtifact` takes of a whole artifact before its own tree write. `kg:update`/`kg:insert`
   // never called `resolveBlockLinks` at all until this fix (`discussion/cli-packaging.md`,
@@ -347,7 +347,7 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
  *  (never a separate `resolveBlockLinks` call) under `target`'s own key — safe as the *only* entry
  *  for that key in the ordinary case (a heading/non-paragraph leading child never gives `target`'s
  *  own key a `pendingLinks` entry from body content at all); see `fullIdForKey`'s own doc
- *  comment in `apeironNgn/artifacts.ts` for the matching resolver-side fix this depends on. */
+ *  comment in `shell/artifacts.ts` for the matching resolver-side fix this depends on. */
 function applyArtifactFrontmatter(kind: string, target: BlockNode, frontmatter: string | undefined): void {
   if (kind !== 'ArtifactNode' || frontmatter === undefined) return;
   const fields = parseFrontmatterFields(frontmatter);

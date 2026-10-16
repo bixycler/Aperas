@@ -1,7 +1,7 @@
 /**
  * `aperas init` — bootstraps a brand-new graph in the current directory: `aperas.config.json`, an
  * empty `Apeiron/` store, and an `artifacts/` tree. Without this, a fresh directory has no
- * `Apeiron/*.jsonld` files at all, and `rehydrateStore` (`packages/core/src/apeironNgn/store.ts`)
+ * `Apeiron/*.jsonld` files at all, and `rehydrateStore` (`packages/core/src/shell/store.ts`)
  * treats a missing one as a real error (`ENOENT`) rather than an empty graph — the service crashes
  * on startup, which `aperas serve`/`aperas service start` can only report as a generic "did not
  * become ready in time", giving no hint that the actual problem is a directory that was never

@@ -3,10 +3,10 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
-import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts';
-import { ingestFolderTree } from '@aperas/core/apeironNgn/folders';
-import { findByExactPath } from '@aperas/core/apeironNgn/tree';
-import { wrap, type ArtifactNode } from '@aperas/core/apeironNgn/node';
+import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
+import { ingestFolderTree } from '@aperas/core/shell/folders';
+import { findByExactPath } from '@aperas/core/shell/tree';
+import { wrap, type ArtifactNode } from '@aperas/core/shell/node';
 import { runAddBlockLink } from '../../kgLink';
 import type { FixtureStore } from './fixture.ts';
 import { sampleMarkdown } from './sampleMarkdown.ts';

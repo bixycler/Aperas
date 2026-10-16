@@ -10,12 +10,12 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, type TreeNode, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
-import { nodeExists } from '@aperas/core/apeironNgn/vocab';
-import { displayLabel } from '@aperas/core/apeironNgn/tree';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, type TreeNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { nodeExists } from '@aperas/core/shell/vocab';
+import { displayLabel } from '@aperas/core/shell/tree';
 import { nodeAbstract } from './kgUnfold';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 function isTombstoned(node: { tombstonedAt?: string } | undefined): boolean {

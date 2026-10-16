@@ -19,7 +19,7 @@
  * `npx tsx src/lib/kgFlush.ts --clobber`.
  */
 
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export async function main(): Promise<void> {

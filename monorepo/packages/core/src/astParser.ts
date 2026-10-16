@@ -62,7 +62,7 @@ export interface LinkOccurrence {
   code: string;
   position: number;
   /** Set only for a bare `#fragment` link (no `[[...]]`/`aperas://` marker) — syntactically
-   *  identical to an ordinary, unrelated same-page anchor link, so `apeironNgn/artifacts.ts`'s
+   *  identical to an ordinary, unrelated same-page anchor link, so `shell/artifacts.ts`'s
    *  resolver must additionally verify the resolved candidate actually carries a matching
    *  `class="aperas-anchor"` tag before accepting it (AperasKG/artifacts/design/linking.md's
    *  Anchor-Matching Requirement), and a miss here is routine (not a dangling-link warning) —
@@ -135,8 +135,8 @@ function relativeOffset(containerNode: any, descendantNode: any, markdown: strin
 
 const LINK_URL_RE = /^\[\[(.+)\]\]$/;
 
-/** See `apeironNgn/resolveCreate.ts`'s identical constants — duplicated here rather than imported
- *  since this module is engine-agnostic (no `apeironNgn` dependency), and both files need the exact
+/** See `shell/resolveCreate.ts`'s identical constants — duplicated here rather than imported
+ *  since this module is engine-agnostic (no `shell` dependency), and both files need the exact
  *  same two literal prefixes to recognize the same syntax. */
 const APERAS_TREE_PREFIX = 'aperas://tree/';
 const APERAS_ID_PREFIX = 'aperas://id/';
@@ -159,7 +159,7 @@ const TRAILING_HEADING_ANCHOR_RE = /<a name='([^']*)' class='aperas-anchor(?: ap
  *  the old text here too would duplicate it on every re-projection. Kept as raw `<a ...></a>`
  *  markup (one or more, concatenated in original left-to-right order) — decomposed into individual
  *  `name` values only by `extractAnchorNames` below, when a consumer actually needs them (the
- *  full-slug-path collision check, `apeironNgn/node.ts`'s `rejectSlugPathCollisions`). */
+ *  full-slug-path collision check, `shell/node.ts`'s `rejectSlugPathCollisions`). */
 export const HEADING_TREE_ANCHOR_PROP = 'treeAnchor';
 
 /** Every anchor `name` embedded anywhere in `text` — a find-all counterpart to

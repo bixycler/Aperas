@@ -3,9 +3,9 @@
  * Compares live block text against stored `.links` in Oxigraph Store.
  */
 
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
-import type { LinkIntegrityReport, RepairLinkIntegrityResult } from '@aperas/core/apeironNgn/linkIntegrity';
+import type { LinkIntegrityReport, RepairLinkIntegrityResult } from '@aperas/core/shell/linkIntegrity';
 
 export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);

@@ -6,7 +6,7 @@
  * prompt over.
  */
 
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { runRemoveBlockLink } from './kgLink';
 import { wantsHelp, printHelp } from './kgHelp';
 

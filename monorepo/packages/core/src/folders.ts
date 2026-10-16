@@ -6,7 +6,7 @@
  * separate ArtifactNode; its top-level parsed blocks become the FolderNode's own children,
  * alongside nested FolderNodes and ArtifactNode references.
  *
- * `apeironNgn/folders.ts` reuses `buildFolderTree`/`collectFolderPaths`/`countFolders` directly.
+ * `shell/folders.ts` reuses `buildFolderTree`/`collectFolderPaths`/`countFolders` directly.
  * The TerminusDB `client`-based commit wrappers (`getFolderRecord`/`ingestFolderTree`) that used to
  * live here moved to `foldersTdb.ts`, headed to `.archive/` with `kgCli.ts`.
  *
@@ -20,7 +20,7 @@
  * `reconcileTree` itself needs no `Store` (pure), so it runs right here; only *applying* the
  * tombstones it returns for genuinely-removed old content needs one, so those bubble up through
  * `pendingTombstones` (an output array, pushed to like `folderIdByPath`/`existingByPath`/
- * `artifactIdByPath` below) for the `Store`-aware caller (`apeironNgn/folders.ts`) to apply.
+ * `artifactIdByPath` below) for the `Store`-aware caller (`shell/folders.ts`) to apply.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -107,7 +107,7 @@ export function buildFolderTree(
       // tried once corpus-wide, reverted the same day, since a README's first descendant is
       // routinely not a real description at all. `description`'s own markdown links are extracted
       // the same way any block's text is and bubbled up via `pendingDescriptionLinks` (this function
-      // has no `Store` to resolve them against itself) for `apeironNgn/folders.ts`'s
+      // has no `Store` to resolve them against itself) for `shell/folders.ts`'s
       // `ingestFolderTree` to resolve once the whole tree write actually lands, keyed by this
       // folder's own bare snowflake.
       const frontmatterFields = parseFrontmatterFields(frontmatter);

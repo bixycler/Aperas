@@ -102,8 +102,8 @@ export async function waitForReady(): Promise<void> {
  *  whole lifetime — passed as `APERAS_APEIRON_ROOT`/`APERAS_ARTIFACTS_ROOT` in its environment
  *  rather than relying on the child's own `process.cwd()`. Every function that calls
  *  `getApeironExportDir()`/`getArtifactsDir()` with no argument, anywhere in this process (however
- *  deep — `apeironNgn/service.ts`'s own `main()`, but also `runTrack`/`runIngest`/`runProject` and
- *  the shared `apeironNgn/artifacts.ts`/`folders.ts`/`node.ts` helpers underneath them), sees these
+ *  deep — `service/service.ts`'s own `main()`, but also `runTrack`/`runIngest`/`runProject` and
+ *  the shared `shell/artifacts.ts`/`folders.ts`/`node.ts` helpers underneath them), sees these
  *  env vars via `resolveEffectiveApeironRoot`/`resolveEffectiveArtifactsRoot`'s own default
  *  resolution (`graphConfig.ts`) — no signature threading needed anywhere else. Two shapes,
  *  distinguished by whether `service.ts` still exists as its own file next to this one:
@@ -122,7 +122,7 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
     ...(graphName ? { APERAS_GRAPH_NAME: graphName } : {}),
   };
   const serviceEntry = resolve(__dirname, 'service.ts');
-  // apeironNgn -> src -> cli -> packages -> monorepo root, where `tsx` (a root devDependency,
+  // service -> src -> cli -> packages -> monorepo root, where `tsx` (a root devDependency,
   // hoisted by the workspace) actually lives.
   const rootDir = resolve(__dirname, '..', '..', '..', '..');
 

@@ -26,10 +26,10 @@
 import type { Store } from 'oxigraph';
 import { expandArtifactPaths } from '@aperas/core/artifacts';
 import { runTrack, type TrackResult } from './kgTrack';
-import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact, retryDanglingRefs } from '@aperas/core/apeironNgn/artifacts';
-import { ingestFolderTree } from '@aperas/core/apeironNgn/folders';
+import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact, retryDanglingRefs } from '@aperas/core/shell/artifacts';
+import { ingestFolderTree } from '@aperas/core/shell/folders';
 import { confirmRemoval } from './removalPrompt';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 /** `force` (Aperas-crud-design.md §14): threaded into both destructive-removal sites this

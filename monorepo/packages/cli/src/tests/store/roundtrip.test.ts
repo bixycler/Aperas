@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rehydrateStore } from '@aperas/core/apeironNgn/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/apeironNgn/dehydrate';
-import { wrap, ensureDefaultView, type ArtifactNode } from '@aperas/core/apeironNgn/node';
+import { rehydrateStore } from '@aperas/core/shell/store';
+import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
+import { wrap, ensureDefaultView, type ArtifactNode } from '@aperas/core/shell/node';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { ingestLinkedDemo, type LinkedDemo } from '../support/linkedDemo.ts';
 

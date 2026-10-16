@@ -11,7 +11,7 @@
  * artifacts/discussion/packaging.md's "Settled: graph discovery..." note) — this is just enough to
  * make one level of the tree discoverable and point at the next.
  *
- * `getArtifactsDir()`/`getApeironExportDir()` (`artifacts.ts`/`apeironNgn/store.ts`) both fall back
+ * `getArtifactsDir()`/`getApeironExportDir()` (`artifacts.ts`/`shell/store.ts`) both fall back
  * to their own hardcoded, hop-counted path when no `aperas.config.json` is found anywhere above the
  * starting directory — this repo's own dev setup is deliberately left config-free, relying on that
  * fallback, so this migration doesn't force every existing checkout to add a config file just to
@@ -117,11 +117,13 @@ export function resolveGraphConfig(startDir: string = process.cwd()): GraphConfi
 /** The fallback graph root when no `aperas.config.json` is found anywhere above the caller — this
  *  repo's own dev checkout, deliberately left config-free (see this file's own doc comment above).
  *  Anchored to this module's own on-disk location rather than `process.cwd()`, so it resolves the
- *  same directory no matter where a command happens to be invoked from — the same `existsSync`
- *  dev-vs-built branch `serviceLock.ts`/`artifacts.ts`/`apeironNgn/store.ts` used to each carry a
- *  copy of, now centralized here as the one place that does this hop-count at all. */
+ *  same directory no matter where a command happens to be invoked from — the same dev-vs-built
+ *  branch `serviceLock.ts`/`artifacts.ts`/`shell/store.ts` used to each carry a copy of, now
+ *  centralized here as the one place that does this hop-count at all. A dev checkout runs this
+ *  module from its own `.ts` source under `tsx`; the built `aperas` runs it inlined into the
+ *  `esbuild` bundle, a `.js` file, so the test reads this module's own URL, not any directory name. */
 function resolveFallbackGraphRoot(): string {
-  const isDev = existsSync(resolve(__dirname, 'apeironNgn'));
+  const isDev = import.meta.url.endsWith('.ts');
   const hops = isDev
     ? ['..', '..', '..', '..'] // packages/core/src -> core -> packages -> monorepo root -> repo root
     : ['..', '..', '..', '..']; // packages/cli/dist -> cli -> packages -> monorepo root -> repo root

@@ -1,5 +1,5 @@
 /**
- * Client-side mirror of `@aperas/core/apeironNgn/node`'s `RenderItem` shape (design/webapp.md's
+ * Client-side mirror of `@aperas/core/shell/node`'s `RenderItem` shape (design/webapp.md's
  * render contract, planning/webapp.md's Slice 1). Kept as a plain local type rather than importing
  * the core package's own export: importing it as a *value* would pull `node:fs`/`oxigraph`-touching
  * code into the browser bundle (`discussion/webapp.md`'s "Code inventory" freeflow entry names this

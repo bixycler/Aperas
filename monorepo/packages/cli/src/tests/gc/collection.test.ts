@@ -4,9 +4,9 @@
 // paragraph that carries the links and the spared tombstone, and run in order.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, pruneUnreachableTombstones, type BlockNode, type Link } from '@aperas/core/apeironNgn/node';
+import { wrap, pruneUnreachableTombstones, type BlockNode, type Link } from '@aperas/core/shell/node';
 import { WIKILINK_PREDICATE } from '@aperas/core/astParser';
-import { nodeExists } from '@aperas/core/apeironNgn/vocab';
+import { nodeExists } from '@aperas/core/shell/vocab';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runRemoveBlockLink } from '../../kgLink';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';

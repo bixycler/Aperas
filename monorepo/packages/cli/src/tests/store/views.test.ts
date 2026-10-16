@@ -4,7 +4,7 @@
 // went stale. The cases share the store, the view and the paragraph that carries the links, and run in order.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, ensureDefaultView, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/apeironNgn/node';
+import { wrap, ensureDefaultView, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { ingestLinkedDemo, type LinkedDemo } from '../support/linkedDemo.ts';

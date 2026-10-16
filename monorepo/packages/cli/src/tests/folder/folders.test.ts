@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
-import { trackArtifact } from '@aperas/core/apeironNgn/artifacts';
-import { ingestFolderTree, getFolderRecord } from '@aperas/core/apeironNgn/folders';
-import { wrap, type FolderNode } from '@aperas/core/apeironNgn/node';
+import { trackArtifact } from '@aperas/core/shell/artifacts';
+import { ingestFolderTree, getFolderRecord } from '@aperas/core/shell/folders';
+import { wrap, type FolderNode } from '@aperas/core/shell/node';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 
 const DEMO_README = `---

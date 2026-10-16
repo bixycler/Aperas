@@ -8,10 +8,10 @@
 
 import { createInterface } from 'node:readline/promises';
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, type TreeNode, type BlockNode, type Link, type ApeironNode } from '@aperas/core/apeironNgn/node';
-import { createLineReader } from '@aperas/core/lineReader';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, type TreeNode, type BlockNode, type Link, type ApeironNode } from '@aperas/core/shell/node';
+import { createLineReader } from './lineReader';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runLinkCandidates(store: Store, pathArg: string, recursive: boolean, all: boolean) {

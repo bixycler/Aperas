@@ -5,11 +5,11 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { resolveDeepPathDetail } from '@aperas/core/apeironNgn/resolveCreate';
-import { wrap } from '@aperas/core/apeironNgn/node';
-import { displayLabel } from '@aperas/core/apeironNgn/tree';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { resolveDeepPathDetail } from '@aperas/core/shell/resolveCreate';
+import { wrap } from '@aperas/core/shell/node';
+import { displayLabel } from '@aperas/core/shell/tree';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 function resolvePlain(store: Store, paths: string[], base?: string) {

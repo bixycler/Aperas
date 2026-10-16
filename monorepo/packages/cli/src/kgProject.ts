@@ -34,12 +34,12 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import type { Store } from 'oxigraph';
-import { findByExactPath } from '@aperas/core/apeironNgn/tree';
-import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
-import { wrap, hasHolderDescendant, deriveAbstractFromLiveChildren, type ArtifactNode, type FolderNode, type TreeNode } from '@aperas/core/apeironNgn/node';
+import { findByExactPath } from '@aperas/core/shell/tree';
+import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { wrap, hasHolderDescendant, deriveAbstractFromLiveChildren, type ArtifactNode, type FolderNode, type TreeNode } from '@aperas/core/shell/node';
 import { getArtifactsDir, computeFileHash } from '@aperas/core/artifacts';
-import { createLineReader } from '@aperas/core/lineReader';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { createLineReader } from './lineReader';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runProject(store: Store, path: string, dryRun: boolean, force: boolean = false) {

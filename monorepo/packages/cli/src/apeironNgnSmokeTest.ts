@@ -9,8 +9,8 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { rehydrateStore, getApeironExportDir } from '@aperas/core/apeironNgn/store';
-import { wrap, backlinks } from '@aperas/core/apeironNgn/node';
+import { rehydrateStore, getApeironExportDir } from '@aperas/core/shell/store';
+import { wrap, backlinks } from '@aperas/core/shell/node';
 
 let failures = 0;
 function check(label: string, condition: boolean): void {

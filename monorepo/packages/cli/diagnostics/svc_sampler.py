@@ -96,7 +96,7 @@ def service_pid(lock: str) -> int | None:
     found: dict[int, int] = {}  # pid -> parent pid, for every node process running service.ts
     for p in glob.glob("/proc/[0-9]*/cmdline"):
         cmd = read(p).replace("\0", " ")
-        if "apeironNgn/service.ts" in cmd and "tsx" in cmd and read(p.replace("cmdline", "comm")).strip() == "node":
+        if "service/service.ts" in cmd and "tsx" in cmd and read(p.replace("cmdline", "comm")).strip() == "node":
             pid = int(p.split("/")[2])
             m = re.match(r"\d+ \(.*\) \S (\d+)", read(f"/proc/{pid}/stat"), re.S)
             found[pid] = int(m.group(1)) if m else 0

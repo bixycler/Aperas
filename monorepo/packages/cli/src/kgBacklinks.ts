@@ -6,11 +6,11 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { backlinks, ownerOfLink, wrap, type TreeNode, type Link } from '@aperas/core/apeironNgn/node';
-import { displayLabel } from '@aperas/core/apeironNgn/tree';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { backlinks, ownerOfLink, wrap, type TreeNode, type Link } from '@aperas/core/shell/node';
+import { displayLabel } from '@aperas/core/shell/tree';
 import { nodeAbstract } from './kgUnfold';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export interface BacklinkEntry {

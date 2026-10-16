@@ -5,8 +5,8 @@
 // drop-and-repair part is `linking/integrity.test.ts`.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
-import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
+import { checkLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
+import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
 import { makeCorpusCopy, type CorpusCopy } from '../support/corpus.ts';
 
 describe('corpus: link integrity of the whole mirror', () => {

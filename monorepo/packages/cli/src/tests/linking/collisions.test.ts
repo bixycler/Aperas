@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { slugify } from '@aperas/core/nodeRef';
-import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts';
+import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 
 describe('linking: collisions at ingestion', () => {

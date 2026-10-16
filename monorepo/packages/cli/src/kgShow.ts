@@ -14,10 +14,10 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { serializeDoc } from '@aperas/core/apeironNgn/dehydrate';
-import { nodeExists } from '@aperas/core/apeironNgn/vocab';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { serializeDoc } from '@aperas/core/shell/dehydrate';
+import { nodeExists } from '@aperas/core/shell/vocab';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runShow(store: Store, pathArg: string): Record<string, unknown> {

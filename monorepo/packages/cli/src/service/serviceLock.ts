@@ -104,7 +104,7 @@ export function claimLock(apeironRoot: string, artifactsRoot: string, httpPort: 
 
 /** Called by the service itself once its socket is actually listening — overwrites the lock with
  *  its own real pid (the claimer may have been a short-lived CLI process, not the service) and the
- *  same roots it was actually bound to (`apeironNgn/service.ts`'s own `main()`, not re-resolved
+ *  same roots it was actually bound to (`service/service.ts`'s own `main()`, not re-resolved
  *  here). */
 export function markReady(apeironRoot: string, artifactsRoot: string, httpPort: number): void {
   ensureRunDir();

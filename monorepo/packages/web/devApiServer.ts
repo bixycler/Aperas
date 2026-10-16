@@ -5,7 +5,7 @@
  * bundles the config file and its close relative imports via esbuild, but externalizes a bare
  * `node_modules`-resolved specifier and lets Node's native ESM loader `import()` it directly —
  * which cannot load a raw `.ts` file at all (confirmed live: `ERR_UNKNOWN_FILE_EXTENSION` the
- * moment `vite.config.ts` itself imported `@aperas/cli/apeironNgn/serviceClient`). Running under
+ * moment `vite.config.ts` itself imported `@aperas/cli/service/serviceClient`). Running under
  * `tsx` here sidesteps that entirely — `tsx` is the same loader every `kg*.ts` entrypoint already
  * runs under, so this file is a completely ordinary `tsx`-run script from Node's point of view.
  *
@@ -21,8 +21,8 @@
  * needs, not this.
  */
 import { createServer, type ServerResponse } from 'node:http';
-import { ensureServiceRunning, request } from '@aperas/cli/apeironNgn/serviceClient';
-import { handleApiRoute, readRequestBody } from '@aperas/cli/apeironNgn/apiRoutes';
+import { ensureServiceRunning, request } from '@aperas/cli/service/serviceClient';
+import { handleApiRoute, readRequestBody } from '@aperas/cli/service/apiRoutes';
 
 const port = Number(process.argv[2] ?? 2734);
 

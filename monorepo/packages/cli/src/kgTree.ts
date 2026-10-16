@@ -6,9 +6,9 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, resolveTreeView, buildRenderTree, type TreeNode, type TreeView, type RenderNodeItem } from '@aperas/core/apeironNgn/node';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, resolveTreeView, buildRenderTree, type TreeNode, type TreeView, type RenderNodeItem } from '@aperas/core/shell/node';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 /** `format: 'render-tree'`'s own return shape — `path` alongside `tree` rather than spliced into

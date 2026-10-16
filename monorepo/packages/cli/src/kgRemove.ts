@@ -9,10 +9,10 @@
  */
 
 import type { Store } from 'oxigraph';
-import { resolveDeepPath } from '@aperas/core/apeironNgn/resolve';
-import { wrap, tombstoneLiveSubtree, type BlockNode } from '@aperas/core/apeironNgn/node';
-import { nodeKindFromId } from '@aperas/core/apeironNgn/vocab';
-import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
+import { resolveDeepPath } from '@aperas/core/shell/resolve';
+import { wrap, tombstoneLiveSubtree, type BlockNode } from '@aperas/core/shell/node';
+import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export interface RemoveReq {

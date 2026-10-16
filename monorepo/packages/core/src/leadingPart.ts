@@ -9,7 +9,7 @@
  * own `..` handling counts every path segment — folder, filename, heading — as one uniform hop (the
  * deep-path grammar's own address family, `aperas://tree/...`), which is a different counting rule
  * than an ordinary relative file path uses (a filename is never its own directory level). Resolving
- * a compatible-context fragment link at all (`apeironNgn/artifacts.ts`'s `resolveBlockLinks`)
+ * a compatible-context fragment link at all (`shell/artifacts.ts`'s `resolveBlockLinks`)
  * already needs the relative→canonical half just to find a candidate; the canonical→relative half
  * is unused until the cleanup pass (Slice 2) needs to emit/rewrite a compatible link from an
  * already-resolved target — built together here rather than split across two slices, which would

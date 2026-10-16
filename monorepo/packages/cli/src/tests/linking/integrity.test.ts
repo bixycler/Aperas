@@ -7,12 +7,12 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { trackArtifact, ingestArtifact } from '@aperas/core/apeironNgn/artifacts';
-import { ingestFolderTree } from '@aperas/core/apeironNgn/folders';
-import { findByExactPath } from '@aperas/core/apeironNgn/tree';
-import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/apeironNgn/node';
-import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity } from '@aperas/core/apeironNgn/linkIntegrity';
-import { predIri, nodeIri } from '@aperas/core/apeironNgn/vocab';
+import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
+import { ingestFolderTree } from '@aperas/core/shell/folders';
+import { findByExactPath } from '@aperas/core/shell/tree';
+import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/shell/node';
+import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
+import { predIri, nodeIri } from '@aperas/core/shell/vocab';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { findByText, findHeadingByTitle } from '../support/tree.ts';
 

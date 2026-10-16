@@ -694,38 +694,6 @@ export function retryDanglingRefs(store: Store, force: boolean = false): { reing
   return { reingested, failed };
 }
 
-/** One-time migration (discussion/core.md's 2026-09-20 frontmatter-as-props redesign): re-runs
- *  `ingestArtifact` for every live artifact with `bypassUnchangedCheck: true`, so each one's
- *  existing single opaque `frontmatter` prop splits into per-key props (`description` among them,
- *  now carrying real, bakeable `Link`s of its own) even though no file content on disk actually
- *  changed — the same "force past the hash-skip without touching `ingestedHash`" mechanism
- *  `retryDanglingRefs` above already uses. `force: false` is safe here: reconciling a file against
- *  itself produces zero removed candidates, so the tombstone-confirmation gate never fires.
- *  `FolderNode` needs no equivalent pass — `ingestFolderTree` already rebuilds its whole tree
- *  unconditionally on every `kg:ingest`, no hash-skip to bypass, so the very next ordinary ingest
- *  migrates every folder's frontmatter for free. */
-export function runMigrateFrontmatter(store: Store): { migrated: string[]; bodyHeldBack: string[]; failed: IngestFailure[] } {
-  const migrated: string[] = [];
-  const bodyHeldBack: string[] = [];
-  const failed: IngestFailure[] = [];
-  for (const id of allLiveIdsOfKind(store, 'ArtifactNode')) {
-    const artifact = wrap(store, id) as unknown as ArtifactNode;
-    const artifactPath = artifact.path as string;
-    try {
-      const result = ingestArtifact(store, artifactPath, false, true);
-      if (!result) continue;
-      // `description` lands either way (applied ahead of the tombstone-confirmation gate) — this
-      // distinguishes only whether the *body* reconciliation also went through, so an operator
-      // knows which paths still have an unrelated pre-existing reconciliation quirk to look at
-      // (`--force` on `kg:ingest <path>` applies it, once actually confirmed safe to).
-      (result.pendingConfirmation ? bodyHeldBack : migrated).push(artifactPath);
-    } catch (err: any) {
-      failed.push({ path: artifactPath, error: err?.message ?? String(err) });
-    }
-  }
-  return { migrated, bodyHeldBack, failed };
-}
-
 /** AST-parses and commits a tracked artifact into a fractal tree of BlockNodes, delegating the
  *  actual work to `ArtifactNode.ingestFromDisk` (`node.ts`) — this wrapper only finds the node and
  *  resolves the wikilinks it turned up, once its own tree write has finished.

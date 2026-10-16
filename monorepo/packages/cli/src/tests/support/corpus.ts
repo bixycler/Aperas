@@ -6,7 +6,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
-import { rehydrateStore } from '@aperas/core/apeironNgn/store';
+import { rehydrateStore } from '@aperas/core/shell/store';
 import { REAL_GRAPH, assertNotRealMirror } from './fixture.ts';
 
 export interface CorpusCopy {

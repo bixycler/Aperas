@@ -4,8 +4,8 @@ import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from 'oxigraph';
 import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot } from '@aperas/core/graphConfig';
-import { rehydrateStore } from '@aperas/core/apeironNgn/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/apeironNgn/dehydrate';
+import { rehydrateStore } from '@aperas/core/shell/store';
+import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
 
 /** The checkout's own graph (`<repo>/AperasKG`, the real mirror). Exported for `makeCorpusCopy`, which only reads it. */
 export const REAL_GRAPH = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../AperasKG');

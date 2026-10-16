@@ -4,6 +4,8 @@ import { defineSuite } from '../support/suite.mjs';
 export default defineSuite(import.meta.url, [
   './essential.suite.mjs',
   '../runner/runner.test.ts',
+  '../folder/ghost.test.ts',
+  '../prompt/removalPrompt.test.ts',
   '../store/dangling-unfolds.test.ts',
   '../store/storeAccess.test.ts',
   '../store/views.test.ts',

@@ -19,16 +19,16 @@
  * a node, or the folder sweep tombstoning a whole removed Folder/Artifact), it's held back and
  * reported instead of applied silently: this CLI prints what would be removed and asks for
  * confirmation (default NO). `--force` skips the prompt and applies it unconditionally — for
- * scripted/hook use, where nothing can answer a prompt.
+ * scripted/hook use, where nothing can answer a prompt. `--no-prompt` is the opposite for the same
+ * callers: it answers no to every prompt without reading stdin, so nothing is removed and nothing blocks.
  */
 
-import { createInterface } from 'node:readline/promises';
 import type { Store } from 'oxigraph';
 import { expandArtifactPaths } from '@aperas/core/artifacts';
 import { runTrack, type TrackResult } from './kgTrack';
 import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact, retryDanglingRefs } from '@aperas/core/apeironNgn/artifacts';
 import { ingestFolderTree } from '@aperas/core/apeironNgn/folders';
-import { createLineReader } from '@aperas/core/lineReader';
+import { confirmRemoval } from './removalPrompt';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -92,13 +92,14 @@ export async function main(): Promise<void> {
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: "AST-parse and commit changed tracked artifacts' fractal trees, then rebuild the FolderNode structural tree.",
-      usage: 'aperas ingest [<path>...] [--track] [--force] [--flush] [--reload]',
+      usage: 'aperas ingest [<path>...] [--track] [--force] [--no-prompt] [--flush] [--reload]',
       args: [
         { name: '<path>...', description: "Files or directories to ingest, tracking each one first if it isn't tracked yet. Omit to sweep every already-tracked artifact." },
       ],
       flags: [
         { name: '--track', description: "Run an aperas track refresh against the same paths first (or a full sweep, given none) — without it, an on-disk edit to an already-tracked file is invisible to ingestion until something else re-reads it." },
         { name: '--force', description: "Apply every removal this run would otherwise hold back for confirmation, without prompting. Use for non-interactive/scripted runs (e.g. a git hook)." },
+        { name: '--no-prompt', description: "Answer no to every removal prompt without reading stdin: the removals are listed and held back, nothing is removed, and the command never waits for input. Use when nothing can answer (an agent harness). Without it, a closed stdin also counts as no, and piped answers (echo yes | aperas ingest) still work. Ignored with --force." },
         { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
       ],
@@ -109,7 +110,8 @@ export async function main(): Promise<void> {
   const reload = rawArgs.includes('--reload');
   const track = rawArgs.includes('--track');
   const force = rawArgs.includes('--force');
-  const paths = rawArgs.filter((p) => p !== '--flush' && p !== '--reload' && p !== '--track' && p !== '--force');
+  const noPrompt = rawArgs.includes('--no-prompt');
+  const paths = rawArgs.filter((p) => p !== '--flush' && p !== '--reload' && p !== '--track' && p !== '--force' && p !== '--no-prompt');
   await ensureServiceRunning();
   let result = await request<IngestResponse>({ op: 'ingest', paths, flush, reload, track, force });
 
@@ -151,14 +153,7 @@ export async function main(): Promise<void> {
       console.log(`  '${p}' (untracked from disk)`);
     }
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const lines = createLineReader(rl);
-    process.stdout.write('\nAre you sure you want to remove these? [yes/NO]: ');
-    const raw = await lines.next();
-    rl.close();
-    const answer = (raw ?? '').trim().toLowerCase();
-
-    if (answer === 'yes' || answer === 'y') {
+    if (await confirmRemoval({ noPrompt })) {
       result = await request<IngestResponse>({ op: 'ingest', paths, flush, reload: false, track: false, force: true });
     } else {
       console.log('[aperas ingest] Skipped — nothing was removed. Re-run with --force, or answer yes, to apply.');

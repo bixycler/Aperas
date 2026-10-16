@@ -12,13 +12,12 @@
  * `kg:ingest` stays separate from plain `kg:track` today.
  */
 
-import { createInterface } from 'node:readline/promises';
 import type { Store } from 'oxigraph';
 import { trackAllArtifacts, trackArtifactsScoped } from '@aperas/core/apeironNgn/artifacts';
 import { isReadmeFilename, expandArtifactPaths, listArtifactFiles, computeFileHash } from '@aperas/core/artifacts';
 import { wrap, type ArtifactNode, type FolderNode } from '@aperas/core/apeironNgn/node';
 import { allIdsOfKind } from '@aperas/core/apeironNgn/dehydrate';
-import { createLineReader } from '@aperas/core/lineReader';
+import { confirmRemoval } from './removalPrompt';
 import { ensureServiceRunning, request } from './apeironNgn/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -116,7 +115,7 @@ export async function main(): Promise<void> {
     printHelp({
       description: 'Register/refresh ArtifactNodes for tracked files.',
       usage: [
-        'aperas track [<path>...] [--force] [--flush] [--reload]',
+        'aperas track [<path>...] [--force] [--no-prompt] [--flush] [--reload]',
         'aperas track --reverse [--reload]',
       ],
       args: [
@@ -125,6 +124,7 @@ export async function main(): Promise<void> {
       flags: [
         { name: '--reverse', description: "Report which real ArtifactNode/FolderNode subtrees have graph-side content not yet reflected on disk, instead of tracking disk files. Read-only — writes nothing, run aperas project to actually catch disk up." },
         { name: '--force', description: "Apply every removal a full sweep (no <path>...) would otherwise hold back for confirmation, without prompting. Use for non-interactive/scripted runs (e.g. a git hook)." },
+        { name: '--no-prompt', description: "Answer no to the removal prompt without reading stdin: the removals are listed and held back, nothing is removed, and the command never waits for input. Use when nothing can answer (an agent harness). Without it, a closed stdin also counts as no, and piped answers (echo yes | aperas track) still work. Ignored with --force." },
         { name: '--flush', description: 'Force an immediate sync to disk after this call, instead of waiting for the normal flush timer.' },
         { name: '--reload', description: 'Reload the store from disk first, in case something else (e.g. a git pull) changed it since the service started.' },
       ],
@@ -157,7 +157,8 @@ export async function main(): Promise<void> {
 
   const flush = rawArgs.includes('--flush');
   const force = rawArgs.includes('--force');
-  const paths = rawArgs.filter((p) => p !== '--flush' && p !== '--reload' && p !== '--force');
+  const noPrompt = rawArgs.includes('--no-prompt');
+  const paths = rawArgs.filter((p) => p !== '--flush' && p !== '--reload' && p !== '--force' && p !== '--no-prompt');
 
   await ensureServiceRunning();
   let result = await request<TrackResult>({ op: 'track', paths, flush, reload, force });
@@ -171,14 +172,7 @@ export async function main(): Promise<void> {
     console.log('\n[aperas track] The following would be permanently removed (no matching file found on disk):');
     for (const p of pendingRemovals) console.log(`  '${p}'`);
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const lines = createLineReader(rl);
-    process.stdout.write('\nAre you sure you want to remove these? [yes/NO]: ');
-    const raw = await lines.next();
-    rl.close();
-    const answer = (raw ?? '').trim().toLowerCase();
-
-    if (answer === 'yes' || answer === 'y') {
+    if (await confirmRemoval({ noPrompt })) {
       result = await request<TrackResult>({ op: 'track', paths, flush, reload: false, force: true });
     } else {
       console.log('[aperas track] Skipped — nothing was removed. Re-run with --force, or answer yes, to apply.');

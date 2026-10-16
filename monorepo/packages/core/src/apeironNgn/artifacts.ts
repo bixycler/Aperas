@@ -194,8 +194,14 @@ export function findLiveArtifactByPath(store: Store, path: string): string | nul
   return findLiveByKindAndPath(store, 'ArtifactNode', path);
 }
 
+/** Live nodes of `kind` that have a document: a real `ArtifactNode` always has a `path`. An id that is only
+ *  named by a parent's `children` is a subject with containment triples and no document (see the same
+ *  helper in `folders.ts`); without the `path` check a full `track` listed it for removal as `null`. */
 function allLiveIdsOfKind(store: Store, kind: string): string[] {
-  return allIdsOfKind(store, kind).filter((id) => !(wrap(store, id) as unknown as ArtifactNode).tombstonedAt);
+  return allIdsOfKind(store, kind).filter((id) => {
+    const node = wrap(store, id) as unknown as ArtifactNode;
+    return !node.tombstonedAt && node.path !== undefined;
+  });
 }
 
 export interface TrackResult {

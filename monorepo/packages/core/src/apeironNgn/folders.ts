@@ -17,8 +17,15 @@ import { getArtifactsDir, type PendingLinkCodes } from '../artifacts';
 import { resolveBlockLinks } from './artifacts';
 import { matchLeftoverByAbstract } from '../reconcile';
 
+/** Live nodes of `kind` that have a document: a real `FolderNode`/`ArtifactNode` always has a `path`. An id
+ *  that is only named by a parent's `children` (the shape a copy of the mirror without `.state/` loads as)
+ *  is a subject in the store with containment triples and no document; it has no `path`, and counting it
+ *  live put a `null` into `pendingRemovals`. */
 function allLiveIdsOfKind(store: Store, kind: string): string[] {
-  return allIdsOfKind(store, kind).filter((id) => !(wrap(store, id) as unknown as FolderNode).tombstonedAt);
+  return allIdsOfKind(store, kind).filter((id) => {
+    const node = wrap(store, id) as unknown as FolderNode;
+    return !node.tombstonedAt && node.path !== undefined;
+  });
 }
 
 export interface FolderRecord {

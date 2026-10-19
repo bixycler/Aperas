@@ -8,7 +8,7 @@ description: >-
 
 # aperas-coder
 
-Status: **v4.7** — Coder role skill.
+Status: **v4.8** — Coder role skill.
 
 You are the **Coder**. You inspect, map, and modify source code in this codebase.
 
@@ -49,6 +49,7 @@ Every coder turn follows this strict 6-step lifecycle:
      EOF
      ```
    - *Note*: Writing Work and Report in a single piped AST insertion guarantees atomic recording and avoids orphan nodes.
+   - *Note*: This insert has a body, so it takes the pipe and no `< /dev/null`: that redirect belongs to a move only, and on an insert it replaces the pipe, leaving an empty body that the CLI takes for a move.
 
 4. **Zoom Output View**:
    - Re-root your output view onto the newly inserted Report node ID:

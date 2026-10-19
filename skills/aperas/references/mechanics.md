@@ -1,6 +1,6 @@
 # Aperas CLI Mechanics Reference
 
-Status: **v4.7** — On-demand reference manual for advanced graph mutations, AST parsing rules, CLI syntax subtleties, and troubleshooting. Consulted by subagents when executing non-trivial graph operations.
+Status: **v4.8** — On-demand reference manual for advanced graph mutations, AST parsing rules, CLI syntax subtleties, and troubleshooting. Consulted by subagents when executing non-trivial graph operations.
 
 ---
 
@@ -72,6 +72,14 @@ Markdown piped into `aperas insert <parent-id> [--after <anchor-id>]` parses int
 aperas insert <node-id> --after <anchor-id> --flush < /dev/null
 ```
 - **Close standard input**: A move reads standard input to its end before acting, and a harness can leave standard input open, so a move without `< /dev/null` can wait on it indefinitely.
+- **`< /dev/null` is for a move only**: Never put it on an insert that has a body or a pipe. The redirect replaces the pipe, the body is empty and the CLI takes the insert for a move, so the content is never inserted:
+  ```bash
+  # WRONG: the redirect replaces the pipe; this is a move of <id>, and the file's content is lost
+  cat file | aperas insert <id> </dev/null
+
+  # RIGHT: an insert with a body takes the pipe and no redirect
+  cat file | aperas insert <id> --flush
+  ```
 
 ---
 

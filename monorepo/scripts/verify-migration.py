@@ -4,23 +4,24 @@
 One-time tool of the cutover to the new engine, with `migrate-mirror.py`, which must sit in the same
 directory (the verifier loads it for the rules' constants). Python 3, standard library and `git` only.
 
-  python3 monorepo/scripts/verify-migration.py <clone dir> [--rules 1234]
+  python3 monorepo/scripts/verify-migration.py <clone dir> [--rules 123456]
 
 <clone dir> is a git clone of the graph (the argument is required and has no default, so the verifier
 never reads the real graph unless it is named) whose HEAD is the baseline commit, committed before the
 migration, and whose working tree is the migrated mirror: run `migrate-mirror.py <clone dir>` on it first.
-`--rules` names the rules that the migration was run with (default all four; see `migrate-mirror.py` and
+`--rules` names the rules that the migration was run with (default all six; see `migrate-mirror.py` and
 `planning/core.md`, Batch 9, step 6).
 
 Reads: `Apeiron/*.jsonld` and `Apeiron/.state/*.jsonld` of the clone, before = `git show HEAD:<file>`,
 after = the working tree; both directories are read together. Writes nothing in the clone and nothing
-anywhere but the terminal. Every difference is classified as one of the four rules'; anything else is
-listed as UNEXPECTED. Also prints the conformity checks of the migrated state and five samples of each
+anywhere but the terminal. Every difference is classified as one of the six rules'; anything else is
+listed as UNEXPECTED, and so is a migrated clone that still holds an `unfolds` entry whose target is not defined (rule 5) or
+an ArtifactNode that holds a `type` (rule 6). Also prints the conformity checks of the migrated state and five samples of each
 kind of change, then ends with the exit status: 0 for a clean check (`UNEXPECTED differences: 0`), 1 when
 unexpected differences are listed, 2 for a usage error or a stop condition: with no argument, or with an
 argument that is not a graph root (a directory holding `Apeiron/`), the verifier prints this text on stderr,
 reads nothing and exits with status 2; so does a `--rules` with no value or with a value that is not a list
-of rule numbers 1 to 4 (a usage message on stderr, nothing read); it has no other stop condition. Read the conformity counts as well:
+of rule numbers 1 to 6 (a usage message on stderr, nothing read); it has no other stop condition. Read the conformity counts as well:
 they do not change the status. Any other failure (an unreadable file, a `git` error) still ends in a Python
 traceback, which is status 1: the verifier does not tell it from unexpected differences.
 """
@@ -38,8 +39,8 @@ if len(sys.argv) < 2 or not os.path.isdir(os.path.join(sys.argv[1], "Apeiron")):
 if "--rules" in sys.argv:
     _k = sys.argv.index("--rules")
     _v = sys.argv[_k + 1] if _k + 1 < len(sys.argv) else ""
-    if not _v or any(c not in "1234" for c in _v):
-        print("usage error: --rules takes a list of rule numbers 1 to 4, e.g. --rules 3 or --rules 12; nothing was read", file=sys.stderr)
+    if not _v or any(c not in "123456" for c in _v):
+        print("usage error: --rules takes a list of rule numbers 1 to 6, e.g. --rules 3 or --rules 12; nothing was read", file=sys.stderr)
         sys.exit(2)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -50,7 +51,7 @@ spec.loader.exec_module(mm)
 DELETE_SET = mm.DELETE_SET
 
 clone = sys.argv[1]
-rules = sys.argv[sys.argv.index("--rules") + 1] if "--rules" in sys.argv else "1234"
+rules = sys.argv[sys.argv.index("--rules") + 1] if "--rules" in sys.argv else "123456"
 rels = [os.path.relpath(f, clone) for f in sorted(glob.glob(clone + "/Apeiron/*.jsonld")) + sorted(glob.glob(clone + "/Apeiron/.state/*.jsonld"))]
 
 
@@ -82,7 +83,7 @@ def strip_link(l):
 
 removed_from = collections.defaultdict(set)   # container -> tombstone ids expected out
 for i in tomb:
-    if "parent" in B[i] and not (i in DELETE_SET and "3" in rules):
+    if "2" in rules and "parent" in B[i] and not (i in DELETE_SET and "3" in rules):
         removed_from[B[i]["parent"]].add(i)
 
 counts = collections.Counter()
@@ -91,6 +92,8 @@ counts = collections.Counter()
 vanished = set(B) - set(A)
 appeared = set(A) - set(B)
 expected_gone = DELETE_SET & set(B) if "3" in rules else set()
+# the ids that rule 5 may keep an `unfolds` entry for: those that stand before the migration, but the twelve
+expected_defined = mm.defined_ids(B.values(), expected_gone)
 if vanished != expected_gone:
     unexpected.append(("document set", "vanished %s, expected %s" % (sorted(vanished - expected_gone), sorted(expected_gone - vanished))))
 if appeared:
@@ -113,6 +116,19 @@ for i in sorted(set(B) & set(A)):
         exp["kind"] = "human"
         exp = {k: exp[k] for k in mm.PROFILE_ORDER if k in exp}
         cats.append("rule 4 profile")
+    # rule 5 (an unfolds entry whose target is not defined)
+    if "5" in rules and "unfolds" in exp:
+        kept = [u for u in exp["unfolds"] if u in expected_defined]
+        if len(kept) != len(exp["unfolds"]):
+            if kept:
+                exp["unfolds"] = kept
+            else:
+                del exp["unfolds"]
+            cats.append("rule 5 unfolds")
+    # rule 6 (the type of an artifact)
+    if "6" in rules and exp.get("@type") == "ArtifactNode" and "type" in exp:
+        del exp["type"]
+        cats.append("rule 6 artifact type")
     # rule 2 (tombstone itself)
     if i in tomb and "2" in rules:
         for k in ("parent", "links", "props"):
@@ -140,6 +156,16 @@ for i in sorted(set(B) & set(A)):
             diff = ["key order %s vs %s" % (list(exp.keys()), list(a.keys()))]
         unexpected.append((i, "differs from what the rules give in %s" % diff))
 
+# rules 5 and 6 leave nothing of what they strip
+if "5" in rules:
+    left = [(i, u) for i, d in A.items() for u in d.get("unfolds", []) if u not in mm.defined_ids(A.values())]
+    if left:
+        unexpected.append(("rule 5", "%d unfolds entries still name an id that is not defined, e.g. %s" % (len(left), left[0])))
+if "6" in rules:
+    left = [i for i, d in A.items() if d.get("@type") == "ArtifactNode" and "type" in d]
+    if left:
+        unexpected.append(("rule 6", "%d artifacts still hold a type, e.g. %s" % (len(left), left[0])))
+
 # every document the rules should have changed did change
 for i in tomb - (DELETE_SET if "3" in rules else set()):
     if "2" in rules and i in A and (set(A[i]) & {"parent", "links", "props"} or A[i].get("children") != []):
@@ -157,6 +183,9 @@ print("\nconformity of the migrated state")
 live = A
 nopred = sum(1 for d in A.values() for l in d.get("links", []) if "predicate" in l)
 print("  Link with a predicate (any document):", nopred)
+_defined_now = mm.defined_ids(A.values())
+print("  unfolds entries whose target is not defined:", sum(1 for d in A.values() for u in d.get("unfolds", []) if u not in _defined_now))
+print("  artifacts that hold a type:", sum(1 for d in A.values() if d.get("@type") == "ArtifactNode" and "type" in d))
 ta = {i for i, d in A.items() if "tombstonedAt" in d}
 print("  tombstones: %d; with parent %d, links %d, props %d, non-empty children %d" % (
     len(ta), sum("parent" in A[i] for i in ta), sum("links" in A[i] for i in ta),

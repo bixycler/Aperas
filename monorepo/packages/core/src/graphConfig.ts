@@ -21,6 +21,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isGraphName } from './apeironNgn/graphName';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILENAME = 'aperas.config.json';
@@ -215,4 +216,94 @@ export function resolveEffectiveThreadSizeCap(startDir?: string): number {
     }
   }
   return DEFAULT_THREAD_SIZE_CAP;
+}
+
+// -- The table of settings of the graphs (design/core.md, "Addressing"; planning/core.md, Batch 9 step 2) --------------------------------------
+// The `graphs` key of `aperas.config.json`: an object keyed by graph name, each entry holding the directory of the graph's mirror (`mirror`)
+// and its flush interval (`flushIntervalMs`). The shell has three graphs, so the table has room for those three and no other name.
+
+/** The main graph, called `tree` until it has an identifier of its own in the configuration. */
+export const MAIN_GRAPH = 'tree';
+/** The graph of the thread-scoped tree nodes, a subdomain of the main graph. */
+export const THREADS_GRAPH = `threads.${MAIN_GRAPH}`;
+/** The graph of the views: a name of one label, because a view can index many graphs and not only the main one. */
+export const VIEWS_GRAPH = 'treeviews';
+/** The three graphs, in the order of the linking topology: a graph points only at the graphs before it. */
+export const MIRROR_GRAPHS: readonly string[] = [MAIN_GRAPH, THREADS_GRAPH, VIEWS_GRAPH];
+
+/** The flush interval of the main graph, and of the other two, when the table gives none. */
+export const DEFAULT_MAIN_FLUSH_MS = 10_000;
+export const DEFAULT_STATE_FLUSH_MS = 3_000;
+/** The directory, under the main graph's, of the graphs that git ignores. */
+export const STATE_DIRECTORY = '.state';
+
+/** The settings of one graph: where its mirror is (an absolute directory) and how often it is flushed. */
+export interface GraphSettings {
+  readonly graph: string;
+  readonly directory: string;
+  readonly flushIntervalMs: number;
+}
+
+/** What the table gives: the settings of each of the three graphs in order, and the warnings the shell prints once, at start. */
+export interface GraphTable {
+  readonly graphs: readonly GraphSettings[];
+  readonly warnings: readonly string[];
+}
+
+/** The text of the warning for a table entry keyed `tree`: the name may collide with the main graph, which has no identifier of its own. */
+export const warnTreeEntry = (configPath: string): string =>
+  `${configPath}: the graphs table has an entry named ${MAIN_GRAPH}; the name may collide with the main graph, which has no identifier of its own and is called ${MAIN_GRAPH} today (the entry is used)`;
+
+/**
+ * The settings of the three graphs. Where the table is absent, or an entry lacks a setting, the defaults are today's files and intervals:
+ * `tree` is the effective Apeiron root (`resolveEffectiveApeironRoot`: `APERAS_APEIRON_ROOT`, the walk-up, the fixed fallback) every 10 s,
+ * and `threads.tree` and `treeviews` are its `.state/` directory every 3 s. `APERAS_APEIRON_ROOT` wins for the main graph's directory, over
+ * an entry of `tree`, and the `.state/` defaults follow it; an explicit `mirror` of the other two graphs wins over that default. A relative
+ * `mirror` is taken from the directory of the config file, as `graph` is. The config is the nearest one above `startDir` or, when the walk
+ * finds none, the one beside the fallback root, as the other resolvers do. A table that cannot be a table is an error that names the file
+ * and the entry: a key that is no graph name or not one of the three, a `mirror` that is no non-empty string, an interval that is no positive
+ * finite number.
+ */
+export function resolveGraphSettings(startDir?: string): GraphTable {
+  const configPath = findConfigFile(startDir ?? process.cwd()) ?? (existsSync(join(resolveFallbackGraphRoot(), CONFIG_FILENAME)) ? join(resolveFallbackGraphRoot(), CONFIG_FILENAME) : null);
+  let table: Record<string, unknown> = {};
+  const warnings: string[] = [];
+  if (configPath !== null) {
+    let raw: { graphs?: unknown };
+    try {
+      raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch (err: any) {
+      throw new Error(`${configPath} isn't valid JSON: ${err.message || err}`);
+    }
+    if (raw.graphs !== undefined) {
+      if (typeof raw.graphs !== 'object' || raw.graphs === null || Array.isArray(raw.graphs)) throw new Error(`${configPath}: "graphs" must be an object keyed by graph name`);
+      table = raw.graphs as Record<string, unknown>;
+      for (const [name, entry] of Object.entries(table)) {
+        if (!isGraphName(name)) throw new Error(`${configPath}: graphs entry ${JSON.stringify(name)} is not a graph name`);
+        if (!MIRROR_GRAPHS.includes(name)) throw new Error(`${configPath}: graphs entry ${JSON.stringify(name)} is not one of the graphs of the shell (${MIRROR_GRAPHS.join(', ')})`);
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) throw new Error(`${configPath}: graphs entry ${JSON.stringify(name)} must be an object`);
+        const { mirror, flushIntervalMs } = entry as { mirror?: unknown; flushIntervalMs?: unknown };
+        if (mirror !== undefined && (typeof mirror !== 'string' || mirror === '')) throw new Error(`${configPath}: graphs entry ${JSON.stringify(name)}: "mirror" must be a non-empty string`);
+        if (flushIntervalMs !== undefined && (typeof flushIntervalMs !== 'number' || !Number.isFinite(flushIntervalMs) || flushIntervalMs <= 0)) throw new Error(`${configPath}: graphs entry ${JSON.stringify(name)}: "flushIntervalMs" must be a positive finite number`);
+      }
+      if (MAIN_GRAPH in table) warnings.push(warnTreeEntry(configPath));
+    }
+  }
+  const configDir = configPath === null ? undefined : dirname(configPath);
+  const mainRoot = resolveEffectiveApeironRoot(startDir);
+  const stateRoot = join(mainRoot, STATE_DIRECTORY);
+  const settingOf = (graph: string, fallbackDirectory: string, fallbackInterval: number): GraphSettings => {
+    const entry = (table[graph] ?? {}) as { mirror?: string; flushIntervalMs?: number };
+    const fromEntry = entry.mirror === undefined ? undefined : resolve(configDir!, entry.mirror);
+    const directory = graph === MAIN_GRAPH && process.env.APERAS_APEIRON_ROOT ? process.env.APERAS_APEIRON_ROOT : (fromEntry ?? fallbackDirectory);
+    return { graph, directory, flushIntervalMs: entry.flushIntervalMs ?? fallbackInterval };
+  };
+  return {
+    graphs: [
+      settingOf(MAIN_GRAPH, mainRoot, DEFAULT_MAIN_FLUSH_MS),
+      settingOf(THREADS_GRAPH, stateRoot, DEFAULT_STATE_FLUSH_MS),
+      settingOf(VIEWS_GRAPH, stateRoot, DEFAULT_STATE_FLUSH_MS),
+    ],
+    warnings,
+  };
 }

@@ -7,8 +7,9 @@ export default defineSuite(import.meta.url, [
   '../ingest/chain.test.ts',
   '../folder/folders.test.ts',
   '../store/fixture.test.ts',
-  '../store/roundtrip.test.ts',
+  '../mirror/roundtrip.test.ts',
   '../gc/collection.test.ts',
   '../links/refusals.test.ts',
+  '../engine/boundary.test.ts',
   '../linking/anchors.test.ts',
 ], 5);

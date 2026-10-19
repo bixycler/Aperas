@@ -10,4 +10,6 @@ export default defineSuite(import.meta.url, [
   '../corpus/dangling-unfolds.test.ts',
   '../corpus/link-integrity.test.ts',
   '../corpus/roundtrip.test.ts',
+  '../corpus/mirror.test.ts',
+  '../corpus/lookups.test.ts',
 ]);

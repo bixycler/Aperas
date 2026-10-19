@@ -20,11 +20,11 @@ so it never reaches the real graph unless a caller names it. `--dry` writes noth
 `--roundtrip` writes nothing in the graph root: every file is loaded, written back to a temporary place
 and compared byte for byte with the original. Any condition the rules cannot decide makes the script stop,
 list it and write nothing; so does a usage error, `--rules` with no value or with a value that is not a
-list of rule numbers 1 to 4 (a message on stderr, nothing read or written).
+list of rule numbers 1 to 6 (a message on stderr, nothing read or written).
 Exit status 0 is a completed run (or a clean `--roundtrip`); 1 is a `--roundtrip` that finds a file
 different; 2 is a usage error or a stop condition.
 
-Rules (all four by default; --rules selects a subset, e.g. --rules 3):
+Rules (all six by default; --rules selects a subset, e.g. --rules 3):
   1. every embedded Link loses its `predicate` key and nothing else
   2. every document with `tombstonedAt` loses parent, links, props; its
      children becomes []; its id leaves the children of the container its
@@ -33,8 +33,12 @@ Rules (all four by default; --rules selects a subset, e.g. --rules 3):
      a re-check that nothing in either directory refers to them
   4. Profile:00CJC4S69R000 (dinhlx) gets `kind: human`, placed in the field
      order handle, name, kind, preferences
+  5. every `unfolds` entry whose target is not defined (no document and no
+     embedded entry of that id stands in either directory) is stripped; a
+     document left with no entry loses the key
+  6. the `type` of every ArtifactNode is stripped
 
-The rules are those of the migration of the mirror in `planning/core.md`, Batch 9, step 6. The companion
+The rules are the six parts of the migration of the mirror in `planning/core.md`, Batch 9, step 6. The companion
 `verify-migration.py` (same directory) checks a migrated clone against its baseline commit; a second run of
 this script on a migrated mirror changes nothing.
 """
@@ -58,6 +62,7 @@ DELETE_SET = set(README_ARTIFACTS + README_PARAGRAPHS)
 DINHLX = "Profile:00CJC4S69R000"
 PROFILE_ORDER = ["@id", "@type", "handle", "name", "kind", "preferences"]
 TOMBSTONE_DROP = ("parent", "links", "props")
+RULES = "123456"
 
 
 def serialize(docs):
@@ -81,6 +86,27 @@ def load(root):
     return out, raws
 
 
+def defined_ids(documents, gone=frozenset()):
+    """The ids that stand in the mirror: every document and every embedded entry, but the documents (and what they embed) in `gone`."""
+    out = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            if isinstance(value.get("@id"), str):
+                out.add(value["@id"])
+            for k, v in value.items():
+                if k != "@id":
+                    walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    for d in documents:
+        if d["@id"] not in gone:
+            walk(d)
+    return out
+
+
 def roundtrip(root):
     files, raws = load(root)
     bad = 0
@@ -102,12 +128,12 @@ def main():
         return 2
     root = args[0]
     dry = "--dry" in args
-    rules = "1234"
+    rules = RULES
     if "--rules" in args:
         k = args.index("--rules")
         rules = args[k + 1] if k + 1 < len(args) else ""
-        if not rules or any(c not in "1234" for c in rules):
-            print("usage error: --rules takes a list of rule numbers 1 to 4, e.g. --rules 3 or --rules 12; nothing was written", file=sys.stderr)
+        if not rules or any(c not in RULES for c in rules):
+            print("usage error: --rules takes a list of rule numbers 1 to 6, e.g. --rules 3 or --rules 12; nothing was written", file=sys.stderr)
             return 2
     if "--roundtrip" in args:
         return 1 if roundtrip(root) else 0
@@ -127,7 +153,8 @@ def main():
         "links_dropped_with_tombstones", "tombstones_changed_mirror",
         "tombstones_changed_state", "containers_edited_mirror",
         "containers_edited_state", "deleted_mirror", "deleted_state",
-        "profiles_changed")}
+        "profiles_changed", "unfolds_stripped_mirror", "unfolds_stripped_state",
+        "artifact_types_stripped_mirror", "artifact_types_stripped_state")}
 
     def side(f):
         return "state" if os.sep + ".state" + os.sep in f else "mirror"
@@ -242,6 +269,28 @@ def main():
             d.clear()
             d.update(ordered)
             stats["profiles_changed"] += 1
+
+    # ---- rule 5: an `unfolds` entry whose target is not defined
+    if "5" in rules:
+        defined = defined_ids(docs.values(), DELETE_SET if "3" in rules else set())
+        for i, d in docs.items():
+            if i in skip or "unfolds" not in d:
+                continue
+            kept = [u for u in d["unfolds"] if u in defined]
+            if len(kept) != len(d["unfolds"]):
+                stats["unfolds_stripped_" + side(where[i])] += len(d["unfolds"]) - len(kept)
+                if kept:
+                    d["unfolds"] = kept
+                else:
+                    del d["unfolds"]
+
+    # ---- rule 6: no ArtifactNode holds a `type`
+    if "6" in rules:
+        for i, d in docs.items():
+            if i in skip or d.get("@type") != "ArtifactNode" or "type" not in d:
+                continue
+            del d["type"]
+            stats["artifact_types_stripped_" + side(where[i])] += 1
 
     # ---- write
     out = {}

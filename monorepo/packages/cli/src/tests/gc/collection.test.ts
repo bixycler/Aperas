@@ -4,8 +4,8 @@
 // tombstone, and run in order.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, pruneUnreachableTombstones, type BlockNode, type Link, type ApeironNode } from '@aperas/core/shell/node';
-import { nodeExists } from '@aperas/core/shell/vocab';
+import { wrap, createNode, pruneUnreachableTombstones, type BlockNode, type Link, type ApeironNode } from '@aperas/core/shell/node';
+import { nodeExists } from '@aperas/core/shell/db';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { ingestLinkedDemo, type LinkedDemo } from '../support/linkedDemo.ts';
@@ -26,7 +26,7 @@ describe('tombstone garbage collection', () => {
   };
   const tombstoned = (title: string): string => {
     const id = `BlockNode:${generateNodeId()}`;
-    const node = wrap(fx.store, id) as unknown as BlockNode;
+    const node = createNode(fx.store, id, { under: demo.linkBlockId }) as unknown as BlockNode; // made in the graph of the block, attached to nothing
     node.type = 'heading'; node.title = title; node.children = [];
     return id;
   };

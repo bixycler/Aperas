@@ -4,45 +4,38 @@
  * functions onto the classes they belong to).
  *
  * Real `extends`, one level per genuinely shared shape:
- *   ApeironInstance (store/id only)
+ *   ApeironInstance (db/id only)
  *     -> BaseNode (links/props/tombstonedAt/holder)
  *          -> TreeNode (title/text/key — every tree-positioned kind)
  *               -> BlockNode (type/parent/children) -> ArtifactNode (merged with its own root
  *                    content — same fields and methods, unmodified, not a separate wrapper)
  *               -> FolderNode (deliberately not a BlockNode — never merged with anything, own
- *                    independent `path`/`children`; see `shape.ts`'s own doc comment for why)
+ *                    independent `path`/`children`)
  *   ApeironInstance -> Link, ApeironInstance -> StringProp   (leaf subdocs, data only)
  *   ApeironInstance -> Profile, ApeironInstance -> TreeView  (Aperas-treeview-design.md — an i-view
  *     over the TreeNode/Link graph; `unfolded`'s old per-node flag moved into `TreeView.unfolds`)
  *
- * `wrap(store, id)` dispatches to the right concrete class (`CLASS_BY_KIND`, keyed off the id's own
- * prefix via `vocab.ts`'s `nodeKindFromId`) and returns a real, `Object.seal`ed instance of it —
+ * `wrap(db, id)` dispatches to the right concrete class (`CLASS_BY_KIND`, keyed off the id's own
+ * kind via `nodeIds.ts`'s `nodeKindFromId`) and returns a real, `Object.seal`ed instance of it —
  * no `Proxy`. Each leaf class's fields are real `get`/`set` accessor properties, generated once
- * per class at module load from its own flattened `SHAPE` (`shape.ts`), calling the shared
- * `readField`/`writeField` helpers below. `Object.seal` is what preserves "an unknown field read
- * returns `undefined`, an unknown field write throws" without any trap logic: a sealed instance
- * rejects a brand-new own-property in strict mode (a real `TypeError`, not `node.ts`'s old custom
- * message — an internal-invariant check a script author would hit while developing, not a
- * documented CLI-facing contract, so accepted as a trade rather than preserved byte-for-byte).
+ * per class at module load from the closed Aperas schema (`aperasSchema.ts`), calling the shared
+ * `readField`/`writeField` helpers below, which go through the engine's reads and the write layer
+ * (`db.ts`, `writeLayer.ts`) and through nothing else. `Object.seal` is what preserves "an unknown
+ * field read returns `undefined`, an unknown field write throws" without any trap logic: a sealed
+ * instance rejects a brand-new own-property in strict mode (a real `TypeError`).
+ *
+ * A node must exist before it is written: `createNode` makes it in the graph the rule gives it
+ * (`graphOfPath.ts`) and `wrap` only wraps an id. A write to an id with no record throws.
  */
 
 import { readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import type { Store } from 'oxigraph';
+import { closeSchema, type FieldDef } from '@aperas/core/apeironNgn/schema';
 import { generateNodeId } from '../snowflake';
-import { idFromNodeIri, nodeKindFromId, nodeExists, PARENT_FIELD, SIBLING_INDEX_FIELD } from './vocab';
-import {
-  type Obj,
-  objectsOf,
-  subjectsWhere,
-  firstSubjectWhere,
-  orderedChildIds,
-  countMatches,
-  deleteMatches,
-  addQuad,
-} from './storeAccess';
-import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIFACT_NODE_SHAPE, FOLDER_NODE_SHAPE, LINK_SHAPE, PROP_SHAPE, PROFILE_SHAPE, TREE_VIEW_SHAPE } from './shape';
-import { allIdsOfKind } from './dehydrate';
+import { nodeKindFromId } from './nodeIds';
+import { APERAS_SCHEMA } from './aperasSchema';
+import { allIdsOfKind, backlinksOf, graphOfId, nodeExists, type Db } from './db';
+import type { NewNode } from './graphOfPath';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
 import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, extractLangFromFrontmatter, parseFrontmatterFields, collectLinkCodesFromText, extractAnchorNames, HEADING_TREE_ANCHOR_PROP, type ParsedBlockNode, type DocLang } from '../astParser';
@@ -55,89 +48,138 @@ import type { ParsedFolderNode } from '../folders';
 export interface ApeironNode {
   /** Escape hatch: the raw node id (e.g. `"BlockNode:00C..."`), never proxied further. */
   readonly id: string;
-  /** Reified containment (Aperas-apeironngn-design.md §3): reverse-queries the `parent` index,
-   *  sorted by `siblingIndex`. Present on `BlockNode`/`ArtifactNode`/`FolderNode`; absent (reads
+  /** The ordered contents of a container (the engine's list), wrapped. Present on `BlockNode`/`ArtifactNode`/`FolderNode`; absent (reads
    *  `undefined`) on everything else. */
   readonly children?: ApeironNode[];
   [field: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Low-level field read/write — what each generated accessor calls. Unchanged in spirit from the
-// old `Proxy` traps, just invoked from real `get`/`set` accessor properties instead.
+// Low-level field read/write — what each generated accessor calls: the engine's reads, and the
+// write layer's writes (each of which tells the maps of Batch 10).
 // ---------------------------------------------------------------------------------------------
 
-function childrenOf(store: Store, id: string): ApeironNode[] {
-  return orderedChildIds(store, id).map((childId) => wrap(store, childId));
+const SCHEMA = closeSchema(APERAS_SCHEMA);
+const FIELDS_OF_KIND = new Map(SCHEMA.kinds.map((k) => [k.name, k.fields]));
+/** The containment field of the schema (`children`): ordered, partitioning, with the derived `parent` as its reverse side. */
+const CONTAINMENT = SCHEMA.roles.containment!;
+
+/** Creates the node `id` in the graph the rule gives it (`graphOfPath.ts`: a profile or a view by its kind, an artifact or a folder by its `path`, anything else by the
+ *  node it is built `under`), tells the maps, and wraps it. The kind is the id's own. */
+export function createNode(db: Db, id: string, where: { path?: string; under?: string } = {}): ApeironNode {
+  const node: NewNode = { kind: nodeKindFromId(id), ...where };
+  db.write.createNode(id, node);
+  return wrap(db, id);
 }
 
-/** A true incremental append for reified `orderedContainment` — writes only `childId`'s own
- *  `__parent`/`__siblingIndex` triples, touching no other child's data. `TreeNode.appendChild`'s
- *  old implementation went through the generic `this.children = [...(this.children ?? []),
- *  childId]` setter instead, which (per `writeField`'s `orderedContainment` branch) detaches
- *  *every* current child of the parent first, then rewrites all of them from the array it read —
- *  correct when nothing else can observe the gap in between, but for a single append that's a lot
- *  of needless churn, and a genuine hazard the moment the "read current children" step can ever
- *  miss one that's real (a stale/incomplete view of the store) — a miss there doesn't just fail to
- *  include it, it permanently deletes its containment on the very next write, even though nothing
- *  touched that child's own fields. Also detaches `childId`'s own prior containment first (if it
- *  already had a different parent) — the old full-rewrite path never did this either, since it only
- *  ever cleared the *target* parent's existing children, not whatever the moving child used to
- *  belong to — so this closes that gap too, for free, without querying or touching any sibling. */
-function appendOrderedChild(store: Store, parentId: string, childId: string): void {
-  deleteMatches(store, childId, PARENT_FIELD, null);
-  deleteMatches(store, childId, SIBLING_INDEX_FIELD, null);
-  const siblingCount = countMatches(store, null, PARENT_FIELD, { ref: parentId });
-  addQuad(store, childId, PARENT_FIELD, { ref: parentId });
-  addQuad(store, childId, SIBLING_INDEX_FIELD, { lit: siblingCount });
+/** The node `id` if it exists, else a new one made as `createNode` makes it. */
+export function wrapOrCreate(db: Db, id: string, where: { path?: string; under?: string } = {}): ApeironNode {
+  return nodeExists(db, id) ? wrap(db, id) : createNode(db, id, where);
 }
 
-/** The **(p)** channel's primitive (Aperas-crud-design.md §7, alongside `appendOrderedChild`
- *  above) — positions `childId` immediately before/after `anchorId` among `parentId`'s children,
- *  instead of always at the tail. Unlike `appendOrderedChild`'s deliberately-incremental single-id
- *  write, this is a full rewrite: inserting anywhere but the tail shifts every later sibling's own
- *  `siblingIndex`, so there's no cheaper correct alternative — the same convention `TreeNode`'s
- *  generic `children` setter (`writeField`'s `orderedContainment` branch) already uses everywhere
- *  else a position changes. Handles a same-parent reorder and a cross-parent move identically:
- *  `childId`'s own prior containment (wherever it pointed, including this same parent) is always
- *  detached first, then the whole finalized order is written fresh. Throws if `anchorId` isn't
- *  currently a child of `parentId` — no silent fallback to append, since that would silently
- *  discard the caller's actual positioning intent. */
-function insertOrderedChild(store: Store, parentId: string, childId: string, anchorId: string, side: 'before' | 'after'): void {
-  const currentIds = orderedChildIds(store, parentId).filter((id) => id !== childId);
+/** The container of a node, in whichever graph: the first (by id) whose `children` list it. `.parent` of every tree kind reads it. */
+function containerOf(db: Db, id: string): string | undefined {
+  return backlinksOf(db, id, CONTAINMENT)[0];
+}
 
+/** Every container that lists `id` with its place in the list, in whichever graph: normally one. */
+function placesOf(db: Db, id: string): Array<{ graph: string; host: string; index: number }> {
+  const places: Array<{ graph: string; host: string; index: number }> = [];
+  for (const graph of db.graphs) {
+    for (const host of db.engine.subjectsOf(graph, CONTAINMENT, id)) {
+      const index = db.engine.placeOf(graph, host, CONTAINMENT, id);
+      if (index !== undefined) places.push({ graph, host, index });
+    }
+  }
+  return places;
+}
+
+/**
+ * Puts `child` at place `at` of the list of `host`, wherever it was: it leaves every container that lists it first (a node has one container), then the
+ * engine inserts it and enforces its rules (the child is not the host or above it: `Refused` when it would close a cycle). When the insert is refused the child
+ * goes back to the places it left, so a refused move changes nothing. `at` counts the list as it is once the child has left it.
+ */
+function placeUnder(db: Db, host: string, child: string, at?: number): void {
+  const graph = graphOfId(db, host);
+  if (graph === undefined) throw new Error(`ApeironNgn: '${host}' does not exist — can't place '${child}' under it.`);
+  const left = placesOf(db, child);
+  for (const place of left) db.write.removeItem(place.graph, place.host, CONTAINMENT, child);
+  try {
+    db.write.insertItem(graph, host, CONTAINMENT, child, at);
+  } catch (error) {
+    for (const place of [...left].sort((a, b) => a.index - b.index)) db.write.insertItem(place.graph, place.host, CONTAINMENT, child, place.index);
+    // The engine refuses a node under itself or under its own descendant (a cycle in the lists); the refusal names the cause in the shell's words.
+    if (error instanceof Error && error.name === 'Refused' && /closes a cycle|its own/.test(error.message)) {
+      throw new Error(`'${child}' cannot be moved into its own subtree: '${host}' is the node itself or lies under it (${error.message}).`);
+    }
+    throw error;
+  }
+}
+
+/** Writes the whole list of `host` as `ids`: the items not in it leave, the others keep their place or are moved or inserted, one engine splice each. */
+function setOrderedChildren(db: Db, graph: string, host: string, ids: readonly string[]): void {
+  const want = [...new Set(ids)];
+  const wanted = new Set(want);
+  const have = db.engine.items(graph, host, CONTAINMENT);
+  for (const item of have) if (!wanted.has(item)) db.write.removeItem(graph, host, CONTAINMENT, item);
+  const now = have.filter((item) => wanted.has(item));
+  want.forEach((id, index) => {
+    if (now[index] === id) return;
+    const at = now.indexOf(id);
+    if (at >= 0) {
+      db.write.moveItem(graph, host, CONTAINMENT, id, index);
+      now.splice(at, 1);
+      now.splice(index, 0, id);
+    } else {
+      placeUnder(db, host, id, index);
+      now.splice(index, 0, id);
+    }
+  });
+}
+
+/** A true incremental append — puts `childId` last in the list of `parentId`, wherever it was before (a move to the end when it is already in this list). */
+function appendOrderedChild(db: Db, parentId: string, childId: string): void {
+  const graph = graphOfId(db, parentId);
+  if (graph === undefined) throw new Error(`ApeironNgn: '${parentId}' does not exist — can't append '${childId}' to it.`);
+  const list = db.engine.items(graph, parentId, CONTAINMENT);
+  if (list.includes(childId)) {
+    if (list[list.length - 1] !== childId) db.write.moveItem(graph, parentId, CONTAINMENT, childId, list.length - 1);
+    return;
+  }
+  placeUnder(db, parentId, childId);
+}
+
+/** The **(p)** channel's primitive (Aperas-crud-design.md §7) — positions `childId` immediately before/after `anchorId` among `parentId`'s children,
+ *  instead of always at the tail. A same-parent reorder and a cross-parent move are the same: the child leaves where it was and the engine inserts it at
+ *  the place, and refuses it when `parentId` is the child or lies under it (a cycle). Throws if `anchorId` isn't currently a child of `parentId` — no silent
+ *  fallback to append, since that would silently discard the caller's actual positioning intent. */
+function insertOrderedChild(db: Db, parentId: string, childId: string, anchorId: string, side: 'before' | 'after'): void {
+  const graph = graphOfId(db, parentId);
+  const currentIds = (graph === undefined ? [] : db.engine.items(graph, parentId, CONTAINMENT)).filter((id) => id !== childId);
   const anchorPos = currentIds.indexOf(anchorId);
   if (anchorPos === -1) {
     throw new Error(`insertOrderedChild: anchor '${anchorId}' is not a child of '${parentId}'.`);
   }
-  const finalIds = [...currentIds];
-  finalIds.splice(side === 'before' ? anchorPos : anchorPos + 1, 0, childId);
+  placeUnder(db, parentId, childId, side === 'before' ? anchorPos : anchorPos + 1);
+}
 
-  deleteMatches(store, childId, PARENT_FIELD, null);
-  deleteMatches(store, childId, SIBLING_INDEX_FIELD, null);
-  for (const id of currentIds) {
-    deleteMatches(store, id, PARENT_FIELD, null);
-    deleteMatches(store, id, SIBLING_INDEX_FIELD, null);
+function wrapAll(db: Db, ids: readonly unknown[]): ApeironNode[] {
+  return ids.map((id) => wrap(db, id as string));
+}
+
+function readField(db: Db, id: string, field: FieldDef): unknown {
+  const many = field.cardinality === 'set' || field.cardinality === 'ordered';
+  if (field.derived) {
+    const container = containerOf(db, id);
+    return container === undefined ? undefined : wrap(db, container);
   }
-
-  finalIds.forEach((id, index) => {
-    addQuad(store, id, PARENT_FIELD, { ref: parentId });
-    addQuad(store, id, SIBLING_INDEX_FIELD, { lit: index });
-  });
-}
-
-function decodeObj(store: Store, obj: Obj): unknown {
-  if (obj.kind === 'literal') return obj.value;
-  if (obj.kind === 'ref') return wrap(store, idFromNodeIri(obj.iri));
-  return undefined;
-}
-
-function readField(store: Store, id: string, field: string, spec: FieldSpec): unknown {
-  if (spec.cardinality === 'orderedContainment') return childrenOf(store, id);
-  const matches = objectsOf(store, id, field);
-  if (spec.cardinality === 'set') return matches.map((m) => decodeObj(store, m));
-  if (matches.length === 0) return undefined;
-  return decodeObj(store, matches[0]);
+  const graph = graphOfId(db, id);
+  if (graph === undefined) return many ? [] : undefined;
+  if (field.cardinality === 'ordered') return wrapAll(db, db.engine.items(graph, id, field.name));
+  const values = db.engine.values(graph, id, field.name);
+  const decode = (v: unknown): unknown => (field.storage === 'literal' ? v : wrap(db, v as string));
+  if (many) return values.map(decode);
+  return values.length === 0 ? undefined : decode(values[0]);
 }
 
 /** Any of: a raw id string, an `ApeironNode` (reads `.id`), or a plain object already carrying
@@ -153,161 +195,79 @@ function idOf(value: unknown): string {
   throw new Error(`ApeironNgn: can't resolve a node reference from ${JSON.stringify(value)}`);
 }
 
-function clearField(store: Store, id: string, field: string): void {
-  deleteMatches(store, id, field, null);
-}
-
-/** Mints a fresh embedded subdocument (`StringProp` under `props`, `Link` under `links`) and
- *  writes its own literal fields as quads on its own new id — `${parentId}/(props|links)/${type}/
- *  <snowflake>`. Generic per `SHAPE_BY_KIND`, not type-specific: this is what lets a fresh `Link`
- *  literal (`{ target }`) mint correctly on its own now that `links` is `storageKind:
- *  'embed'`, the same path `props` already used. */
-function mintEmbedded(store: Store, parentId: string, field: string, entry: Record<string, unknown>): string {
-  const type = (entry['@type'] as string) ?? (field === 'links' ? 'Link' : 'StringProp');
-  const newId = `${parentId}:${field}:${type}:${generateNodeId()}`;
-  const shape = SHAPE_BY_KIND[type];
-  if (!shape) throw new Error(`ApeironNgn: no shape declared for embedded type '${type}'`);
+/** Mints a fresh embedded node (`StringProp` under `props`/`preferences`, `Link` under `links`) of `entry`'s `@type` (or the kind the field embeds), with the id
+ *  `<owner>:<field>:<Kind>:<snowflake>`, in the graph of its owner, and writes the entry's own fields through the accessors of the new node. */
+function mintEmbedded(db: Db, ownerId: string, field: FieldDef, entry: Record<string, unknown>): string {
+  const type = (entry['@type'] as string | undefined) ?? field.embeds;
+  if (type === undefined) throw new Error(`ApeironNgn: no kind to embed under '${field.name}'`);
+  const newId = `${ownerId}:${field.name}:${type}:${generateNodeId()}`;
+  const node = createNode(db, newId, { under: ownerId });
   for (const [k, v] of Object.entries(entry)) {
     if (k === '@type' || k === '@id' || k === 'id') continue;
     if (v === null || v === undefined) continue;
-    // Reference-kind fields checked *before* the literal branch below, regardless of whether `v`
-    // is a bare id string or an object carrying one (`idOf` handles both) -- a `{ target: <string id> }`
-    // literal passes a plain string for
-    // `target`, which a string-first check would wrongly encode as a literal instead of a node
-    // reference (silently breaking every freshly-minted `Link.target`: it decodes back as a bare
-    // string on read, not a wrapped node, so `.target.id`/backlinks on it come back `undefined`).
-    if (shape[k]?.storageKind === 'reference') {
-      addQuad(store, newId, k, { ref: idOf(v) });
-    } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      addQuad(store, newId, k, { lit: v });
-    }
+    (node as Record<string, unknown>)[k] = v;
   }
   return newId;
 }
 
-/** Recursively deletes `id`'s own quads — and, for any of its own `storageKind: 'embed'` fields,
- *  whatever those point at too. Originally written for an orphaned embedded subdocument no longer
- *  referenced by anything (`Link`/`StringProp`, Aperas-apeironngn-design.md §4 Step 8), but written
- *  generically off `SHAPE_BY_KIND` from the start, so it works unmodified as the *general* "actually
- *  delete this node" primitive — including a top-level `BlockNode`/`ArtifactNode`/`FolderNode` a
- *  mark-and-sweep pass (`pruneUnreachableTombstones`, below) has determined is a tombstoned node
- *  nothing live points to any more. Merely detaching a forward reference (what `clearField` alone
- *  does) leaves the deleted node's own quads sitting in the store forever: invisible to
- *  `dehydrateToJsonLd` (nothing references it any more, so nothing ever walks to it), but very real
- *  memory in the long-lived service process (`service.ts`) that holds one `Store` alive across every
- *  `kg:track`/`kg:ingest` call for its entire uptime, not a fresh one per command — and, per §5's own
- *  WASM-memory note, a *permanent* one: WebAssembly linear memory only grows, so a peak this avoided
- *  can never be handed back to the OS short of restarting the process regardless. Confirmed live as
- *  the mechanism behind exactly this leak, pre-generalization: a wikilink `Link` dropped by
- *  `BlockNode.hydrateFromParsed` on re-ingestion kept its own `target`/`props` quads
- *  sitting orphaned, `Link.props`'s own `position` `StringProp`s included (one level of embedding
- *  deeper than anything `props`/`links` previously nested). */
-function hardDeleteNode(store: Store, id: string): void {
-  const shape = SHAPE_BY_KIND[nodeKindFromId(id)];
-  if (shape) {
-    for (const [field, spec] of Object.entries(shape)) {
-      if (spec.storageKind !== 'embed') continue;
-      for (const o of objectsOf(store, id, field)) {
-        if (o.kind === 'ref') hardDeleteNode(store, idFromNodeIri(o.iri));
-      }
-    }
-  }
-  removeDanglingUnfolds(store, id);
-  deleteMatches(store, id, null, null);
+/** Removes `id` outright and the nodes it embeds with it (the engine takes them, and the `unfolds` entries of the views that name any of them). */
+function hardDeleteNode(db: Db, id: string): void {
+  const graph = graphOfId(db, id);
+  if (graph !== undefined) db.write.removeNode(graph, id);
 }
 
-/** Sweeps every `TreeView`'s `unfolds` set for a reference to `deletedId` and removes it —
- *  `unfolds` is the *only* `reference`-kind field anywhere in the schema whose target can be a
- *  `Link`/`StringProp` (a top-level kind is only ever referenced via `Link.target`/`children`/
- *  `parent`, all handled by `pruneUnreachableTombstones`'s own reachability walk, not by dangling
- *  *this* field), so a hard delete (`hardDeleteNode`, above — the only way any node ever actually
- *  disappears) is the only event that could leave `unfolds` naming something gone. Called from
- *  `hardDeleteNode` itself, right before it deletes `deletedId`'s own quads (which only clear quads
- *  with `deletedId` as *subject* — an incoming `unfolds` reference has `deletedId` as *object*, so
- *  it's untouched unless swept separately here) — every deletion path (wikilink regeneration, Step
- *  9's tombstone-consistency cleanup, `pruneUnreachableTombstones`'s GC) gets this for free, with no
- *  new call site needed anywhere. */
-export function removeDanglingUnfolds(store: Store, deletedId: string): void {
-  // One match bound on the object: `unfolds` appears only on `TreeView`s, so every quad this
-  // returns is a view's reference to `deletedId`, with no need to list the views first (that took
-  // a scan of the whole store per call). `verifyDanglingUnfolds.ts` keeps the former per-view form
-  // as a reference and checks the two agree.
-  deleteMatches(store, null, 'unfolds', { ref: deletedId });
-}
+function writeField(db: Db, id: string, field: FieldDef, value: unknown): void {
+  if (field.derived) throw new Error(`ApeironNgn: '${field.name}' is the reverse side of '${CONTAINMENT}' — it is read-only; write the container's list.`);
+  const graph = graphOfId(db, id);
+  if (graph === undefined) throw new Error(`ApeironNgn: can't write '${field.name}' of ${id}: the node does not exist (createNode first).`);
 
-function writeField(store: Store, id: string, field: string, spec: FieldSpec, value: unknown): void {
-  if (spec.cardinality === 'orderedContainment') {
-    if (!Array.isArray(value)) throw new Error(`ApeironNgn: '${field}' is ordered containment — expected an array.`);
-    // Detach every current child first (both the parent/index quads live on the child's own id).
-    for (const childId of subjectsWhere(store, PARENT_FIELD, { ref: id })) {
-      deleteMatches(store, childId, PARENT_FIELD, { ref: id });
-      deleteMatches(store, childId, SIBLING_INDEX_FIELD, null);
-    }
-    value.forEach((entry, index) => {
-      const childId = idOf(entry);
-      addQuad(store, childId, PARENT_FIELD, { ref: id });
-      addQuad(store, childId, SIBLING_INDEX_FIELD, { lit: index });
-    });
+  if (field.cardinality === 'ordered') {
+    if (!Array.isArray(value)) throw new Error(`ApeironNgn: '${field.name}' is ordered containment — expected an array.`);
+    setOrderedChildren(db, graph, id, value.map(idOf));
     return;
   }
 
-  const storageKind = spec.storageKind ?? 'literal';
+  const many = field.cardinality === 'set';
+  const none = value === null || value === undefined;
+  if (none && field.cardinality === 'one') throw new Error(`ApeironNgn: '${field.name}' is required — can't clear it.`);
+  if (many && !none && !Array.isArray(value)) throw new Error(`ApeironNgn: '${field.name}' is a Set — expected an array, got ${JSON.stringify(value)}`);
+  const entries: unknown[] = none ? [] : many ? (value as unknown[]) : [value];
 
-  // Embed-kind fields *own* whatever they reference — nothing else can address a `Link`/
-  // `StringProp` independently — so reassigning one needs to delete whichever currently-referenced
-  // subdocuments won't survive into `value`, not just detach them (`hardDeleteNode`'s own doc
-  // comment). Deliberately scoped to `embed` only: a `reference`-kind field (`parent`, `children`)
-  // points at an independently-addressable document that reassigning must never delete.
-  if (storageKind === 'embed') {
-    const survivingValues = value === null || value === undefined ? [] : Array.isArray(value) ? value : [value];
-    const survivingIds = new Set<string>();
-    for (const entry of survivingValues) {
-      const survivingId = typeof entry === 'string' ? entry : (entry as any)?.['@id'] ?? (entry as any)?.id;
-      if (typeof survivingId === 'string') survivingIds.add(survivingId);
+  if (field.storage === 'embed') {
+    // Embed-kind fields *own* whatever they reference — nothing else can address a `Link`/`StringProp` independently — so reassigning one removes whichever
+    // currently-held embedded nodes won't survive into `value` (the engine takes the node with the pair), keeps the ones that do, and adds the new ones.
+    const surviving = new Set<string>();
+    for (const entry of entries) {
+      const survivingId = typeof entry === 'string' ? entry : (entry as { '@id'?: unknown; id?: unknown } | null)?.['@id'] ?? (entry as { id?: unknown } | null)?.id;
+      if (typeof survivingId === 'string') surviving.add(survivingId);
     }
-    for (const o of objectsOf(store, id, field)) {
-      if (o.kind !== 'ref') continue;
-      const oldId = idFromNodeIri(o.iri);
-      if (!survivingIds.has(oldId)) hardDeleteNode(store, oldId);
+    for (const held of db.engine.values(graph, id, field.name) as string[]) if (!surviving.has(held)) db.write.removePair(graph, id, field.name, held);
+    for (const entry of entries) {
+      // A bare string, or an object carrying `@id`/`id`, means "this subdocument already exists, reuse it"; only a plain literal object with neither mints a fresh one.
+      const known = typeof entry === 'string' || (entry && typeof entry === 'object' && ((entry as { '@id'?: unknown }) ['@id'] || (entry as { id?: unknown }).id));
+      const embeddedId = known ? idOf(entry) : mintEmbedded(db, id, field, entry as Record<string, unknown>);
+      db.write.addPair(graph, id, field.name, embeddedId);
     }
-  }
-
-  clearField(store, id, field);
-
-  if (value === null || value === undefined) {
-    if (spec.cardinality === 'one') throw new Error(`ApeironNgn: '${field}' is required — can't clear it.`);
     return;
   }
 
-  const writeOne = (entry: unknown) => {
-    if (storageKind === 'literal') {
+  if (field.storage === 'literal') {
+    for (const entry of entries) {
       if (typeof entry !== 'string' && typeof entry !== 'number' && typeof entry !== 'boolean') {
-        throw new Error(`ApeironNgn: '${field}' expects a literal value, got ${JSON.stringify(entry)}`);
+        throw new Error(`ApeironNgn: '${field.name}' expects a literal value, got ${JSON.stringify(entry)}`);
       }
-      addQuad(store, id, field, { lit: entry });
-    } else if (storageKind === 'reference') {
-      const refId = typeof entry === 'string' || (entry && typeof entry === 'object' && !('@type' in (entry as object)))
-        ? idOf(entry)
-        : mintEmbedded(store, id, field, entry as Record<string, unknown>); // a fresh literal object for a reference field
-      addQuad(store, id, field, { ref: refId });
-    } else {
-      // embed — a bare string (e.g. reconcile.ts's carryForwardFields handing back an existing
-      // Link's own id, materialized as a plain ref-id string by toReconcileShape) means "this
-      // subdocument already exists, reuse it," exactly like an object already carrying `@id`/`id`
-      // — only a plain literal object with neither means "mint a fresh one."
-      const refId = typeof entry === 'string' || (entry && typeof entry === 'object' && ((entry as any)['@id'] || (entry as any).id))
-        ? idOf(entry)
-        : mintEmbedded(store, id, field, entry as Record<string, unknown>);
-      addQuad(store, id, field, { ref: refId });
     }
-  };
-
-  if (spec.cardinality === 'set') {
-    if (!Array.isArray(value)) throw new Error(`ApeironNgn: '${field}' is a Set — expected an array, got ${JSON.stringify(value)}`);
-    for (const entry of value) writeOne(entry);
-  } else {
-    writeOne(value);
+    const held = db.engine.values(graph, id, field.name);
+    if (held.length === entries.length && held.every((v, i) => v === entries[i])) return; // the same value: nothing to write
+    db.write.clearField(graph, id, field.name);
+    for (const entry of entries) db.write.addPair(graph, id, field.name, entry as string | number | boolean);
+    return;
   }
+
+  // reference (a one-to-one or a set): the ids named; a reference never deletes what it points at.
+  const ids = [...new Set(entries.map(idOf))];
+  db.write.clearField(graph, id, field.name);
+  for (const target of ids) db.write.addPair(graph, id, field.name, target);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -315,10 +275,9 @@ function writeField(store: Store, id: string, field: string, spec: FieldSpec, va
 // ---------------------------------------------------------------------------------------------
 
 export class ApeironInstance {
-  static SHAPE: ClassShape = {};
-  readonly store: Store;
+  readonly store: Db;
   readonly id: string;
-  constructor(store: Store, id: string) {
+  constructor(store: Db, id: string) {
     this.store = store;
     this.id = id;
   }
@@ -357,7 +316,7 @@ export class BaseNode extends ApeironInstance {
    *  anything itself. */
   mintWikilink(target: string, positions: number[]): string {
     const linkId = `${this.id}:links:Link:${generateNodeId()}`;
-    const link = wrap(this.store, linkId) as unknown as Link;
+    const link = createNode(this.store, linkId, { under: this.id }) as unknown as Link;
     link.target = target as unknown as TreeNode;
     link.props = positions.map((position) => ({ '@type': 'StringProp', key: 'position', value: String(position) })) as unknown as ApeironNode[];
     return linkId;
@@ -367,9 +326,8 @@ export class BaseNode extends ApeironInstance {
 /** `title`/`text`/`key`/`parent` — shared by every tree-positioned kind. `key` replaces the old
  *  per-class `blockId`/`artifactId`/`folderId` literal fields: each was always identical to its own
  *  id's local part by construction, so it's derived here, never its own stored triple. `parent` is
- *  populated automatically as a side effect of whichever container's `children` write includes this
- *  node — `vocab.ts`'s `PARENT_PRED` doc comment has the full mechanism and why it's never assigned
- *  directly. */
+ *  the derived reverse side of the container's `children` list (the schema's `parent`, `aperasSchema.ts`): the engine reads it from the list that holds the node,
+ *  in whichever graph, and it is never assigned — a write of it throws. */
 export class TreeNode extends BaseNode {
   declare title?: string;
   declare text?: string;
@@ -546,18 +504,14 @@ export class BlockNode extends TreeNode {
    *  reuse an exact-match one's identity, and writes `.links` itself exactly once with the final
    *  surviving set — `writeField`'s embed-diff cleans up whatever that write doesn't include.
    *
-   *  No explicit `this.parent = ...` here any more (Aperas-apeironngn-design.md §5's `parent`/
-   *  `PARENT_PRED` merge): `this.children = [...]` below already stamps each child's `parent` as a
-   *  side effect of the containment write, using final (already-reconciled) ids — the separate
-   *  early stamp this used to need, and the "must re-run after reconciliation reassigns ids" bug
-   *  class it was prone to (`astParser.ts`'s old `stampParents`), doesn't exist any more; there's no
-   *  earlier stamp to go stale.
+   *  No explicit `this.parent = ...` here: `this.children = [...]` below puts each child in the list of `this`,
+   *  using final (already-reconciled) ids, and `parent` is read from that list — there is no earlier stamp to go stale.
    *
    *  Always clears `this`'s own `.holder` (Aperas-crud-design.md §6) — `this` reaching this method
    *  at all means real content is being written to it right now, whether for the first time or as a
    *  Stage-A-matched placeholder finally being promoted (channel (i)): `carryForwardFields`
    *  (reconcile.ts) never copies `.holder` onto the reconciled plain-object tree this method reads
-   *  from, but that alone never touched the real stored quad — this write is what actually does.
+   *  from, but that alone never touched the stored value — this write is what actually does.
    *  Safe unconditionally *only* because of the per-child skip just below — a still-unmatched
    *  holder child (spliced back in place by `reconcile.ts`'s own fix, §5, rather than promoted)
    *  never reaches its own `hydrateFromParsed` call at all, so it never hits this line either. */
@@ -576,7 +530,7 @@ export class BlockNode extends TreeNode {
       // content having actually arrived. Its id still gets wired into `this.children` below, same
       // as any other child.
       if ((child as any).holder) continue;
-      (wrap(this.store, `BlockNode:${child.blockId}`) as unknown as BlockNode).hydrateFromParsed(child);
+      (wrapOrCreate(this.store, `BlockNode:${child.blockId}`, { under: this.id }) as unknown as BlockNode).hydrateFromParsed(child);
     }
     this.children = (parsed.children ?? []).map((c) => `BlockNode:${c.blockId}` as unknown as TreeNode);
   }
@@ -798,9 +752,8 @@ export class ArtifactNode extends BlockNode {
     // `finalRoot` itself is never materialized as its own document any more — only its `children`
     // are real `BlockNode`s. Its own `blockId`/`parent` (whether freshly minted by this parse, or
     // carried forward from `oldTree` by `reconcileTree`'s `carryForwardFields`) are simply
-    // discarded — nothing needs to stamp `.parent` onto the parsed tree any more (§5's `parent`/
-    // `PARENT_PRED` merge): `this.children = ...` inside `hydrateFromParsed`, below, stamps each
-    // direct child's real `parent` straight to `this.id` as a side effect of the containment write.
+    // discarded — nothing needs to stamp `.parent` onto the parsed tree: `this.children = ...` inside
+    // `hydrateFromParsed`, below, puts each direct child in the list of `this.id`, which is what `parent` reads.
 
     const pendingLinks = extractLinkCodes(finalRoot);
     pendingLinks.push(...descriptionPendingLinks);
@@ -831,41 +784,34 @@ export interface IngestResult {
   reconciliation: ReconciliationStats | null;
 }
 
+/** Tombstones one node through the write layer: the engine takes it out of the list of its container, releases its children, links and props (the nodes it
+ *  embeds go with them), and sets the marker; its literals stay, and so do the references that name it. Nothing happens to a node with no record. */
+export function tombstoneNode(db: Db, id: string, at: string): void {
+  const graph = graphOfId(db, id);
+  if (graph !== undefined) db.write.tombstone(graph, id, at);
+}
+
 /** Applies one `reconcile.ts` tombstone record — an unmatched old subtree node, already fully
- *  detached from `finalTree`'s own structure, so this only needs to set its own fields (`children:
- *  []` clears whatever it used to point at; nothing re-attaches it). `links`/`props` both cleared
- *  too — a dead, unaddressable node has no more use for a resolved wikilink
- *  `Link` or a prop than for its own children (Aperas-apeironngn-design.md §5's tombstone-
- *  consistency open question — `props` was the one field this left live, inconsistently with the
- *  stated rationale for the other two). */
-export function applyTombstone(store: Store, tombstone: any): void {
-  const node = wrap(store, `BlockNode:${tombstone.blockId}`) as unknown as BlockNode;
+ *  detached from `finalTree`'s own structure: its `type`, `title` and `text` are the record's (the shell
+ *  copies them), and the engine's tombstone does the rest (it leaves its container and releases
+ *  `children`, `links` and `props`). */
+export function applyTombstone(store: Db, tombstone: any): void {
+  const id = `BlockNode:${tombstone.blockId}`;
+  if (!nodeExists(store, id)) return;
+  const node = wrap(store, id) as unknown as BlockNode;
   node.type = tombstone.type;
   node.title = tombstone.title;
   node.text = tombstone.text ?? undefined;
-  node.children = [];
-  node.links = undefined;
-  node.props = undefined;
-  node.tombstonedAt = tombstone.tombstonedAt;
+  tombstoneNode(store, id, tombstone.tombstonedAt);
 }
 
-/** Tombstones `node`'s entire *live* subtree in place, depth-first — the artifact-removal
+/** Tombstones `node` and its entire subtree over containment, in the graph of `node` — the artifact-removal
  *  counterpart to `applyTombstone` above, used when a whole tracked file disappears from disk
- *  (`artifacts.ts`'s artifact-tombstone path). That path never runs `reconcileTree`, so there are
- *  no captured old-shape tombstone records to replay — just one live tree to mark dead, all at
- *  once. Recurses into `children` *before* clearing them on `node` itself so every descendant gets
- *  its own `tombstonedAt`/cleared `children`/`links`/`props`, closing the gap this path used to
- *  have entirely (previously it set nothing but the top `ArtifactNode`'s own `tombstonedAt`,
- *  leaving its whole block subtree — and every one of those blocks' own links/props — fully live
- *  and permanently unreferenced; Aperas-apeironngn-design.md §5). */
-export function tombstoneLiveSubtree(node: BlockNode, now: string): void {
-  for (const child of node.children ?? []) {
-    tombstoneLiveSubtree(child as unknown as BlockNode, now);
-  }
-  node.children = [];
-  node.links = undefined;
-  node.props = undefined;
-  node.tombstonedAt = now;
+ *  (`artifacts.ts`'s artifact-tombstone path) or a node is removed (`kgRemove.ts`). One engine call: every member leaves its
+ *  container and releases its children, links and props, and a member that is a tombstone already keeps its stamp. */
+export function tombstoneLiveSubtree(node: TreeNode, now: string): void {
+  const graph = graphOfId(node.store, node.id);
+  if (graph !== undefined) node.store.write.tombstoneSubtree(graph, node.id, now);
 }
 
 /** Aperas-crud-design.md §6 — `kg:project`'s own purity gate for the **(o)** promotion channel:
@@ -945,7 +891,7 @@ function parsedBlockNames(node: ParsedBlockNode, path: string): string[] {
  *  offer), acceptable since every caller of this is an occasional CLI-driven write, never a hot
  *  path. First writer wins per name; a real duplicate among *already-live* blocks would itself be
  *  a bug this check exists to prevent from happening in the first place. */
-function buildLiveSlugPathIndex(store: Store): Map<string, string> {
+function buildLiveSlugPathIndex(store: Db): Map<string, string> {
   const liveIndex = new Map<string, string>();
   for (const id of allIdsOfKind(store, 'BlockNode')) {
     const node = wrap(store, id) as unknown as BlockNode;
@@ -974,7 +920,7 @@ function buildLiveSlugPathIndex(store: Store): Map<string, string> {
  * "other live blocks," including (for a rename) from their own prior self, which is exactly why
  * comparisons below match by id, not by name.
  */
-export function rejectSlugPathCollisions(store: Store, ancestorPath: string, children: ParsedBlockNode[]): void {
+export function rejectSlugPathCollisions(store: Db, ancestorPath: string, children: ParsedBlockNode[]): void {
   const liveIndex = buildLiveSlugPathIndex(store);
   const seenThisCall = new Map<string, string>(); // name -> blockId, within this one call only
 
@@ -1160,11 +1106,11 @@ export class FolderNode extends TreeNode {
         ids.push(child); // ArtifactNode reference
       } else if ((child as any)['@type'] === 'FolderNode') {
         const c = child as ParsedFolderNode;
-        (wrap(this.store, `FolderNode:${c.folderId}`) as unknown as FolderNode).hydrateFromParsed(c);
+        (wrapOrCreate(this.store, `FolderNode:${c.folderId}`, { path: c.path }) as unknown as FolderNode).hydrateFromParsed(c);
         ids.push(`FolderNode:${c.folderId}`);
       } else {
         const c = child as ParsedBlockNode;
-        (wrap(this.store, `BlockNode:${c.blockId}`) as unknown as BlockNode).hydrateFromParsed(c);
+        (wrapOrCreate(this.store, `BlockNode:${c.blockId}`, { under: this.id }) as unknown as BlockNode).hydrateFromParsed(c);
         ids.push(`BlockNode:${c.blockId}`);
       }
     }
@@ -1190,7 +1136,7 @@ export class FolderNode extends TreeNode {
 }
 
 /** Leaf subdoc — data only (`target`/`props`), never a `this` for any migrated
- *  function. `props` (Aperas-apeironngn-design.md §4 Step 8) is a `LINK_SHAPE` field, not
+ *  function. `props` (Aperas-apeironngn-design.md §4 Step 8) is a field of the `Link` kind, not
  *  inherited — `Link` deliberately doesn't extend `BaseNode`. */
 export class Link extends ApeironInstance {
   declare target?: TreeNode;
@@ -1286,31 +1232,34 @@ export function classForId(id: string): typeof ApeironInstance {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Accessor generation — one real get/set property per SHAPE field, per leaf class.
+// Accessor generation — one real get/set property per field of the kind in the Aperas schema, per leaf class.
 // ---------------------------------------------------------------------------------------------
 
-function defineAccessors(Cls: { prototype: object }, shape: ClassShape): void {
-  for (const [field, spec] of Object.entries(shape)) {
-    Object.defineProperty(Cls.prototype, field, {
+function defineAccessors(Cls: { prototype: object }, kind: string): void {
+  for (const field of FIELDS_OF_KIND.get(kind)!) {
+    Object.defineProperty(Cls.prototype, field.name, {
       configurable: true,
       enumerable: true,
       get(this: ApeironInstance) {
-        return readField(this.store, this.id, field, spec);
+        return readField(this.store, this.id, field);
       },
       set(this: ApeironInstance, value: unknown) {
-        writeField(this.store, this.id, field, spec, value);
+        writeField(this.store, this.id, field, value);
       },
     });
   }
 }
 
-defineAccessors(BlockNode, BLOCK_NODE_SHAPE);
-defineAccessors(ArtifactNode, ARTIFACT_NODE_SHAPE);
-defineAccessors(FolderNode, FOLDER_NODE_SHAPE);
-defineAccessors(Link, LINK_SHAPE);
-defineAccessors(StringProp, PROP_SHAPE);
-defineAccessors(Profile, PROFILE_SHAPE);
-defineAccessors(TreeView, TREE_VIEW_SHAPE);
+defineAccessors(BlockNode, 'BlockNode');
+defineAccessors(ArtifactNode, 'ArtifactNode');
+defineAccessors(FolderNode, 'FolderNode');
+defineAccessors(Link, 'Link');
+defineAccessors(StringProp, 'StringProp');
+defineAccessors(Profile, 'Profile');
+defineAccessors(TreeView, 'TreeView');
+// An artifact has no `type` (it is the document's root; the schema gives it none): it reads `undefined` and a write of it is ignored, as the block writer
+// (`hydrateFromParsed`) writes one for every node it is called on.
+Object.defineProperty(ArtifactNode.prototype, 'type', { configurable: true, enumerable: true, get: () => undefined, set: () => {} });
 
 /** `(tombstoned)` marker for a node's rendered title line — every render site below shares it.
  *  Tombstoning (`applyTombstone`/`tombstoneLiveSubtree`, §5) clears a dead node's own `children`/
@@ -1370,10 +1319,10 @@ function renderTreeLines(node: TreeNode, depth: number, opts: TreeOptions, lines
 // ---------------------------------------------------------------------------------------------
 
 /** Generic structural up-pointer, one hop — now a uniform `.parent` read for any kind
- *  (Aperas-apeironngn-design.md §5's `parent`/`PARENT_PRED` merge: every `TreeNode` gets it,
- *  populated automatically by whichever container's `children` write included this id). `null`
+ *  (every `TreeNode` gets it, read from
+ *  whichever container's `children` list holds this id). `null`
  *  means top-level (whatever `kg:tree` was pointed at — this doc's "Root"). */
-function structuralParentOf(store: Store, id: string): string | null {
+function structuralParentOf(store: Db, id: string): string | null {
   const p = (wrap(store, id) as unknown as TreeNode).parent;
   return p ? p.id : null;
 }
@@ -1383,8 +1332,8 @@ function structuralParentOf(store: Store, id: string): string | null {
  *  directly, matching how every other relational lookup in this file works. Exported for
  *  `kgBacklinks.ts`'s own reverse-lookup use (Aperas-apeironngn-design.md §4 Step 13), alongside
  *  this file's own view-rendering use above. */
-export function ownerOfLink(store: Store, linkId: string): string | null {
-  return firstSubjectWhere(store, 'links', { ref: linkId });
+export function ownerOfLink(store: Db, linkId: string): string | null {
+  return backlinksOf(store, linkId, 'links')[0] ?? null;
 }
 
 /** `'upward'` (§13.3): the target is an ancestor of some cone already active in the current
@@ -1396,7 +1345,7 @@ type CanonicalPosition = { kind: 'home' } | { kind: 'link'; linkId: string } | {
 /** Whether `id` sits inside apex `apexId`'s viewcone — its entire structural subtree, `apexId`
  *  itself included (Aperas-treeview-design.md §13). Walks `.parent` up from `id`; `apexId` is
  *  reached (true) or the real top is reached without ever finding it (false). */
-function isInCone(store: Store, id: string, apexId: string): boolean {
+function isInCone(store: Db, id: string, apexId: string): boolean {
   let current: string | null = id;
   while (current !== null) {
     if (current === apexId) return true;
@@ -1452,7 +1401,7 @@ interface ZoomState {
  *  — has actually been discovered; deciding it eagerly, cone by cone, would risk a line already
  *  emitted turning out to deserve a tag it didn't get. */
 function discoverCone(
-  store: Store, allUnfoldedIds: string[], allLinkEntries: UnfoldedLinkEntry[], apexId: string, zs: ZoomState,
+  store: Db, allUnfoldedIds: string[], allLinkEntries: UnfoldedLinkEntry[], apexId: string, zs: ZoomState,
   isTopLevelApex = false, activeChain: readonly string[] = [],
 ): ConeInfo {
   // Every apex from the render's own initial cone down to this one, inclusive — the chain of
@@ -1707,7 +1656,7 @@ function bakeResolvedLinkIds(text: string, links: ApeironNode[] | undefined): st
  *  (`shouldHideTombstoned`) — the old `emitNode`'s bare `return;` with nothing pushed, so a caller
  *  building `children` filters `null` out same as it used to filter out "nothing pushed". */
 function buildNodeItem(
-  store: Store, id: string, cone: ConeInfo, depth: number, opts: TreeOptions,
+  store: Db, id: string, cone: ConeInfo, depth: number, opts: TreeOptions,
   zs: ZoomState, starred: Set<string>, parentQualifiesForPreview: boolean,
 ): RenderNodeItem | null {
   const node = wrap(store, id) as unknown as TreeNode;
@@ -1815,7 +1764,7 @@ function buildNodeItem(
  *  actually is, otherwise (§6/§13.2). Returns `null` only for the tombstone-hide case, same
  *  contract as `buildNodeItem`. */
 function buildLinkItem(
-  store: Store, linkId: string, cone: ConeInfo, depth: number, opts: TreeOptions,
+  store: Db, linkId: string, cone: ConeInfo, depth: number, opts: TreeOptions,
   zs: ZoomState, starred: Set<string>,
 ): RenderLinkItem | null {
   const link = wrap(store, linkId) as unknown as Link;
@@ -1960,7 +1909,7 @@ function toText(items: RenderItem[], lines: string[]): void {
  *  it *is*, since nothing can ever escape that cone, §13). Returns `null` only when `rootId` itself
  *  is tombstone-hidden (`buildNodeItem`'s own `null` case) — the old `renderTreeWithView` handled
  *  this the same way, `emitNode` simply pushing nothing. */
-export function buildRenderTree(store: Store, rootId: string, view: TreeView, opts: TreeOptions = {}): RenderNodeItem | null {
+export function buildRenderTree(store: Db, rootId: string, view: TreeView, opts: TreeOptions = {}): RenderNodeItem | null {
   const unfoldsWrapped = (view.unfolds as unknown as ApeironNode[] | undefined) ?? [];
   const allUnfoldedIds: string[] = [];
   const allLinkEntries: UnfoldedLinkEntry[] = [];
@@ -1987,7 +1936,7 @@ export function buildRenderTree(store: Store, rootId: string, view: TreeView, op
   return buildNodeItem(store, rootId, rootCone, 0, opts, zs, starred, true);
 }
 
-function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: TreeOptions): string[] {
+function renderTreeWithView(store: Db, rootId: string, view: TreeView, opts: TreeOptions): string[] {
   const tree = buildRenderTree(store, rootId, view, opts);
   const lines: string[] = [];
   if (tree) toText([tree], lines);
@@ -1997,18 +1946,16 @@ function renderTreeWithView(store: Store, rootId: string, view: TreeView, opts: 
 /** Finds a `Profile` by its `handle` (Aperas-treeview-design.md §11) — exact-literal lookup, same
  *  pattern as `ensureDefaultView`'s/`resolveTreeView`'s own `name` lookups. `kg:profile`'s own
  *  addressing: every subcommand takes a `handle`, never a raw node id. */
-export function findProfileByHandle(store: Store, handle: string): Profile | null {
-  const found = subjectsWhere(store, 'handle', { lit: handle })
-    .find((id) => nodeKindFromId(id) === 'Profile');
+export function findProfileByHandle(store: Db, handle: string): Profile | null {
+  const found = store.maps.profileByHandle(handle);
   return found ? (wrap(store, found) as unknown as Profile) : null;
 }
 
 /** Finds a `TreeView` by its `name` (Aperas-treeview-design.md §11 — tightened from `Optional` to
  *  `One`, and now globally unique, the same "stable addressable handle" role `Profile.handle`
  *  plays). Exact-literal lookup, same pattern as `findProfileByHandle`. */
-export function findTreeViewByName(store: Store, name: string): TreeView | null {
-  const found = subjectsWhere(store, 'name', { lit: name })
-    .find((id) => nodeKindFromId(id) === 'TreeView');
+export function findTreeViewByName(store: Db, name: string): TreeView | null {
+  const found = store.maps.viewByName(name);
   return found ? (wrap(store, found) as unknown as TreeView) : null;
 }
 
@@ -2017,12 +1964,12 @@ export function findTreeViewByName(store: Store, name: string): TreeView | null 
  *  `Profile` — a view's owner must be set up first, same "no implicit creation" posture
  *  `kg:profile create` itself already takes. Rejects a duplicate `name`, the same uniqueness check
  *  `runProfileCreate` already applies to `handle`. */
-export function createTreeView(store: Store, name: string, profileHandle: string): { id: string } {
+export function createTreeView(store: Db, name: string, profileHandle: string): { id: string } {
   if (findTreeViewByName(store, name)) throw new Error(`TreeView '${name}' already exists.`);
   const profile = findProfileByHandle(store, profileHandle);
   if (!profile) throw new Error(`Profile '${profileHandle}' not found.`);
   const id = `TreeView:${generateNodeId()}`;
-  const view = wrap(store, id) as unknown as TreeView;
+  const view = createNode(store, id) as unknown as TreeView;
   view.name = name;
   view.profile = profile.id as unknown as Profile;
   return { id };
@@ -2031,7 +1978,7 @@ export function createTreeView(store: Store, name: string, profileHandle: string
 /** `kg:profile remove-view` (Aperas-treeview-design.md §11) — deletes exactly one `TreeView` by
  *  `name`, without touching its owning `Profile` — the single-view counterpart to `removeProfile`'s
  *  all-at-once cascade. */
-export function removeTreeViewByName(store: Store, name: string): { removed: boolean } {
+export function removeTreeViewByName(store: Db, name: string): { removed: boolean } {
   const view = findTreeViewByName(store, name);
   if (!view) return { removed: false };
   hardDeleteNode(store, view.id);
@@ -2045,10 +1992,10 @@ export function removeTreeViewByName(store: Store, name: string): { removed: boo
  *  hard-deleted) — nothing else ever revisits an *existing* entry against what's currently live.
  *  Meant to run as an explicit sweep alongside `pruneUnreachableTombstones`/
  *  `tombstoneVacuousContainers` at the same call sites, not after every mutation — same cost model,
- *  same reasoning (cheap only in bulk). A stale entry here means the id has *no* quads at all
+ *  same reasoning (cheap only in bulk). A stale entry here means the id has *no* record at all
  *  (`nodeExists`), not merely tombstoned — a tombstoned target stays a legitimate `unfolds` entry,
  *  revealed via `--tombstoned` the same as any other tombstoned node. */
-export function pruneStaleUnfolds(store: Store): { pruned: number } {
+export function pruneStaleUnfolds(store: Db): { pruned: number } {
   let pruned = 0;
   for (const viewId of allIdsOfKind(store, 'TreeView')) {
     const view = wrap(store, viewId) as unknown as TreeView;
@@ -2065,20 +2012,20 @@ export function pruneStaleUnfolds(store: Store): { pruned: number } {
 /** Finds the `TreeView` named `"default"` (Aperas-treeview-design.md §10), creating it — and a
  *  `Profile` with `handle: "default"` to own it — on first use. The one deliberate exception to
  *  `createTreeView`'s "owner must already exist" rule. */
-export function ensureDefaultView(store: Store): TreeView {
+export function ensureDefaultView(store: Db): TreeView {
   const existing = findTreeViewByName(store, 'default');
   if (existing) return existing;
 
   const existingProfile = findProfileByHandle(store, 'default');
   const profileId = existingProfile?.id ?? `Profile:${generateNodeId()}`;
   if (!existingProfile) {
-    const profile = wrap(store, profileId) as unknown as Profile;
+    const profile = createNode(store, profileId) as unknown as Profile;
     profile.handle = 'default';
     // `kind` stays unset — `Optional`, so "not yet known" doesn't need a sentinel value.
   }
 
   const viewId = `TreeView:${generateNodeId()}`;
-  const view = wrap(store, viewId) as unknown as TreeView;
+  const view = createNode(store, viewId) as unknown as TreeView;
   view.name = 'default';
   view.profile = profileId as unknown as Profile;
   return view;
@@ -2094,7 +2041,7 @@ export function ensureDefaultView(store: Store): TreeView {
  *  first-use creation); a real `TreeView` id; or any other view's `name` (exact-literal lookup, the
  *  same pattern `ensureDefaultView` uses for its own name). Throws with the ref quoted verbatim if
  *  none of those match, rather than falling through to `wrap`'s own unrelated error. */
-export function resolveTreeView(store: Store, ref?: string): TreeView {
+export function resolveTreeView(store: Db, ref?: string): TreeView {
   if (ref === undefined || ref === 'default') return ensureDefaultView(store);
   if (nodeExists(store, ref) && nodeKindFromId(ref) === 'TreeView') return wrap(store, ref) as unknown as TreeView;
   const byName = findTreeViewByName(store, ref);
@@ -2105,7 +2052,7 @@ export function resolveTreeView(store: Store, ref?: string): TreeView {
 /** Wraps one node id as a shape-enforced instance of its concrete class — no `Proxy`. `Object.seal`
  *  is what preserves "an unknown field read returns `undefined`, an unknown field write throws"
  *  (see this file's own doc comment). */
-export function wrap(store: Store, id: string): ApeironNode {
+export function wrap(store: Db, id: string): ApeironNode {
   const Cls = classForId(id);
   const instance = new Cls(store, id);
   Object.seal(instance);
@@ -2116,8 +2063,8 @@ export function wrap(store: Store, id: string): ApeironNode {
  *  `field` pointing at this node, regardless of whether `field` is reified containment or a plain
  *  reference — the one query shape `parentId`/`resolveIdToPath`'s reverse-lookup gap under
  *  TerminusDB had no equivalent for. */
-export function backlinks(store: Store, id: string, field: string): ApeironNode[] {
-  return subjectsWhere(store, field, { ref: id }).map((subjectId) => wrap(store, subjectId));
+export function backlinks(store: Db, id: string, field: string): ApeironNode[] {
+  return backlinksOf(store, id, field).map((subjectId) => wrap(store, subjectId));
 }
 
 /** Mark-and-sweep GC for tombstoned top-level documents (`BlockNode`/`ArtifactNode`/`FolderNode`)
@@ -2132,18 +2079,16 @@ export function backlinks(store: Store, id: string, field: string): ApeironNode[
  *  `treeChildren` (structural descent, kind-agnostic) plus each visited node's own `Link.target`s
  *  (the one non-structural edge a tombstoned node can still be kept alive by, e.g. a still-live
  *  wikilink `Link` elsewhere). Anything tombstoned that's never marked — including a whole disconnected
- *  dead cluster — is genuinely unreachable and gets `hardDeleteNode`d, which also sweeps its own
- *  `unfolds` entries via `removeDanglingUnfolds`.
+ *  dead cluster — is genuinely unreachable and gets `hardDeleteNode`d, which also drops its own
+ *  `unfolds` entries (the engine drops an entry of a field dropped with its target).
  *
- *  Mutates the *live* store directly (not just filtering what a subsequent dehydrate writes), so
- *  both `dehydrateToJsonLd` and the separate `dehydrateStateToJsonLd` (over `TreeView`/`Profile`)
- *  see a consistent post-prune state without either needing its own special-casing — the same eager-
- *  cleanup rationale `hardDeleteNode`'s own doc comment gives for WASM's grow-only memory applies
- *  here too, just at a coarser grain. Meant to run as an explicit sweep (`service.ts`'s
+ *  Mutates the *live* graph directly (not just filtering what a subsequent dump writes), so
+ *  the dump of the content files and the dump of the `.state/` files
+ *  see a consistent post-prune state without either needing its own special-casing. Meant to run as an explicit sweep (`service.ts`'s
  *  `reloadStore`/`clobberFlush`, both of which always flush *both* mirrors together) rather than
  *  after every mutation — cheap only in bulk, unlike `hardDeleteNode`'s own per-write embed
  *  cleanup. */
-export function pruneUnreachableTombstones(store: Store): { pruned: number } {
+export function pruneUnreachableTombstones(store: Db): { pruned: number } {
   const live = new Set<string>();
 
   const mark = (node: TreeNode): void => {
@@ -2175,37 +2120,51 @@ export function pruneUnreachableTombstones(store: Store): { pruned: number } {
   return { pruned };
 }
 
-/** Companion sweep for `pruneUnreachableTombstones`, run just before it at each of the same
- *  explicit-sweep call sites: a `list`/childless-wrapper `listItem` never gets `tombstonedAt` set
- *  as a side effect of its own children being tombstoned one at a time (each resolved/removed
- *  independently, via its own separate reconcile or `kg:remove` call that only ever looks at that
- *  one child) — nothing revisits the now-vacuous parent to ask whether it still holds anything
- *  live. Confirmed live against `issues/packaging.md`'s own dead nested-list-wrapper chain: an
- *  empty `list` sitting under "Open Issues" long after its one-and-only item was resolved away,
- *  still reading as live (`!tombstonedAt`) to anything checking.
- *
- *  A `list` is unconditionally structural (`nodeAbstract`'s "no text of its own"), so childless
- *  always means vacuous. A `listItem` only counts once it *also* carries no `.text` of its own —
- *  an ordinary childless leaf item (the common case: a checkbox line with just its own text) is
- *  not vacuous merely for having no structural children. Runs to a fixed point in one pass over
- *  all `BlockNode`s repeated until nothing new tombstones, since tombstoning an inner wrapper can
- *  vacate its own parent in turn (the "chain" in "nested-list-wrapper chain"). */
-export function tombstoneVacuousContainers(store: Store, now: string = new Date().toISOString()): { tombstoned: number } {
-  const isVacuous = (node: BlockNode): boolean => {
-    if (node.tombstonedAt) return false;
-    if (node.type === 'list') return node.treeChildren.length === 0 || node.treeChildren.every((c) => (c as unknown as BaseNode).tombstonedAt);
-    if (node.type === 'listItem' && !node.text) return node.treeChildren.length > 0 && node.treeChildren.every((c) => (c as unknown as BaseNode).tombstonedAt);
-    return false;
-  };
+/** Whether a block is a container that holds nothing live: a `list`, or a `listItem` with no text of its own, with no child. A tombstone leaves the list of its
+ *  container (design/core.md, "Tombstones"), so a container whose children were all removed has none left. A `list` is unconditionally structural
+ *  (`nodeAbstract`'s "no text of its own"), so childless always means vacuous; a `listItem` only counts once it *also* carries no `.text` of its own — an
+ *  ordinary childless leaf item (a checkbox line with just its own text) is not vacuous merely for having no structural children. */
+function isVacuousContainer(node: BlockNode): boolean {
+  if (node.tombstonedAt) return false;
+  if (node.type === 'list') return node.treeChildren.length === 0;
+  if (node.type === 'listItem' && !node.text) return node.treeChildren.length === 0;
+  return false;
+}
 
+/** The rule at the time of a removal: after `removed` left `containerId`, the container is tombstoned when it is vacuous, and so on upward while the one above
+ *  is. Gives the ids tombstoned, the nearest container first. */
+export function tombstoneEmptiedContainers(store: Db, containerId: string | undefined, now: string = new Date().toISOString()): string[] {
+  const done: string[] = [];
+  let current = containerId;
+  while (current !== undefined && nodeExists(store, current) && nodeKindFromId(current) === 'BlockNode') {
+    const node = wrap(store, current) as unknown as BlockNode;
+    if (!isVacuousContainer(node)) break;
+    const above = containerOf(store, current);
+    tombstoneNode(store, current, now);
+    done.push(current);
+    current = above;
+  }
+  return done;
+}
+
+/** Companion sweep for `pruneUnreachableTombstones`, run just before it at each of the same
+ *  explicit-sweep call sites: a `list`/childless-wrapper `listItem` that holds nothing live is
+ *  tombstoned — the boot-time rule over a container with no live child (a removal tombstones the
+ *  container it empties in the same write, `tombstoneEmptiedContainers`; this catches what an edit
+ *  from outside left, such as a mirror written by hand).
+ *
+ *  Runs to a fixed point in one pass over all `BlockNode`s repeated until nothing new tombstones,
+ *  since tombstoning an inner wrapper can vacate its own parent in turn (the "chain" in "nested-list-wrapper
+ *  chain"). */
+export function tombstoneVacuousContainers(store: Db, now: string = new Date().toISOString()): { tombstoned: number } {
   let tombstoned = 0;
   let changed = true;
   while (changed) {
     changed = false;
     for (const id of allIdsOfKind(store, 'BlockNode')) {
       const node = wrap(store, id) as unknown as BlockNode;
-      if (!isVacuous(node)) continue;
-      node.tombstonedAt = now;
+      if (!isVacuousContainer(node)) continue;
+      tombstoneNode(store, id, now);
       tombstoned++;
       changed = true;
     }
@@ -2218,7 +2177,7 @@ export function tombstoneVacuousContainers(store: Store, now: string = new Date(
  *  primitive `pruneUnreachableTombstones` (above) already uses. A `Profile` gone with its
  *  `TreeView`s left dangling (a `profile` reference pointing at nothing) would be a worse state
  *  than either "keep both" or "remove both" — there's no third option worth preserving. */
-export function removeProfile(store: Store, handle: string): { removed: boolean; viewsRemoved: number } {
+export function removeProfile(store: Db, handle: string): { removed: boolean; viewsRemoved: number } {
   const profile = findProfileByHandle(store, handle);
   if (!profile) return { removed: false, viewsRemoved: 0 };
   const views = backlinks(store, profile.id, 'profile');

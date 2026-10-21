@@ -1,7 +1,7 @@
 // Corpus check: the dehydrate -> rehydrate round trip of the whole mirror (step 7 of the legacy suite at the
 // real mirror's size, with the rehydration of step 2 as its set-up). It needs the real mirror's size and shape
 // for its meaning: the tiny-store version is `store/roundtrip.test.ts`.
-// It runs on a COPY of `AperasKG/Apeiron/` (`makeCorpusCopy()`), the mirror as it is on disk, which lags the
+// It runs on a COPY of `AperasKG/Apeiron/` (`makeOldCorpusCopy()`, not migrated: the old engine reads the mirror as it is), the mirror as it is on disk, which lags the
 // service's memory by up to its flush interval. The real mirror is only read.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { predIri } from '@aperas/core/shell/vocab';
-import { makeCorpusCopy, type CorpusCopy } from '../support/corpus.ts';
+import { makeOldCorpusCopy, type OldCorpusCopy } from '../support/oldCorpus.ts';
 
 const CHILD = join(import.meta.dirname, '..', 'support', 'roundtripChild.ts');
 
@@ -51,9 +51,9 @@ function runChild<T>(...args: string[]): T {
 }
 
 describe('corpus: round trip of the whole mirror', () => {
-  let copy: CorpusCopy;
+  let copy: OldCorpusCopy;
   let scratchDir: string | undefined;
-  before(() => { copy = makeCorpusCopy(); });
+  before(() => { copy = makeOldCorpusCopy(); });
   after(() => {
     if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
     copy?.cleanup();

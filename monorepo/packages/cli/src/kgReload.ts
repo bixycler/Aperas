@@ -34,9 +34,9 @@ export async function main(): Promise<void> {
   }
   const discard = rawArgs.includes('--discard');
   await ensureServiceRunning();
-  const { quadCount, nodeCount, prunedTombstones, tombstonedContainers, prunedUnfolds } = await request<{
-    quadCount: number;
-    nodeCount: number;
+  const { recordCount, documentCount, prunedTombstones, tombstonedContainers, prunedUnfolds } = await request<{
+    recordCount: number;
+    documentCount: number;
     prunedTombstones: number;
     tombstonedContainers: number;
     prunedUnfolds: number;
@@ -48,7 +48,7 @@ export async function main(): Promise<void> {
   if (prunedUnfolds) gcParts.push(`${prunedUnfolds} stale unfold(s) cleared`);
 
   console.log(
-    `[aperas reload] Reloaded ${quadCount} quad(s), ${nodeCount} node(s).` +
+    `[aperas reload] Reloaded ${recordCount} record(s), ${documentCount} document(s).` +
       (gcParts.length > 0 ? ` GC: ${gcParts.join(', ')}.` : '')
   );
 }

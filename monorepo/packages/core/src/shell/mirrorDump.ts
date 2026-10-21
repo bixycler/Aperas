@@ -11,7 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { compareIds } from '@aperas/core/apeironNgn/order';
 import type { Engine, GraphName, Id, Value } from '@aperas/core/apeironNgn/interface';
 import type { FieldDef, KindDef } from '@aperas/core/apeironNgn/schema';
-import { checkMapping, checkMappingKinds, documentsText, graphsOf, type MirrorMapping } from './mirrorFiles';
+import { checkMapping, checkMappingKinds, documentsText, graphsOf, type MirrorFile, type MirrorMapping } from './mirrorFiles';
 
 /** A document of the mirror, as JSON: `@id` and `@type` first, then the fields in the schema's order. */
 export type MirrorDocument = Record<string, unknown>;
@@ -94,6 +94,11 @@ class Reader {
   }
 }
 
+/** The document of one node, as the dump writes it (`kg:show` prints it): nothing for an id with no record in the graph. `graphs` are the graphs of the mapping. */
+export function documentOf(engine: Engine, graph: GraphName, id: Id, graphs: readonly GraphName[] = [graph]): MirrorDocument | undefined {
+  return new Reader(engine, graphs).document(graph, id);
+}
+
 /** The documents of one kind in one graph, sorted by `@id` by code point. */
 export function dumpDocuments(engine: Engine, graph: GraphName, kind: string, graphs: readonly GraphName[] = [graph]): MirrorDocument[] {
   const reader = new Reader(engine, graphs);
@@ -110,12 +115,14 @@ export function dumpText(engine: Engine, graph: GraphName, kind: string, graphs:
  * of that kind in that graph, and a file with no record holds an empty array. The directory of a file is made when it is not there.
  * Nothing is read back and nothing is decided about when to write.
  */
-export function dumpMirror(engine: Engine, root: string, mapping: MirrorMapping): DumpedFile[] {
+export function dumpMirror(engine: Engine, root: string, mapping: MirrorMapping, select: (file: MirrorFile) => boolean = () => true): DumpedFile[] {
   checkMapping(mapping);
   checkMappingKinds(engine.schema, mapping);
   const graphs = graphsOf(mapping);
   const written: DumpedFile[] = [];
-  for (const { graph, kind, file } of mapping) {
+  for (const entry of mapping) {
+    if (!select(entry)) continue; // the whole mapping is still the graphs a document is read across: a node may have its container in a graph whose files are not written now
+    const { graph, kind, file } = entry;
     const documents = dumpDocuments(engine, graph, kind, graphs);
     const path = resolve(root, file);
     mkdirSync(dirname(path), { recursive: true });

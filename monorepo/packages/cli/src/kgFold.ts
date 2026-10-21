@@ -5,14 +5,14 @@
  * (Aperas-apeironngn-design.md §4 rollout step 5).
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { nodeExists } from '@aperas/core/shell/vocab';
+import { nodeExists } from '@aperas/core/shell/db';
 import type { TreeView } from '@aperas/core/shell/node';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-export function runFold(store: Store, pathArg: string, view: TreeView) {
+export function runFold(store: Db, pathArg: string, view: TreeView) {
   // No try/catch around ref resolution — see `kgUnfold.ts`'s matching comment.
   const id = resolveDeepPath(store, pathArg);
   if (!id) throw new Error(`'${pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);

@@ -20,11 +20,11 @@
  *   in order, if no anchor given) — never merged into one node, never rejected.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { wrap, rejectSlugPathCollisions, findEnclosingArtifactId } from '@aperas/core/shell/node';
+import { wrap, createNode, rejectSlugPathCollisions, findEnclosingArtifactId } from '@aperas/core/shell/node';
 import type { BlockNode, TreeNode } from '@aperas/core/shell/node';
-import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { displayLabel } from '@aperas/core/shell/tree';
 import { parseMarkdownTree } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
@@ -43,7 +43,7 @@ export interface InsertReq {
   before?: string;
 }
 
-function resolveOne(store: Store, ref: string, base: string | undefined, label: string): string {
+function resolveOne(store: Db, ref: string, base: string | undefined, label: string): string {
   let id: string | null;
   try {
     id = resolveDeepPath(store, ref, { base });
@@ -56,7 +56,7 @@ function resolveOne(store: Store, ref: string, base: string | undefined, label: 
   return id;
 }
 
-export function runInsert(store: Store, req: InsertReq): { lines: string[]; linkResolution?: LinkResolutionStats } {
+export function runInsert(store: Db, req: InsertReq): { lines: string[]; linkResolution?: LinkResolutionStats } {
   if (req.after !== undefined && req.before !== undefined) {
     throw new Error('--after and --before are mutually exclusive.');
   }
@@ -208,7 +208,7 @@ export function runInsert(store: Store, req: InsertReq): { lines: string[]; link
 
   const newIds = topLevel.map((child) => {
     const id = `BlockNode:${child.blockId}`;
-    (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(child);
+    (createNode(store, id, { under: parentId }) as unknown as BlockNode).hydrateFromParsed(child);
     return id;
   });
   const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);

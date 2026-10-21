@@ -6,7 +6,7 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
-import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
+import { allIdsOfKind } from '@aperas/core/shell/db';
 import { makeCorpusCopy, type CorpusCopy } from '../support/corpus.ts';
 
 describe('corpus: link integrity of the whole mirror', () => {

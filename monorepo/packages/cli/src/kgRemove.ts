@@ -8,10 +8,10 @@
  * tombstoned node's quads remain, inert, exactly like any other reconciliation removal.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { wrap, tombstoneLiveSubtree, type BlockNode } from '@aperas/core/shell/node';
-import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { wrap, tombstoneLiveSubtree, tombstoneEmptiedContainers, type BlockNode, type TreeNode } from '@aperas/core/shell/node';
+import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
@@ -20,7 +20,7 @@ export interface RemoveReq {
   base?: string;
 }
 
-export function runRemove(store: Store, req: RemoveReq): { id: string } {
+export function runRemove(store: Db, req: RemoveReq): { id: string } {
   let targetId: string | null;
   try {
     targetId = resolveDeepPath(store, req.path, { base: req.base });
@@ -39,7 +39,12 @@ export function runRemove(store: Store, req: RemoveReq): { id: string } {
     throw new Error("Refusing to remove the artifacts root — that would tombstone the whole corpus.");
   }
 
-  tombstoneLiveSubtree(wrap(store, targetId) as unknown as BlockNode, new Date().toISOString());
+  // The container the node leaves is read before the write: a tombstone leaves its container, which can be left with nothing live (a `list`, or a `listItem`
+  // with no text), and a removal ends by tombstoning the container it empties, in the same write, and so on upward.
+  const now = new Date().toISOString();
+  const container = (wrap(store, targetId) as unknown as TreeNode).parent?.id;
+  tombstoneLiveSubtree(wrap(store, targetId) as unknown as BlockNode, now);
+  tombstoneEmptiedContainers(store, container, now);
   return { id: targetId };
 }
 

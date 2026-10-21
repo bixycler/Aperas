@@ -9,7 +9,7 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { getArtifactsDir } from '@aperas/core/artifacts';
 import { getProps } from '@aperas/core/props';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
@@ -21,7 +21,7 @@ import { sampleMarkdown } from '../support/sampleMarkdown.ts';
 import { collectIds, findByText } from '../support/tree.ts';
 
 type LinkView = { target: BlockNode; id: string };
-const linksOf = (store: Store, blockId: string): LinkView[] => ((wrap(store, blockId) as unknown as BlockNode).links as unknown as LinkView[] | undefined) ?? [];
+const linksOf = (store: Db, blockId: string): LinkView[] => ((wrap(store, blockId) as unknown as BlockNode).links as unknown as LinkView[] | undefined) ?? [];
 /** The ids of the `position` props of a `Link`, in the order the store gives them (a case compares them as a set). */
 const positionPropIds = (link: LinkView): string[] => ((link as unknown as { props?: Array<{ key: string; id?: string }> }).props ?? []).filter((p) => p.key === 'position').map((p) => p.id as string);
 const targetId = (l: LinkView): string => (l.target as unknown as { id: string }).id;

@@ -4,7 +4,7 @@
 // went stale. The cases share the store, the view and the paragraph that carries the links, and run in order.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, ensureDefaultView, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { wrap, createNode, ensureDefaultView, pruneStaleUnfolds, type ArtifactNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { ingestLinkedDemo, type LinkedDemo } from '../support/linkedDemo.ts';
@@ -30,7 +30,7 @@ describe('tree view state', () => {
     // it, so the render has to hide it (and tag it once `showTombstoned` opts back in). Built directly against
     // the store: a standalone victim node plus a wikilink to it from an already-ingested block.
     const victimId = `BlockNode:${generateNodeId()}`;
-    const victim = wrap(fx.store, victimId) as unknown as BlockNode;
+    const victim = createNode(fx.store, victimId, { under: demo.demoId }) as unknown as BlockNode; // made in the graph of the demo artifact, attached to nothing
     victim.type = 'heading';
     victim.title = 'A Node That Will Be Tombstoned';
     victim.children = [];

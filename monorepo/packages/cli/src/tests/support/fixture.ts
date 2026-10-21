@@ -2,10 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Store } from 'oxigraph';
 import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot } from '@aperas/core/graphConfig';
-import { rehydrateStore } from '@aperas/core/shell/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
+import { newDb, type Db } from '@aperas/core/shell/db';
+import { dumpMirror } from '@aperas/core/shell/mirrorDump';
 
 /** The checkout's own graph (`<repo>/AperasKG`, the real mirror). Exported for `makeCorpusCopy`, which only reads it. */
 export const REAL_GRAPH = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../AperasKG');
@@ -25,7 +24,8 @@ export function assertNotRealMirror(path: string): void {
 }
 
 export interface FixtureStore {
-  store: Store;
+  /** The handle: the engine, the maps and the three graphs, empty. Its mapping has relative directories (`Apeiron/`, `Apeiron/.state/`), so `dumpMirror(fx.store.engine, anyRoot, fx.store.mapping)` writes a mirror under any root. */
+  store: Db;
   /** The scratch directory holding `Apeiron/` and `artifacts/`. */
   root: string;
   apeironRoot: string;
@@ -36,7 +36,7 @@ export interface FixtureStore {
 }
 
 /**
- * A tiny, empty, well-formed store with its own scratch roots. `APERAS_APEIRON_ROOT` and
+ * A tiny, empty, well-formed handle with its own scratch roots. `APERAS_APEIRON_ROOT` and
  * `APERAS_ARTIFACTS_ROOT` are set for this process only (every test file is its own process) and removed
  * by `cleanup()`, which also runs on process exit. Refuses to run when either root resolves to the real
  * mirror. A test gets its store and its roots from the return value and calls `cleanup` in `after`.
@@ -63,10 +63,9 @@ export function makeFixtureStore(demoDir = 'demo'): FixtureStore {
       if (!isInside(real(resolved), real(root))) throw new Error(`Refusing to run: the ${name} root resolves to ${resolved}, outside the scratch directory ${root}.`);
     }
     mkdirSync(join(apeironRoot, '.state'), { recursive: true });
-    dehydrateToJsonLd(new Store(), apeironRoot); // an empty but well-formed Apeiron directory
-    dehydrateStateToJsonLd(new Store(), join(apeironRoot, '.state'));
+    const store = newDb();
+    dumpMirror(store.engine, root, store.mapping); // an empty but well-formed Apeiron directory
     mkdirSync(join(artifactsRoot, demoDir), { recursive: true });
-    const { store } = rehydrateStore();
     process.once('exit', cleanup);
     return { store, root, apeironRoot, artifactsRoot, demoDir, cleanup };
   } catch (e) {

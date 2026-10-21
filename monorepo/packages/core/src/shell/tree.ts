@@ -6,9 +6,8 @@
  * onto `TreeNode.renderTree` (`node.ts`) once `treeChildren` made it kind-generic.
  */
 
-import type { Store } from 'oxigraph';
-import { nodeKindFromId } from './vocab';
-import { firstSubjectWhere } from './storeAccess';
+import { nodeKindFromId } from './nodeIds';
+import type { Db } from './db';
 import type { TreeView } from './node';
 
 /** An exact match on a stored `path` literal — only ever true for an `ArtifactNode`/`FolderNode`
@@ -17,8 +16,8 @@ import type { TreeView } from './node';
  *  `--create-holder` prefix chain already exists) by `resolve.ts`/`resolveCreate.ts`'s real deep-path
  *  grammar — `kg:tree`/`kg:path`'s own public ref resolution is `resolveDeepPath` (`resolve.ts`),
  *  not this function directly. */
-export function findByExactPath(store: Store, path: string): string | null {
-  return firstSubjectWhere(store, 'path', { lit: path });
+export function findByExactPath(store: Db, path: string): string | null {
+  return store.maps.liveAtPath(path) ?? null;
 }
 
 export function displayLabel(id: string, node: any): string {

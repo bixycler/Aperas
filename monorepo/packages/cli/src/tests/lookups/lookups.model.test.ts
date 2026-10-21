@@ -80,12 +80,25 @@ function apply(x: Engine, o: Op): Outcome {
 }
 
 /** Tells the maps of a write the engine took. */
-function tell(maps: Lookups, o: Op, outcome: Outcome): void {
+/** The ids of the subtree of `id` over `children` in the graph, the node first; read before the write, which takes each member out of the lists that held it. */
+function subtreeMembers(x: Engine, graph: string, id: Id): Id[] {
+  const members: Id[] = [];
+  const seen = new Set<Id>([id]);
+  for (const stack = [id]; stack.length > 0; ) {
+    const next = stack.pop()!;
+    members.push(next);
+    if (x.graphOf(next) !== graph) continue;
+    for (const child of x.items(graph, next, 'children')) if (!seen.has(child) && x.graphOf(child) === graph) { seen.add(child); stack.push(child); }
+  }
+  return members;
+}
+
+function tell(maps: Lookups, o: Op, outcome: Outcome, members: readonly Id[]): void {
   switch (o.op) {
     case 'build': maps.built(o.graph, o.id); break;
     case 'add': case 'clear': case 'removePair': maps.fieldWritten(o.graph, o.id, o.field); break;
     case 'tombstone': maps.tombstoned(o.graph, o.id); break;
-    case 'subtree': maps.subtreeTombstoned(o.graph); break;
+    case 'subtree': for (const member of members) maps.tombstoned(o.graph, member); break;
     case 'remove': maps.removed(o.graph, o.id); break;
     case 'sweep': maps.swept(o.graph, (outcome as { value: Id[] }).value); break;
     case 'dropGraph': maps.graphDropped(o.graph); break;
@@ -237,6 +250,7 @@ describe('the maps against a linear scan of the oracle (20 seeds)', () => {
           agree(again.maps, scan(oracle), `${where}: the reloaded maps`);
           continue;
         }
+        const members = o.op === 'subtree' && engine.graphOf(o.id) === o.graph ? subtreeMembers(engine, o.graph, o.id) : [];
         const a = apply(engine, o);
         const b = apply(oracle, o);
         assert.deepEqual(a.ok ? { ok: true, ...(o.op === 'sweep' ? { value: a.value } : {}) } : a, b.ok ? { ok: true, ...(o.op === 'sweep' ? { value: b.value } : {}) } : b, `${where}: the engine and the oracle answer alike`);
@@ -244,7 +258,7 @@ describe('the maps against a linear scan of the oracle (20 seeds)', () => {
           seen.accepted += 1;
           if (o.op === 'createGraph') made.add(o.graph);
           if (o.op === 'dropGraph') made.delete(o.graph);
-          if (silent === 0) tell(maps, o, a);
+          if (silent === 0) tell(maps, o, a, members);
         } else seen.refused += 1;
         if (silent > 0) {
           silent -= 1;

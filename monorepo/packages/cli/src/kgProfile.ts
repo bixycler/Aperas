@@ -8,9 +8,10 @@
  * handle" role) — never a raw node id (`findProfileByHandle`/`findTreeViewByName`, `node.ts`).
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import {
   wrap,
+  createNode,
   findProfileByHandle,
   removeProfile,
   findTreeViewByName,
@@ -21,15 +22,15 @@ import {
   type TreeView,
   type ApeironNode,
 } from '@aperas/core/shell/node';
-import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
+import { allIdsOfKind } from '@aperas/core/shell/db';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-export function runProfileCreate(store: Store, handle: string, name?: string, kind?: string): { id: string } {
+export function runProfileCreate(store: Db, handle: string, name?: string, kind?: string): { id: string } {
   if (findProfileByHandle(store, handle)) throw new Error(`Profile '${handle}' already exists.`);
   const id = `Profile:${generateNodeId()}`;
-  const profile = wrap(store, id) as unknown as Profile;
+  const profile = createNode(store, id) as unknown as Profile;
   profile.handle = handle;
   if (name) profile.name = name;
   if (kind) profile.kind = kind; // Optional -- "not yet known" is just left unset
@@ -49,7 +50,7 @@ interface ProfileDetail extends ProfileLine {
   views: { id: string; name?: string }[];
 }
 
-function summarize(store: Store, id: string): ProfileLine {
+function summarize(store: Db, id: string): ProfileLine {
   const profile = wrap(store, id) as unknown as Profile;
   return {
     id,
@@ -60,7 +61,7 @@ function summarize(store: Store, id: string): ProfileLine {
   };
 }
 
-export function runProfileList(store: Store, handle?: string): { profiles: ProfileLine[] } | ProfileDetail {
+export function runProfileList(store: Db, handle?: string): { profiles: ProfileLine[] } | ProfileDetail {
   if (handle === undefined) {
     return { profiles: allIdsOfKind(store, 'Profile').map((id) => summarize(store, id)) };
   }
@@ -76,11 +77,11 @@ export function runProfileList(store: Store, handle?: string): { profiles: Profi
   };
 }
 
-export function runProfileRemove(store: Store, handle: string): { removed: boolean; viewsRemoved: number } {
+export function runProfileRemove(store: Db, handle: string): { removed: boolean; viewsRemoved: number } {
   return removeProfile(store, handle);
 }
 
-export function runProfileCreateView(store: Store, name: string, profileHandle: string): { id: string } {
+export function runProfileCreateView(store: Db, name: string, profileHandle: string): { id: string } {
   return createTreeView(store, name, profileHandle);
 }
 
@@ -95,7 +96,7 @@ interface ViewDetail extends ViewLine {
   unfolds: string[];
 }
 
-function summarizeView(store: Store, id: string): ViewLine {
+function summarizeView(store: Db, id: string): ViewLine {
   const view = wrap(store, id) as unknown as TreeView;
   const profile = view.profile as unknown as Profile | undefined;
   return {
@@ -106,7 +107,7 @@ function summarizeView(store: Store, id: string): ViewLine {
   };
 }
 
-export function runProfileListView(store: Store, name?: string): { views: ViewLine[] } | ViewDetail {
+export function runProfileListView(store: Db, name?: string): { views: ViewLine[] } | ViewDetail {
   if (name === undefined) {
     return { views: allIdsOfKind(store, 'TreeView').map((id) => summarizeView(store, id)) };
   }
@@ -116,7 +117,7 @@ export function runProfileListView(store: Store, name?: string): { views: ViewLi
   return { ...summarizeView(store, view.id), unfolds };
 }
 
-export function runProfileRemoveView(store: Store, name: string): { removed: boolean } {
+export function runProfileRemoveView(store: Db, name: string): { removed: boolean } {
   return removeTreeViewByName(store, name);
 }
 

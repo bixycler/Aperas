@@ -1,11 +1,8 @@
 /**
  * `aperas init` — bootstraps a brand-new graph in the current directory: `aperas.config.json`, an
- * empty `Apeiron/` store, and an `artifacts/` tree. Without this, a fresh directory has no
- * `Apeiron/*.jsonld` files at all, and `rehydrateStore` (`packages/core/src/shell/store.ts`)
- * treats a missing one as a real error (`ENOENT`) rather than an empty graph — the service crashes
- * on startup, which `aperas serve`/`aperas service start` can only report as a generic "did not
- * become ready in time", giving no hint that the actual problem is a directory that was never
- * initialized.
+ * empty `Apeiron/` store, and an `artifacts/` tree. The files are the main graph's, from the mirror's
+ * mapping (`mirrorFiles.ts`): a fresh directory with none would load as an empty graph all the same,
+ * but a directory that holds them says it was initialized.
  *
  * Non-destructive by design: refuses outright if `aperas.config.json` already exists here (this
  * directory is already a graph root), and never overwrites an existing `Apeiron/*.jsonld` file.
@@ -13,9 +10,8 @@
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { EMPTY_FILE_TEXT, fileNameOfKind, KINDS_OF_GRAPH, MAIN_GRAPH } from '@aperas/core/shell/mirrorFiles';
 import { wantsHelp, printHelp } from './kgHelp';
-
-const INSTANCE_FILES = ['BlockNode', 'ArtifactNode', 'FolderNode', 'Profile'];
 
 export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
@@ -45,10 +41,10 @@ export async function main(): Promise<void> {
   mkdirSync(apeironDir, { recursive: true });
   mkdirSync(artifactsDir, { recursive: true });
 
-  for (const file of INSTANCE_FILES) {
-    const path = join(apeironDir, `${file}.jsonld`);
+  for (const kind of KINDS_OF_GRAPH[MAIN_GRAPH]!) {
+    const path = join(apeironDir, fileNameOfKind(kind));
     if (existsSync(path)) continue; // never clobber real data
-    writeFileSync(path, '[]\n', 'utf-8');
+    writeFileSync(path, EMPTY_FILE_TEXT, 'utf-8');
   }
 
   writeFileSync(

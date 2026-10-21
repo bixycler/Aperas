@@ -123,8 +123,6 @@ export interface Lookups {
   fieldWritten(graph: GraphName, id: Id, field: string): void;
   /** After `tombstone` of a node. */
   tombstoned(graph: GraphName, id: Id): void;
-  /** After `tombstoneSubtree`: the nodes of the subtree leave the containment, so they are found by their marker and not by a walk from the root. */
-  subtreeTombstoned(graph: GraphName): void;
   /** After `removeNode`. */
   removed(graph: GraphName, id: Id): void;
   /** After `sweep`, with the ids it returned. */
@@ -194,9 +192,6 @@ export function createLookups(engine: Engine, graphs: readonly GraphName[]): Loo
       if (watched.has(field)) sync(graph, id);
     },
     tombstoned: sync,
-    subtreeTombstoned(graph) {
-      for (const [id, at] of [...filed]) if (at.graph === graph) sync(graph, id);
-    },
     removed: sync,
     swept(graph, ids) {
       for (const id of ids) sync(graph, id);

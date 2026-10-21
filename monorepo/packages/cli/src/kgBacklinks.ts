@@ -5,7 +5,7 @@
  * "which link" and "who's referring in" — no separate owner-id field needed.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { backlinks, ownerOfLink, wrap, type TreeNode, type Link } from '@aperas/core/shell/node';
 import { displayLabel } from '@aperas/core/shell/tree';
@@ -25,7 +25,7 @@ export interface BacklinkEntry {
   text?: string;
 }
 
-export function runBacklinks(store: Store, pathArg: string, includeText: boolean): BacklinkEntry[] {
+export function runBacklinks(store: Db, pathArg: string, includeText: boolean): BacklinkEntry[] {
   const id = resolveDeepPath(store, pathArg);
   if (!id) throw new Error(`'${pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
 

@@ -46,14 +46,14 @@
  * whichever body-update mode ran.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import {
-  wrap, applyTombstone, rejectSlugPathCollisions,
+  wrap, createNode, applyTombstone, rejectSlugPathCollisions,
   collectLinkTargetsByBlock, collectOldWikilinksByBlock, findEnclosingArtifactId,
 } from '@aperas/core/shell/node';
 import type { BlockNode, FolderNode, TreeNode, ApeironNode } from '@aperas/core/shell/node';
-import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { parseMarkdownTree, headingDepth, parseFrontmatterFields, collectLinkCodesFromText, type ParsedBlockNode, type LinkOccurrence } from '@aperas/core/astParser';
 import { extractLinkCodes, type PendingLinkCodes } from '@aperas/core/artifacts';
 import { reconcileTree } from '@aperas/core/reconcile';
@@ -79,7 +79,7 @@ export interface UpdateResult {
   linkResolution: LinkResolutionStats;
 }
 
-export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
+export function runUpdate(store: Db, req: UpdateReq): UpdateResult {
   let targetId: string | null;
   try {
     targetId = resolveDeepPath(store, req.path, { base: req.base });
@@ -318,7 +318,7 @@ export function runUpdate(store: Store, req: UpdateReq): UpdateResult {
     }
     const overflowIds = overflow.map((c) => {
       const id = `BlockNode:${c.blockId}`;
-      (wrap(store, id) as unknown as BlockNode).hydrateFromParsed(c);
+      (createNode(store, id, { under: target.id }) as unknown as BlockNode).hydrateFromParsed(c);
       return id as unknown as TreeNode;
     });
     const existing = (target.children as TreeNode[] | undefined) ?? [];
@@ -374,7 +374,7 @@ function artifactDescriptionLinks(kind: string, target: BlockNode, frontmatter: 
  *  Piped body content beyond frontmatter is refused rather than silently dropped: this was never
  *  the README-content edit path, and a caller expecting it to be one deserves a clear error, not
  *  quiet data loss. */
-function runFolderUpdate(store: Store, targetId: string, markdown: string): UpdateResult {
+function runFolderUpdate(store: Db, targetId: string, markdown: string): UpdateResult {
   const { root, frontmatter } = parseMarkdownTree(markdown);
   if ((root.children ?? []).length > 0) {
     throw new Error(

@@ -7,8 +7,8 @@
 //     keeps no set of live ids); the live ones are those without the tombstone marker.
 //   - `backlinksOf`: the subjects whose field holds a node, from every graph, sorted by id (the engine's `subjectsOf` names one graph).
 //   - `isThreadScoped`: whether the node is in the threads graph, which a node is given at creation by its path (`graphOfPath.ts`).
-// Nothing is imported yet: the shell still runs on the old code until the flip. Settings, warnings and the problems of the load are returned and not
-// printed: what the service does with `rejected` and `errors` (refuse to start, start anyway, copy the raw documents) is the service's.
+// The shell runs on it (Batch 11, the flip). Settings, warnings and the problems of the load are returned and not printed: what the service does with
+// `rejected` and `errors` is the service's; `loadRefusal` words the refusal.
 import { join } from 'node:path';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine, GraphName, Id } from '@aperas/core/apeironNgn/interface';
@@ -59,6 +59,14 @@ export interface Opened {
   readonly warnings: readonly string[];
   /** The keys held by more than one live node, as the maps give them. */
   readonly duplicates: readonly Duplicate[];
+}
+
+/** The refusal a load that did not read the mirror in full deserves, naming the files and ids; nothing when it read every document. A flush after such a load would write each file whole and remove what was skipped. */
+export function loadRefusal(load: LoadResult): string | undefined {
+  const parts: string[] = [];
+  if (load.rejected.length > 0) parts.push(`${load.rejected.length} id(s) carried by more than one document, none kept: ${load.rejected.map((r) => `${r.id} (${r.files.join(', ')})`).join('; ')}`);
+  if (load.errors.length > 0) parts.push(`${load.errors.length} document(s) the engine refused: ${load.errors.map((e) => `${e.subject} (${e.class}${e.point !== undefined ? ` on ${e.point}` : ''}: ${e.message})`).join('; ')}`);
+  return parts.length > 0 ? `the mirror was not read in full — ${parts.join(' — ')}` : undefined;
 }
 
 const warningOfDuplicate = (d: Duplicate): string => `the ${d.map} ${JSON.stringify(d.key)} is held by ${d.ids.length} live nodes (${d.ids.join(', ')}): a lookup answers the first`;

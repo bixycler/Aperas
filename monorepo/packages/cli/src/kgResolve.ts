@@ -4,7 +4,7 @@
  * read-only resolver; `--create-holder` uses `resolveCreate.ts`'s write-extended one.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { resolveDeepPathDetail } from '@aperas/core/shell/resolveCreate';
 import { wrap } from '@aperas/core/shell/node';
@@ -12,7 +12,7 @@ import { displayLabel } from '@aperas/core/shell/tree';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-function resolvePlain(store: Store, paths: string[], base?: string) {
+function resolvePlain(store: Db, paths: string[], base?: string) {
   const lines: string[] = [];
   for (const pathArg of paths) {
     let id: string | null;
@@ -28,7 +28,7 @@ function resolvePlain(store: Store, paths: string[], base?: string) {
   return { lines };
 }
 
-function resolveCreateHolder(store: Store, pathArg: string, base: string | undefined, titles: string[]) {
+function resolveCreateHolder(store: Db, pathArg: string, base: string | undefined, titles: string[]) {
   let detail;
   try {
     detail = resolveDeepPathDetail(store, pathArg, { base, createHolder: true, titles });
@@ -40,7 +40,7 @@ function resolveCreateHolder(store: Store, pathArg: string, base: string | undef
   return { lines };
 }
 
-export function runResolve(store: Store, req: { paths: string[]; base?: string; createHolder: boolean; titles?: string[] }) {
+export function runResolve(store: Db, req: { paths: string[]; base?: string; createHolder: boolean; titles?: string[] }) {
   if (req.createHolder) return resolveCreateHolder(store, req.paths[0], req.base, req.titles ?? []);
   return resolvePlain(store, req.paths, req.base);
 }

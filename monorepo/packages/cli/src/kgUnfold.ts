@@ -8,10 +8,11 @@
  * place that still does).
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
-import { nodeKindFromId, nodeExists } from '@aperas/core/shell/vocab';
+import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
+import { nodeExists } from '@aperas/core/shell/db';
 import { displayLabel } from '@aperas/core/shell/tree';
 import { truncateForPreviewWithHint } from '@aperas/core/astParser';
 import { ensureServiceRunning, request } from './service/serviceClient';
@@ -22,7 +23,7 @@ import { wantsHelp, printHelp } from './kgHelp';
  *  build one from, so `resolveDeepPath`'s path-segment machinery doesn't apply to it. Since a
  *  `Link`'s own id already carries a recognizable kind prefix, `resolveDeepPath`'s "already a full
  *  node id" branch is what actually accepts it — no special-casing needed here. */
-function resolveUnfoldRef(store: Store, ref: string): string | null {
+function resolveUnfoldRef(store: Db, ref: string): string | null {
   return resolveDeepPath(store, ref);
 }
 
@@ -98,7 +99,7 @@ interface UnfoldChildEntry {
  *  default (issues/treeview.md's "both `unfold` and `tree` should hide them by default") — a
  *  tombstoned child used to render identically to a live sibling here, with no marker at all,
  *  indistinguishable and easy to misread as anomalous. `showTombstoned: true` reveals them, tagged. */
-function previewChildren(store: Store, node: TreeNode, showTombstoned: boolean): UnfoldChildEntry[] {
+function previewChildren(store: Db, node: TreeNode, showTombstoned: boolean): UnfoldChildEntry[] {
   const children = node.treeChildren
     .filter((child) => showTombstoned || !isTombstoned(child as unknown as { tombstonedAt?: string }))
     .map((child) => {
@@ -123,7 +124,7 @@ function previewChildren(store: Store, node: TreeNode, showTombstoned: boolean):
  *  tombstoned node directly is refused (not just silently empty, since this command's whole job is
  *  revealing the *one* thing it was pointed at) unless the flag is passed; its children/link
  *  targets are filtered by `previewChildren` regardless. */
-export function runUnfold(store: Store, pathArg: string, view: TreeView | null, showTombstoned: boolean = false) {
+export function runUnfold(store: Db, pathArg: string, view: TreeView | null, showTombstoned: boolean = false) {
   // No try/catch around ref resolution here, deliberately — matches `kgCli.ts`'s plain
   // `resolveNodeRef`, which also lets an ambiguous-segment throw propagate uncaught.
   const id = resolveUnfoldRef(store, pathArg);

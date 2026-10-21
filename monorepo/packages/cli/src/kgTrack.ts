@@ -12,11 +12,11 @@
  * `kg:ingest` stays separate from plain `kg:track` today.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { trackAllArtifacts, trackArtifactsScoped } from '@aperas/core/shell/artifacts';
 import { isReadmeFilename, expandArtifactPaths, listArtifactFiles, computeFileHash } from '@aperas/core/artifacts';
 import { wrap, type ArtifactNode, type FolderNode } from '@aperas/core/shell/node';
-import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
+import { allIdsOfKind } from '@aperas/core/shell/db';
 import { confirmRemoval } from './removalPrompt';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
@@ -36,7 +36,7 @@ export interface TrackResult {
  *  (`trackArtifactsScoped`) — deliberately the one piece of `trackAllArtifacts`'s job that's safe
  *  to do without a directory-wide sweep, since it never needs to discover a path it wasn't already
  *  either given or already tracking. */
-export function runTrack(store: Store, paths: string[], force: boolean = false): TrackResult {
+export function runTrack(store: Db, paths: string[], force: boolean = false): TrackResult {
   if (paths.length > 0) {
     const expandedPaths = expandArtifactPaths(paths);
     const readmeArgs = expandedPaths.filter((p) => isReadmeFilename(p.split('/').pop() ?? p));
@@ -74,7 +74,7 @@ export interface ReverseTrackResult {
  *  (`kg:project`'s own write-time baseline — see its doc comment). Mirrors forward `kg:track`'s own
  *  character exactly: cheap bookkeeping/detection, safe to run often, with the actual heavy write
  *  (`kg:project`, the mirror image of `kg:ingest`) staying a deliberate, separate, explicit step. */
-export function runReverseTrack(store: Store): ReverseTrackResult {
+export function runReverseTrack(store: Db): ReverseTrackResult {
   const neverProjected: ReverseTrackEntry[] = [];
   const changed: ReverseTrackEntry[] = [];
 

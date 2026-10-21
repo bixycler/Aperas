@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
 import { ingestFolderTree, getFolderRecord } from '@aperas/core/shell/folders';
 import { trackAllArtifacts } from '@aperas/core/shell/artifacts';
-import { wrap, type FolderNode } from '@aperas/core/shell/node';
+import { generateNodeId } from '@aperas/core/snowflake';
+import { wrap, createNode, type FolderNode } from '@aperas/core/shell/node';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 
 describe('ghost folder', () => {
@@ -41,8 +42,8 @@ describe('ghost folder', () => {
   });
 
   test('a holder-flagged folder with a document, not on the disk, is kept', () => {
-    const holderId = 'FolderNode:HOLDER00000';
-    const holder = wrap(fx.store, holderId) as unknown as FolderNode;
+    const holderId = `FolderNode:${generateNodeId()}`; // an id of the engine's grammar, and a node made before it is written
+    const holder = createNode(fx.store, holderId, { path: 'imagined/place' }) as unknown as FolderNode;
     holder.path = 'imagined/place';
     holder.title = 'place';
     holder.holder = true;

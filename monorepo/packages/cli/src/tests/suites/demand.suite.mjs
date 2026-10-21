@@ -9,7 +9,6 @@ export default defineSuite(import.meta.url, [
   './models.suite.mjs',
   './tools.suite.mjs',
   '../corpus/copy.test.ts',
-  '../corpus/dangling-unfolds.test.ts',
   '../corpus/link-integrity.test.ts',
   '../corpus/roundtrip.test.ts',
   '../corpus/mirror.test.ts',

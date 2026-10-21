@@ -38,10 +38,10 @@
  * untouched and reporting `untitled`, the same as when there's no lead-in at all to find.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, findEnclosingArtifactId, type BlockNode } from '@aperas/core/shell/node';
-import { nodeKindFromId } from '@aperas/core/shell/vocab';
+import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import {
   parseMarkdownTree, headingDepth, extractLangFromFrontmatter, findLeadInSpliceOffset,
   HEADING_TREE_ANCHOR_PROP, type DocLang,
@@ -126,7 +126,7 @@ function titleFromText(text: string | undefined): string | undefined {
  *  per-block, only derived from it on demand (`node.ts`'s own `ArtifactNode.toMarkdown`/`toReadme`
  *  do the identical lookup). A target with no enclosing artifact (a scratch/detached node) defaults
  *  to `'en'`, same as every other caller that has no better answer. */
-function resolveLang(store: Store, target: BlockNode): DocLang {
+function resolveLang(store: Db, target: BlockNode): DocLang {
   const artifactId = findEnclosingArtifactId(target);
   if (!artifactId) return 'en';
   const artifact = wrap(store, artifactId) as unknown as HasProps;
@@ -156,7 +156,7 @@ function cutLeadInFromText(text: string | undefined, lang: DocLang): { words: st
   return { words: bold ? bold[1] : rawLeadIn, rest: rest.length > 0 ? rest : undefined };
 }
 
-export function runRetype(store: Store, req: RetypeReq): RetypeResult {
+export function runRetype(store: Db, req: RetypeReq): RetypeResult {
   const { type: toType, depth } = parseTargetType(req.to);
 
   let targetId: string | null;

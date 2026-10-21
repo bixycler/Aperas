@@ -1,8 +1,8 @@
 /**
  * Test-only checks for the link refusals, the stored bad-target report of `check-links` and the
  * single-anchor preview rendering (issues/linking.md, issues/treeview.md). Written as functions of a
- * `Store` so `tests/links/refusals.test.ts` runs them on a tiny fixture store, and also runnable on
- * their own on a tiny scratch store (an empty Apeiron directory and a scratch artifacts root, never
+ * `Db` so `tests/links/refusals.test.ts` runs them on a tiny fixture handle, and also runnable on
+ * their own on a tiny scratch handle (an empty `newDb()` and a scratch artifacts root, never
  * the real mirror):
  *
  *   tsx packages/cli/src/verifyLinkRefusals.ts
@@ -11,11 +11,9 @@
 import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from 'oxigraph';
 import { collectLinkCodesFromText } from '@aperas/core/astParser';
 import { getArtifactsDir } from '@aperas/core/artifacts';
-import { rehydrateStore } from '@aperas/core/shell/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
+import { allIdsOfKind, newDb, type Db } from '@aperas/core/shell/db';
 import { trackArtifact, ingestArtifact, resolveBlockLinks, findRefusedLinks } from '@aperas/core/shell/artifacts';
 import { checkArtifactLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
@@ -26,7 +24,7 @@ import { runUpdate } from './kgUpdate';
 
 /** Step 5g: refusals on write, set-aside on ingest, `check-links` bad targets. Returns the id of the
  *  cited heading in `link_target.md`, which `checkSingleAnchorRendering` reuses. */
-export function checkLinkRefusals(store: Store, DEMO_DIR: string): string {
+export function checkLinkRefusals(store: Db, DEMO_DIR: string): string {
   const walkBlocks = (n: any, out: any[] = []): any[] => { for (const c of n.treeChildren ?? []) { out.push(c); walkBlocks(c, out); } return out; };
   // Demo files, written under the demo folder so the run's `finally` removes them with the others:
   // a target, a file the refusals are tried against, and a file ingested from disk with a bad link.
@@ -54,11 +52,11 @@ export function checkLinkRefusals(store: Store, DEMO_DIR: string): string {
     { label: '[[id]] spelling, id names no node', href: `[[${ghostId}]]`, mustMention: ['names no node', ghostId, '"bad"'] },
     { label: 'aperas://id/ spelling, id names no node', href: `aperas://id/${ghostId}`, mustMention: ['names no node', ghostId, '"bad"'] },
   ];
-  // A refused write changes nothing: the block count, the citing item's text and the quad count of the
+  // A refused write changes nothing: the block count, the citing item's text and the record count of the
   // store are the same after as before, for `insert` and for `update` in both modes (the default one
   // would tombstone the child and rewrite the text, --text-only would hydrate the pushed children).
-  const subjectCount = (): number => new Set([...store.match(null, null, null, null)].map((q) => q.subject.value).filter((v) => v.includes('BlockNode:'))).size;
-  const snapshot = () => ({ quads: store.size, blocks: subjectCount(), text: (wrap(store, citingItem.id) as unknown as BlockNode).text });
+  const recordCount = (): number => ['BlockNode', 'ArtifactNode', 'FolderNode', 'Profile', 'TreeView'].reduce((n, kind) => n + allIdsOfKind(store, kind).length, 0);
+  const snapshot = () => ({ records: recordCount(), blocks: allIdsOfKind(store, 'BlockNode').length, text: (wrap(store, citingItem.id) as unknown as BlockNode).text });
   const writes: Array<{ label: string; run: (markdown: string) => unknown }> = [
     { label: 'insert', run: (markdown) => runInsert(store, { path: `aperas://id/${citingItem.id}`, markdown }) },
     { label: 'update', run: (markdown) => runUpdate(store, { path: `aperas://id/${citingItem.id}`, markdown, textOnly: false }) },
@@ -80,12 +78,12 @@ export function checkLinkRefusals(store: Store, DEMO_DIR: string): string {
         if (!message.includes(needle)) throw new Error(`Expected the ${write.label} refusal for ${c.label} to mention ${JSON.stringify(needle)}, got: ${message}`);
       }
       const after = snapshot();
-      if (after.quads !== before.quads || after.blocks !== before.blocks || after.text !== before.text) {
+      if (after.records !== before.records || after.blocks !== before.blocks || after.text !== before.text) {
         throw new Error(`Expected the refused ${write.label} (${c.label}) to change nothing, got ${JSON.stringify(before)} -> ${JSON.stringify(after)}.`);
       }
     }
   }
-  console.log(`   - Writer: ${refusedCases.length} refused spellings x ${writes.length} writes (insert, update, update --text-only), each naming the link text and the repeated fragment or the id (no URIError), each leaving the block count, the item text and the quad count as they were.`);
+  console.log(`   - Writer: ${refusedCases.length} refused spellings x ${writes.length} writes (insert, update, update --text-only), each naming the link text and the repeated fragment or the id (no URIError), each leaving the block count, the item text and the record count as they were.`);
 
   // A link to a not-yet-existing deep path still places a holder, and a single good anchor is stored.
   const okInsert = runInsert(store, { path: `aperas://id/${citingItem.id}`, markdown: `- A [deep]([[/${DEMO_DIR}/not_yet_written.md/Nowhere]]) and a [good](${goodHref}).\n` });
@@ -155,7 +153,7 @@ export function checkLinkRefusals(store: Store, DEMO_DIR: string): string {
 
 /** Step 13: a link that already carries `#id/<id>` renders with that one anchor, never two; a bare
  *  `./file.md` link still gets its target id baked in. Needs `checkLinkRefusals` to have run first. */
-export function checkSingleAnchorRendering(store: Store, DEMO_DIR: string, linkTargetCitedId: string): void {
+export function checkSingleAnchorRendering(store: Db, DEMO_DIR: string, linkTargetCitedId: string): void {
   const walkBlocks = (n: any, out: any[] = []): any[] => { for (const c of n.treeChildren ?? []) { out.push(c); walkBlocks(c, out); } return out; };
   // A link that already carries `#id/<id>` must render with that one anchor, never two; a bare `./file.md`
   // link still gets its target id baked in.
@@ -185,14 +183,11 @@ if (typeof process !== 'undefined' && process.argv[1]?.endsWith('verifyLinkRefus
   const root = mkdtempSync(join(tmpdir(), 'link-refusals-'));
   process.env.APERAS_APEIRON_ROOT = join(root, 'Apeiron');
   process.env.APERAS_ARTIFACTS_ROOT = join(root, 'artifacts');
-  mkdirSync(join(process.env.APERAS_APEIRON_ROOT, '.state'), { recursive: true });
-  dehydrateToJsonLd(new Store(), process.env.APERAS_APEIRON_ROOT); // an empty but well-formed Apeiron directory
-  dehydrateStateToJsonLd(new Store(), join(process.env.APERAS_APEIRON_ROOT, '.state'));
   const DEMO = 'link_demo';
   mkdirSync(join(getArtifactsDir(), DEMO), { recursive: true });
   const t0 = performance.now();
   try {
-    const { store } = rehydrateStore();
+    const store = newDb();
     const cited = checkLinkRefusals(store, DEMO);
     checkSingleAnchorRendering(store, DEMO, cited);
     console.log(`[link-refusals] all checks passed, ${(performance.now() - t0).toFixed(0)} ms`);

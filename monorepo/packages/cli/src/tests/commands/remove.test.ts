@@ -1,8 +1,8 @@
 // `runRemove` before the writes move to the engine (planning/core.md, Batch 11, step 10): a removal tombstones the subtree of a block, of an artifact and
 // of a folder, and nothing around it; the root of the artifacts is refused, and so is a node that is not a block, an artifact or a folder; the path
 // of a removed artifact or folder, taken again by a new file, belongs to a new node; `track --reverse` sees what a removal does to a projected tree.
-// The cases share one corpus and run in order, each removing something the later ones do not need. What the files and the folder keep of a tombstone in
-// their `children` is not pinned (the step that makes tombstones leave their container changes it): a case reads `show` and the rendered `tree`.
+// The cases share one corpus and run in order, each removing something the later ones do not need. A tombstone leaves the list of its container (the engine
+// does it): a case reads `show` and the rendered `tree`, which shows nothing in place for a removed node, with or without the flag, and shows it tagged by its id.
 // The store is reached through `fx.store`, `wrap` and the `runX` functions only.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -62,9 +62,10 @@ describe('remove', () => {
       const hidden = tree('cmd_demo/alpha.md', false);
       assert.deepEqual(hidden.map((e) => e.id), [c.alphaArt]);
       const shown = tree('cmd_demo/alpha.md', true);
-      assert.ok(shown.some((e) => e.id === c.alpha), 'the removed block');
-      assert.ok(shown.find((e) => e.id === c.alpha)!.rest.endsWith('(tombstoned)'));
+      assert.deepEqual(shown.map((e) => e.id), [c.alphaArt], 'a removed block left its container: nothing in place, with the flag too');
       assert.equal(shown.find((e) => e.id === c.alphaArt)!.rest.endsWith('(tombstoned)'), false);
+      const byId = tree(c.alpha, true);
+      assert.ok(byId[0].rest.endsWith('(tombstoned)'), 'the removed block, by its id');
     });
 
     test('a path is taken by a deep path, a bare code or a full id, and `base` shifts a relative path', () => {
@@ -95,7 +96,8 @@ describe('remove', () => {
       assert.equal(hidden.includes(c.gammaArt), false);
       assert.ok(hidden.includes(c.alphaArt) && hidden.includes(c.betaArt) && hidden.includes(c.dupArt));
       const shown = tree('cmd_demo', true);
-      assert.ok(shown.find((e) => e.id === c.gammaArt)!.rest.endsWith('(tombstoned)'));
+      assert.equal(shown.some((e) => e.id === c.gammaArt), false, 'a removed artifact left its folder');
+      assert.ok(tree(c.gammaArt, true)[0].rest.endsWith('(tombstoned)'), 'by its id');
     });
 
     test('the file is still on disk: it is the one that `track --reverse` lists as stale', () => {
@@ -139,8 +141,8 @@ describe('remove', () => {
       assert.ok(isLive(rootId));
       const hidden = tree('.', false).map((e) => e.id);
       assert.deepEqual(hidden, [rootId], 'nothing of the folder is shown');
-      const shown = tree('.', true);
-      assert.ok(shown.find((e) => e.id === c.folder)!.rest.endsWith('(tombstoned)'));
+      assert.deepEqual(tree('.', true).map((e) => e.id), [rootId], 'a removed folder left the root: nothing in place, with the flag too');
+      assert.ok(tree(c.folder, true)[0].rest.endsWith('(tombstoned)'), 'by its id');
     });
 
     test('a file at the same folder path makes a new folder and a new artifact', () => {

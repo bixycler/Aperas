@@ -7,11 +7,10 @@
  * write onto `FolderNode.hydrateFromParsed` (`node.ts`).
  */
 
-import type { Store } from 'oxigraph';
-import { wrap, applyTombstone, collectLinkTargetsByBlock, collectOldWikilinksByBlock } from './node';
+import { allIdsOfKind, type Db } from './db';
+import { wrap, wrapOrCreate, applyTombstone, tombstoneNode, collectLinkTargetsByBlock, collectOldWikilinksByBlock } from './node';
 import type { FolderNode, BlockNode } from './node';
-import { nodeKindFromId } from './vocab';
-import { allIdsOfKind } from './dehydrate';
+import { nodeKindFromId } from './nodeIds';
 import { buildFolderTree, collectFolderPaths, countFolders, type ParsedFolderNode } from '../folders';
 import { getArtifactsDir, type PendingLinkCodes } from '../artifacts';
 import { resolveBlockLinks } from './artifacts';
@@ -21,7 +20,7 @@ import { matchLeftoverByAbstract } from '../reconcile';
  *  that is only named by a parent's `children` (the shape a copy of the mirror without `.state/` loads as)
  *  is a subject in the store with containment triples and no document; it has no `path`, and counting it
  *  live put a `null` into `pendingRemovals`. */
-function allLiveIdsOfKind(store: Store, kind: string): string[] {
+function allLiveIdsOfKind(store: Db, kind: string): string[] {
   return allIdsOfKind(store, kind).filter((id) => {
     const node = wrap(store, id) as unknown as FolderNode;
     return !node.tombstonedAt && node.path !== undefined;
@@ -37,7 +36,7 @@ export interface FolderRecord {
 
 /** Looks up a live FolderNode by path — the from-`Store` counterpart to `folders.ts`'s
  *  `getFolderRecord`. */
-export function getFolderRecord(store: Store, folderPath: string): FolderRecord | null {
+export function getFolderRecord(store: Db, folderPath: string): FolderRecord | null {
   for (const id of allLiveIdsOfKind(store, 'FolderNode')) {
     const node = wrap(store, id) as unknown as FolderNode;
     if (node.path === folderPath) {
@@ -57,7 +56,7 @@ export interface FolderSweepStats {
  *  unchanged here. A matched rename reuses the existing `folderId` (via `buildFolderTree`'s own
  *  `existingByPath`/`folderIdByPath` maps, same as the original); a tombstone sets one field
  *  directly rather than replacing the whole document. */
-export function ingestFolderTree(store: Store, force: boolean = false): { folderCount: number; sweep: FolderSweepStats; pendingRemovals: string[] } {
+export function ingestFolderTree(store: Db, force: boolean = false): { folderCount: number; sweep: FolderSweepStats; pendingRemovals: string[] } {
   const artifactsDir = getArtifactsDir();
 
   const liveFolderIds = allLiveIdsOfKind(store, 'FolderNode');
@@ -160,15 +159,12 @@ export function ingestFolderTree(store: Store, force: boolean = false): { folder
       continue;
     }
     console.log(`[ApeironNgn Folders] Tombstoning removed folder '${node.path}'`);
-    node.children = [];
-    node.links = undefined;
-    node.props = undefined;
-    node.tombstonedAt = new Date().toISOString();
+    tombstoneNode(store, id, new Date().toISOString());
     sweep.removed++;
   }
 
   console.log(`[ApeironNgn Folders] Ingesting folder tree (${folderCount} folder(s))...`);
-  (wrap(store, `FolderNode:${tree.folderId}`) as unknown as FolderNode).hydrateFromParsed(tree);
+  (wrapOrCreate(store, `FolderNode:${tree.folderId}`, { path: tree.path }) as unknown as FolderNode).hydrateFromParsed(tree);
 
   const linkResolution = resolveBlockLinks(store, pendingDescriptionLinks, oldLinkTargets, oldWikilinksByBlock, undefined, 'skip');
   if (linkResolution.resolved > 0 || linkResolution.dangling > 0) {

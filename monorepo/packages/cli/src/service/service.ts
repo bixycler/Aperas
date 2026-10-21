@@ -1,7 +1,7 @@
 /**
  * ApeironNgn shared service process (Aperas-apeironngn-design.md §4 rollout step 5) — holds one
- * rehydrated `Store` in memory across CLI invocations instead of every `kg:xxx` script rehydrating/
- * dehydrating the whole mirror on its own. Listens on a Unix domain socket; every request is
+ * loaded `Db` (the engine, its maps and the files of the mirror, `shell/db.ts`) in memory across CLI invocations instead of every
+ * `kg:xxx` script loading/dumping the whole mirror on its own. Listens on a Unix domain socket; every request is
  * serialized through `enqueue()` so concurrent connections never interleave store mutations.
  * Flushes to `AperasKG/Apeiron/`'s JSON-LD mirror every 10s if dirty, or immediately when a
  * request carries `flush: true`. A second, independent interval/dirty-flag pair
@@ -21,18 +21,18 @@
  * `graphConfig.ts`'s own doc comment). A direct run just skips the lock-claim race and the graph
  * resolution that only matter when going through the real `start`/`restart` path.
  *
- * Staleness: the `Store` held here is a snapshot from whenever it was last (re)hydrated — nothing
+ * Staleness: the `Db` held here is a snapshot from whenever it was last (re)loaded — nothing
  * notices `AperasKG/Apeiron/` changing on disk underneath it (e.g. a `git pull` merging someone
  * else's commit) on its own. `reloadStore()` is the fix, the revived TDB-era `kg:import`'s
  * equivalent: flushes both dirty flags first (so no unflushed in-memory work is silently
- * discarded), then rehydrates fresh and swaps the in-memory `Store` reference. Reachable directly
+ * discarded), then loads fresh and swaps the in-memory `Db` reference. Reachable directly
  * via `{ op: 'reload' }` (`kg:reload`), or implicitly via any op's own `reload: true` — the
  * reciprocal of a mutating op's `flush: true`: `flush` forces a sync *out* immediately after the
  * op runs, `reload` forces a sync *in* immediately before it does, so a write can pick up an
  * external change and persist the result in one round trip.
  *
  * That pre-reload flush is itself guarded (`flushIfDirty`/`flushStateIfDirty`'s `diverged` check):
- * `dehydrateToJsonLd`/`dehydrateStateToJsonLd` are blind full-file replaces, not merges, so
+ * the dump of the mirror writes each file whole, a blind full-file replace and not a merge, so
  * flushing this process's own pending mutation over a mirror file an *external* write already
  * changed would silently destroy that external content instead of picking it up. The guard compares
  * each managed file's content hash against what this process last read or wrote; a mismatch refuses
@@ -44,17 +44,16 @@
 import { createServer, type Socket } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { unlinkSync, readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { basename, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rehydrateStore, getApeironExportDir } from '@aperas/core/shell/store';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd, DEHYDRATE_CLASSES, STATE_CLASSES } from '@aperas/core/shell/dehydrate';
+import { openDb, loadRefusal, isThreadScoped, type Db } from '@aperas/core/shell/db';
+import { dumpMirror } from '@aperas/core/shell/mirrorDump';
+import { MAIN_GRAPH, type MirrorFile } from '@aperas/core/shell/mirrorFiles';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
 import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds, wrap, type TreeNode } from '@aperas/core/shell/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/shell/linkIntegrity';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { nodeKindFromId } from '@aperas/core/shell/vocab';
-import { isThreadScopedId } from '@aperas/core/shell/threadScope';
-import { resolveEffectiveThreadSizeCap } from '@aperas/core/graphConfig';
+import { resolveEffectiveApeironRoot, resolveEffectiveThreadSizeCap } from '@aperas/core/graphConfig';
 import { getRunDir, getSocketPath, markReady, clearLock, writeToken, resolveHttpPort } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
@@ -100,24 +99,29 @@ type Stamps = Record<string, string | null>;
 
 /** Content hash of one managed `.jsonld` file, or `null` if it doesn't exist yet (a fresh
  *  `.state/` before anything's ever been unfolded). Used to detect an external write to the
- *  mirror — `dehydrateToJsonLd`/`dehydrateStateToJsonLd` are blind full-file replaces, not merges,
+ *  mirror — the dump writes each file whole, a blind full-file replace and not a merge,
  *  so overwriting a file that changed on disk since this process last read it would silently
  *  destroy whatever landed there (another process's `git pull`, a hand-edit). */
-function fileHash(dir: string, kind: string): string | null {
-  const path = join(dir, `${kind}.jsonld`);
+function fileHash(path: string): string | null {
   return existsSync(path) ? computeFileHash(readFileSync(path, 'utf-8')) : null;
 }
 
-function stampAll(dir: string, kinds: readonly string[]): Stamps {
+/** The files of the mirror that one flush writes, from the mapping: the main graph's (`content`) or the threads and the views graphs' (`.state/`). */
+function mirrorFilesOf(db: Db, root: string, content: boolean): string[] {
+  return db.mapping.filter((m) => (m.graph === MAIN_GRAPH) === content).map((m) => resolve(root, m.file));
+}
+
+/** The stamps of files, keyed by the name of the file (the key of a divergence message). */
+function stampAll(files: readonly string[]): Stamps {
   const stamps: Stamps = {};
-  for (const kind of kinds) stamps[kind] = fileHash(dir, kind);
+  for (const file of files) stamps[basename(file)] = fileHash(file);
   return stamps;
 }
 
-/** Which of `kinds` no longer match their last-known stamp — empty when nothing external touched
+/** Which of `files` no longer match their last-known stamp (by name) — empty when nothing external touched
  *  the mirror since this process last read or wrote it, regardless of how long ago that was. */
-function diverged(dir: string, kinds: readonly string[], known: Stamps): string[] {
-  return kinds.filter((kind) => fileHash(dir, kind) !== known[kind]);
+function diverged(files: readonly string[], known: Stamps): string[] {
+  return files.filter((file) => fileHash(file) !== known[basename(file)]).map((file) => basename(file));
 }
 
 /** Durable fallback for events that matter after the fact but would otherwise only ever reach
@@ -149,7 +153,7 @@ export function main(): void {
   // The one binding for this process's whole lifetime — see this file's own doc comment above.
   // Both resolve via their own default (env var, then config discovery, then fallback); nothing
   // here re-derives cwd itself.
-  const contentDir = getApeironExportDir();
+  const contentDir = resolveEffectiveApeironRoot();
   const artifactsDir = getArtifactsDir();
 
   // Per-run trust anchor for the production HTTP+auth listener below (discussion/webapp.md's
@@ -157,17 +161,21 @@ export function main(): void {
   const httpToken = writeToken();
   const httpPort = resolveHttpPort();
 
-  let { store, quadCount, duplicateIds: initDuplicateIds } = rehydrateStore(contentDir);
-  logService(`[ApeironNgn service] Rehydrated ${quadCount} quad(s) from ${contentDir}.`);
-  if (initDuplicateIds.length > 0) {
-    logService(
-      `[ApeironNgn service] WARNING: ${initDuplicateIds.length} duplicate @id(s) in the mirror — quads from every occurrence merged onto one subject, so at most one document per id survives the next dehydrate: ${initDuplicateIds.join(', ')}`
-    );
+  const opened = openDb(contentDir);
+  let store: Db = opened.db;
+  logService(`[ApeironNgn service] Rehydrated ${opened.load.documents + opened.load.embedded} record(s) from ${contentDir}.`);
+  for (const warning of opened.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
+  const bootRefusal = loadRefusal(opened.load);
+  if (bootRefusal !== undefined) {
+    // A flush after a boot that skipped a document would write each file whole and remove it from disk: the service does not start. The lock is cleared so that
+    // the client's wait ends at once and `aperas service start` can say why from the log.
+    logService(`[ApeironNgn service] REFUSING TO START: ${bootRefusal}`);
+    clearLock();
+    process.exit(1);
   }
 
-  const stateDir = join(contentDir, '.state');
-  let contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
-  let stateStamps = stampAll(stateDir, STATE_CLASSES);
+  let contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
+  let stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
   const threadSizeCap = resolveEffectiveThreadSizeCap();
 
   let dirty = false;
@@ -223,17 +231,23 @@ export function main(): void {
    *  divergence since the last read/write is worth refusing over; when one's found, the write is
    *  skipped entirely (nothing partially overwritten) and the local mutation stays pending in
    *  memory (still `dirty`) for the caller to resolve and retry. */
+  /** Writes the files of the main graph (`content`) or of the threads and views graphs (`.state/`) of the mapping, whole. The graphs of the whole mapping are read
+   *  across: a node's container may be in a graph whose files are not written now. */
+  function writeFiles(content: boolean): void {
+    dumpMirror(store.engine, contentDir, store.mapping, (m: MirrorFile) => (m.graph === MAIN_GRAPH) === content);
+  }
+
   function flushIfDirty(): void {
     if (!dirty) return;
-    const bad = diverged(contentDir, DEHYDRATE_CLASSES, contentStamps);
+    const bad = diverged(mirrorFilesOf(store, contentDir, true), contentStamps);
     if (bad.length > 0) {
       contentConflict =
-        `${bad.map((k) => `${k}.jsonld`).join(', ')} changed on disk since this service last read it — an external ` +
+        `${bad.join(', ')} changed on disk since this service last read it — an external ` +
         `process (another git pull, a hand-edit) wrote to the mirror while this service held unflushed local changes.`;
       throw new Error(`Refusing to flush: ${contentConflict} ${CONFLICT_RESOLUTION_HINT}`);
     }
-    dehydrateToJsonLd(store, contentDir);
-    contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
+    writeFiles(true);
+    contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
     dirty = false;
     contentConflict = null;
   }
@@ -308,7 +322,7 @@ export function main(): void {
     );
     let out = result;
     if (introduced.length > 0) out = { ...out, linkBreakage: introduced };
-    if (after.totalLiveBlocks > threadSizeCap && isThreadScopedId(store, artifactId, nodeKindFromId(artifactId))) {
+    if (after.totalLiveBlocks > threadSizeCap && isThreadScoped(store, artifactId)) {
       const artifactPath = (wrap(store, artifactId) as unknown as TreeNode).toPath();
       out = { ...out, threadSize: { count: after.totalLiveBlocks, cap: threadSizeCap, artifactPath } };
     }
@@ -317,14 +331,14 @@ export function main(): void {
 
   function flushStateIfDirty(): void {
     if (!stateDirty) return;
-    const bad = diverged(stateDir, STATE_CLASSES, stateStamps);
+    const bad = diverged(mirrorFilesOf(store, contentDir, false), stateStamps);
     if (bad.length > 0) {
       stateConflict =
-        `.state/${bad.map((k) => `${k}.jsonld`).join(', ')} changed on disk since this service last read it.`;
+        `.state/${bad.join(', ')} changed on disk since this service last read it.`;
       throw new Error(`Refusing to flush: ${stateConflict} ${CONFLICT_RESOLUTION_HINT}`);
     }
-    dehydrateStateToJsonLd(store, stateDir);
-    stateStamps = stampAll(stateDir, STATE_CLASSES);
+    writeFiles(false);
+    stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
     stateDirty = false;
     stateConflict = null;
   }
@@ -340,8 +354,8 @@ export function main(): void {
    *  `reload: true`, which always takes the safe, preserving path — a read shouldn't have the
    *  side effect of silently dropping someone else's pending write). */
   function reloadStore(discard = false): {
-    quadCount: number;
-    nodeCount: number;
+    recordCount: number;
+    documentCount: number;
     prunedTombstones: number;
     tombstonedContainers: number;
     prunedUnfolds: number;
@@ -350,6 +364,10 @@ export function main(): void {
     let pruned = 0;
     let staleUnfolds = 0;
     if (discard) {
+      // What is on disk is read first: a load that did not read it in full refuses the reload, and the memory (with its pending changes) stays as it is.
+      const probe = openDb(contentDir);
+      const refusal = loadRefusal(probe.load);
+      if (refusal !== undefined) throw new Error(`Refusing to reload: ${refusal}`);
       dirty = false;
       stateDirty = false;
       contentConflict = null;
@@ -373,30 +391,32 @@ export function main(): void {
       flushIfDirty();
       flushStateIfDirty();
     }
-    const result = rehydrateStore();
-    store = result.store;
-    contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
-    stateStamps = stampAll(stateDir, STATE_CLASSES);
+    const result = openDb(contentDir);
+    const refusal = loadRefusal(result.load);
+    if (refusal !== undefined) {
+      logService(`[ApeironNgn service] Reload refused, the graph in memory is kept: ${refusal}`);
+      throw new Error(`Refusing to reload: ${refusal}`);
+    }
+    store = result.db;
+    contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
+    stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
+    const records = result.load.documents + result.load.embedded;
     const gcParts: string[] = [];
     if (pruned) gcParts.push(`${pruned} unreachable tombstone(s) pruned`);
     if (tombstoned) gcParts.push(`${tombstoned} vacuous container(s) tombstoned`);
     if (staleUnfolds) gcParts.push(`${staleUnfolds} stale unfold(s) cleared`);
     logService(
-      `[ApeironNgn service] Reloaded ${result.quadCount} quad(s), ${result.nodeCount} node(s).` +
+      `[ApeironNgn service] Reloaded ${records} record(s), ${result.load.documents} document(s).` +
         (gcParts.length > 0 ? ` GC: ${gcParts.join(', ')}.` : '')
     );
-    if (result.duplicateIds.length > 0) {
-      logService(
-        `[ApeironNgn service] WARNING: ${result.duplicateIds.length} duplicate @id(s) in the mirror — quads from every occurrence merged onto one subject, so at most one document per id survives the next dehydrate: ${result.duplicateIds.join(', ')}`
-      );
-    }
+    for (const warning of result.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
     // The other boundary where the graph can have changed without this process doing it — a reload
     // exists precisely to pick up someone else's write, which is exactly when a link can arrive
     // already broken.
     corpusLinkSweep('reload');
     return {
-      quadCount: result.quadCount,
-      nodeCount: result.nodeCount,
+      recordCount: records,
+      documentCount: result.load.documents,
       prunedTombstones: pruned,
       tombstonedContainers: tombstoned,
       prunedUnfolds: staleUnfolds,
@@ -416,12 +436,12 @@ export function main(): void {
     const { tombstoned } = tombstoneVacuousContainers(store); // same companion sweep `reloadStore` runs — see its own comment
     const { pruned } = pruneUnreachableTombstones(store); // same GC pass `reloadStore` runs — see its own comment
     const { pruned: staleUnfolds } = pruneStaleUnfolds(store); // same `unfolds` audit `reloadStore` runs — see its own comment
-    dehydrateToJsonLd(store, contentDir);
-    contentStamps = stampAll(contentDir, DEHYDRATE_CLASSES);
+    writeFiles(true);
+    contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
     dirty = false;
     contentConflict = null;
-    dehydrateStateToJsonLd(store, stateDir);
-    stateStamps = stampAll(stateDir, STATE_CLASSES);
+    writeFiles(false);
+    stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
     stateDirty = false;
     stateConflict = null;
     return { clobbered: true, prunedTombstones: pruned, tombstonedContainers: tombstoned, prunedUnfolds: staleUnfolds };

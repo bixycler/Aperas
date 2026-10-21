@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, connect } from 'node:net';
 import { join, relative, isAbsolute } from 'node:path';
 import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot } from '@aperas/core/graphConfig';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
+import { dumpMirror as dumpEngineMirror } from '@aperas/core/shell/mirrorDump';
 import { runStart } from '../../kgService';
 import { getRunDir, getSocketPath, getLockPath, getTokenPath, readLock, resolveHttpPort, isProcessAlive } from '../../service/serviceLock';
 import { ping } from '../../service/serviceClient';
@@ -181,6 +181,5 @@ export function readMirrorFile(iso: ServiceIsolation, kind: string): string {
 
 /** Writes the whole store of a fixture to its scratch Apeiron root, content mirror and `.state/`, the files a service reads at boot. */
 export function dumpMirror(fx: FixtureStore): void {
-  dehydrateToJsonLd(fx.store, fx.apeironRoot);
-  dehydrateStateToJsonLd(fx.store, join(fx.apeironRoot, '.state'));
+  dumpEngineMirror(fx.store.engine, fx.root, fx.store.mapping);
 }

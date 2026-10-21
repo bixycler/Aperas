@@ -1,13 +1,13 @@
 // The path commands before the reads move to the engine (planning/core.md, Batch 11, step 10): `runPath` and `runResolve` on a small corpus. The deep-path
 // grammar (a folder, a file, a heading by exact slug and by prefix, the aperas:// forms, a bare code, the root, a base), `..` at each tier, a path that is
 // ambiguous, a miss, a path reused after a removal, the creation of a holder chain, and the round trip from a node to its path and back. The last block is
-// the reproduction of the issue that the first node found at a path is the answer, asserted on the reference reader and marked as going with it
-// (Batch 12), as Batch 10 did for the maps. The store is reached through `fx.store`, `wrap` and the `runX` functions only.
+// the issue that the first node found at a path was the answer: a path held by a live node and by a tombstone answers the live node, whichever was stored
+// first. The store is reached through `fx.store`, `wrap`, `createNode` and the `runX` functions only.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { findByExactPath } from '@aperas/core/shell/tree';
-import { wrap } from '@aperas/core/shell/node';
+import { createNode } from '@aperas/core/shell/node';
 import { runPath } from '../../kgPath';
 import { runResolve } from '../../kgResolve';
 import { runTree } from '../../kgTree';
@@ -169,8 +169,8 @@ describe('path commands', () => {
     });
   });
 
-  describe('the reproduction of the first node found at a path (goes with the reference reader, Batch 12)', () => {
-    test('the reference reader takes the first node found, so it returns the tombstoned one when the live one was stored first', () => {
+  describe('the first node found at a path', () => {
+    test('a path held by a live node and by a tombstone answers the live node, whichever was stored first', () => {
       const AT = '2026-10-19T00:00:00.000Z';
       const answers: Record<string, string> = {};
       let n = 0;
@@ -179,7 +179,7 @@ describe('path commands', () => {
         const live = `ArtifactNode:${generateNodeId()}`;
         const dead = `ArtifactNode:${generateNodeId()}`;
         for (const id of order === 'live first' ? [live, dead] : [dead, live]) {
-          const node = wrap(fx.store, id) as unknown as { title: string; path: string; tombstonedAt?: string };
+          const node = createNode(fx.store, id, { path }) as unknown as { title: string; path: string; tombstonedAt?: string };
           node.title = 'held';
           node.path = path;
           if (id === dead) node.tombstonedAt = AT;
@@ -187,7 +187,7 @@ describe('path commands', () => {
         const found = findByExactPath(fx.store, path);
         answers[order] = found === live ? 'live' : found === dead ? 'dead' : String(found);
       }
-      assert.deepEqual(answers, { 'live first': 'dead', 'dead first': 'live' }, 'the answer depends on the order the store lists the nodes in');
+      assert.deepEqual(answers, { 'live first': 'live', 'dead first': 'live' }, 'the live node is the answer under both orders');
     });
   });
 });

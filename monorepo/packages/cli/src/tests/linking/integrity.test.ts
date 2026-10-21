@@ -12,7 +12,7 @@ import { ingestFolderTree } from '@aperas/core/shell/folders';
 import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/shell/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
-import { predIri, nodeIri } from '@aperas/core/shell/vocab';
+import { graphOfId } from '@aperas/core/shell/db';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { findByText, findHeadingByTitle } from '../support/tree.ts';
 
@@ -75,7 +75,7 @@ must never reprocess a block the discrepancy report didn't name.
     assert.ok(otherCiting, 'the unrelated citing paragraph exists');
     const otherBefore = (((wrap(fx.store, otherCiting.id) as unknown as BlockNode).links as unknown as LinkView[]) ?? []).find((l) => l.target?.id === otherTarget.id);
     assert.ok(otherBefore, `the unrelated citing paragraph carries a resolved Link targeting ${otherTarget.id}`);
-    for (const q of fx.store.match(nodeIri(citing.id), predIri('links'), nodeIri(targetLink!.id), null)) fx.store.delete(q);
+    fx.store.write.removePair(graphOfId(fx.store, citing.id)!, citing.id, 'links', targetLink!.id); // the pair goes, and the embedded Link with it
 
     const withDropped = checkLinkIntegrity(fx.store);
     assert.equal(withDropped.discrepancies.length - initialReport.discrepancies.length, 1, 'exactly one new discrepancy after dropping the citing block\'s link');

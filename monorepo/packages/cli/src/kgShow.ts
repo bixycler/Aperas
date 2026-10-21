@@ -8,23 +8,23 @@
  * stored state was a direct `BlockNode.jsonld`/`ArtifactNode.jsonld` read outside the CLI entirely
  * (issues/treeview.md's "no raw single-node inspection command").
  *
- * Reuses `dehydrate.ts`'s own `serializeDoc` — the exact per-kind shape walk that writes the
+ * Reuses `mirrorDump.ts`'s own `documentOf` — the exact per-kind walk that writes the
  * on-disk mirror — rather than re-implementing a second idea of "raw state" that could drift from
  * what's actually on disk.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { serializeDoc } from '@aperas/core/shell/dehydrate';
-import { nodeExists } from '@aperas/core/shell/vocab';
+import { documentOf } from '@aperas/core/shell/mirrorDump';
+import { nodeExists, graphOfId } from '@aperas/core/shell/db';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-export function runShow(store: Store, pathArg: string): Record<string, unknown> {
+export function runShow(store: Db, pathArg: string): Record<string, unknown> {
   const id = resolveDeepPath(store, pathArg);
   if (!id) throw new Error(`'${pathArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
   if (!nodeExists(store, id)) throw new Error(`Node '${id}' not found.`);
-  return serializeDoc(store, id);
+  return documentOf(store.engine, graphOfId(store, id)!, id, store.graphs)!;
 }
 
 export async function main(): Promise<void> {

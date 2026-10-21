@@ -67,8 +67,8 @@ describe('service: every op of handle()', () => {
     });
 
     test('reload reads the mirror again and sweeps nothing from a clean one', async () => {
-      const r = await call<{ quadCount: number; nodeCount: number; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: false });
-      assert.ok(r.quadCount > 100 && r.nodeCount > 20, JSON.stringify(r));
+      const r = await call<{ recordCount: number; documentCount: number; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: false });
+      assert.ok(r.recordCount > 20 && r.documentCount > 10, JSON.stringify(r));
       assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [0, 0, 0]);
     });
   });
@@ -235,11 +235,14 @@ describe('service: every op of handle()', () => {
       assert.deepEqual([r.id, r.fromType, r.toType, r.toTitle], [c.itemTwo, 'heading', 'heading', '### Item Two']);
     });
 
-    test('remove tombstones a node: it leaves the tree and shows with showTombstoned', async () => {
+    test('remove tombstones a node: it leaves the tree, and shows by its id with showTombstoned', async () => {
       assert.deepEqual(await call({ op: 'remove', path: c.betaOther, flush: false, reload: false }), { id: c.betaOther });
       assert.ok(!(await treeLines('cmd_demo/beta.md')).some((l) => l.includes(c.betaOther)));
-      const withDead = await call<string[]>({ op: 'tree', pathArg: 'cmd_demo/beta.md', noHolders: false, showTombstoned: true, reload: false });
-      assert.ok(withDead.some((l) => l.includes(c.betaOther)));
+      // A tombstone leaves the list of its container: nothing in place with the flag, and the tombstone shown by its id.
+      const withFlag = await call<string[]>({ op: 'tree', pathArg: 'cmd_demo/beta.md', noHolders: false, showTombstoned: true, reload: false });
+      assert.ok(!withFlag.some((l) => l.includes(c.betaOther)));
+      const byId = await call<string[]>({ op: 'tree', pathArg: c.betaOther, noHolders: false, showTombstoned: true, reload: false });
+      assert.ok(byId.some((l) => l.includes(c.betaOther) && l.includes('(tombstoned)')));
     });
 
     test('a write the engine refuses is an error to the caller and changes nothing', async () => {
@@ -331,7 +334,7 @@ describe('service: every op of handle()', () => {
   });
 
   describe('flush: true on every arm that takes it', () => {
-    const blockDoc = (id: string): { title?: string; type?: string; tombstonedAt?: string } | undefined => (JSON.parse(readMirrorFile(iso, 'BlockNode')) as Array<{ '@id': string }>).find((d) => d['@id'] === id);
+    const blockDoc = (id: string): { title?: string; type?: string; tombstonedAt?: string } | undefined => (JSON.parse(readMirrorFile(iso, 'BlockNode')) as Array<{ '@id': string; title?: string; type?: string; tombstonedAt?: string }>).find((d) => d['@id'] === id);
     const stateText = (): string => readFileSync(join(fx.apeironRoot, '.state', 'TreeView.jsonld'), 'utf-8');
 
     test('insert, retype and remove each write the mirror before they answer', async () => {
@@ -370,10 +373,10 @@ describe('service: every op of handle()', () => {
       assert.ok(!stateText().includes('"flv"'), 'the removal of the profile took its view out of the state mirror');
     });
 
-    test('unfold into no view reads the tombstoned children only when asked', async () => {
+    test('unfold into no view does not list a removed child, with the flag or without it', async () => {
       const kinds = async (showTombstoned: boolean): Promise<string[]> => (await call<{ children: Array<{ id: string }> }>({ op: 'unfold', ref: 'cmd_demo/beta.md/Beta', peek: true, showTombstoned, flush: false, reload: false })).children.map((k) => k.id);
       assert.ok(!(await kinds(false)).includes(c.betaOther), 'removed above: not listed');
-      assert.ok((await kinds(true)).includes(c.betaOther), 'listed when asked');
+      assert.ok(!(await kinds(true)).includes(c.betaOther), 'it has left its container: not listed with the flag either');
     });
   });
 

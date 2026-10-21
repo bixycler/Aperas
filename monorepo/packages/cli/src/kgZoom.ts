@@ -9,10 +9,10 @@
  * behind — only the current root is ever recorded, never a history of past ones.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, type TreeNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
-import { nodeExists } from '@aperas/core/shell/vocab';
+import { nodeExists } from '@aperas/core/shell/db';
 import { displayLabel } from '@aperas/core/shell/tree';
 import { nodeAbstract } from './kgUnfold';
 import { ensureServiceRunning, request } from './service/serviceClient';
@@ -22,7 +22,7 @@ function isTombstoned(node: { tombstonedAt?: string } | undefined): boolean {
   return node?.tombstonedAt !== undefined;
 }
 
-export function runZoom(store: Store, ref: string, view: TreeView) {
+export function runZoom(store: Db, ref: string, view: TreeView) {
   const id = resolveDeepPath(store, ref);
   if (!id) throw new Error(`'${ref}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
   if (!nodeExists(store, id)) throw new Error(`Node '${id}' not found.`);

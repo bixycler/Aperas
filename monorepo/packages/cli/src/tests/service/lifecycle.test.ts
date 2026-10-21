@@ -8,7 +8,7 @@
 // written from outside and read by a reload first (a sweep runs on the memory, before the read).
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { buildCorpus, writeArtifact, type Corpus } from '../support/commandsCorpus.ts';
@@ -21,18 +21,19 @@ import { runStart } from '../../kgService';
 import { request, ping } from '../../service/serviceClient';
 import { CONFLICT_RESOLUTION_HINT, type ServiceRequest } from '../../service/serviceProtocol';
 import { readLock } from '../../service/serviceLock';
-import { wrap, tombstoneVacuousContainers, pruneUnreachableTombstones, pruneStaleUnfolds, resolveTreeView, type BlockNode } from '@aperas/core/shell/node';
-import { nodeIri, predIri } from '@aperas/core/shell/vocab';
-import { dehydrateToJsonLd, dehydrateStateToJsonLd } from '@aperas/core/shell/dehydrate';
-import { rehydrateStore } from '@aperas/core/shell/store';
+import { wrap, createNode, tombstoneNode, tombstoneVacuousContainers, pruneUnreachableTombstones, pruneStaleUnfolds, resolveTreeView, type BlockNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { graphOfId, newDb, openDb, type Db } from '@aperas/core/shell/db';
+import { dumpMirror as dumpEngineMirror } from '@aperas/core/shell/mirrorDump';
 import { generateNodeId } from '@aperas/core/snowflake';
-import { runUnfold } from '../../kgUnfold';
 import { findByExactPath } from '@aperas/core/shell/tree';
-import type { Store } from 'oxigraph';
 
 const THREAD_CAP = 3;
-/** What the sweep prunes once a fodder artifact is removed: its heading. The removal tombstones the artifact and its blocks; the artifact stays (its folder still reaches it), the heading is unreachable. */
-const FODDER_PRUNED = 1;
+/**
+ * What the sweep prunes once a fodder artifact and the item of a fodder list are removed: four tombstones, none in any list. A tombstone leaves the list of its container, so the
+ * removed artifact (it left its folder) and its heading are unreachable, and so are the removed item and the list the removal emptied (the removal tombstones the container it
+ * empties, in the same write, so the sweep has no vacuous container of its own left to count).
+ */
+const FODDER_PRUNED = 4;
 
 interface Fodder { artifactPath: string; list: string; item: string }
 interface Seed {
@@ -53,17 +54,17 @@ interface Seed {
   staleState: string;
 }
 
-/** Adds a `list` block under `parentId` holding one `listItem`, built directly on the store; `tombstoned` tombstones the item. */
-function addList(store: Store, parentId: string, text: string, tombstoned: boolean): { list: string; item: string } {
-  const list = wrap(store, `BlockNode:${generateNodeId()}`) as unknown as BlockNode;
+/** Adds a `list` block under `parentId` holding one `listItem`, built directly on the store; `tombstoned` tombstones the item, which leaves the list. */
+function addList(store: Db, parentId: string, text: string, tombstoned: boolean): { list: string; item: string } {
+  const list = createNode(store, `BlockNode:${generateNodeId()}`, { under: parentId }) as unknown as BlockNode;
   list.type = 'list';
-  const item = wrap(store, `BlockNode:${generateNodeId()}`) as unknown as BlockNode;
+  const item = createNode(store, `BlockNode:${generateNodeId()}`, { under: parentId }) as unknown as BlockNode;
   item.type = 'listItem';
   item.text = text;
-  if (tombstoned) item.tombstonedAt = new Date().toISOString();
   list.children = [item] as unknown as typeof list.children;
   const parent = wrap(store, parentId) as unknown as BlockNode;
   parent.children = [...(parent.children ?? []), list] as unknown as typeof parent.children;
+  if (tombstoned) tombstoneNode(store, item.id, new Date().toISOString());
   return { list: list.id, item: item.id };
 }
 
@@ -86,31 +87,30 @@ function buildSeed(fx: FixtureStore): Seed {
   if (!thread) throw new Error('The thread artifact was not ingested.');
 
   const vacuous = addList(fx.store, c.alpha, 'gone', true).list;
-  const orphanNode = wrap(fx.store, `BlockNode:${generateNodeId()}`) as unknown as BlockNode;
-  orphanNode.type = 'heading'; orphanNode.title = 'Orphan'; orphanNode.children = []; orphanNode.tombstonedAt = new Date().toISOString();
-  const ghostNode = wrap(fx.store, `BlockNode:${generateNodeId()}`) as unknown as BlockNode;
-  ghostNode.type = 'paragraph'; ghostNode.text = 'ghost';
-  runUnfold(fx.store, ghostNode.id, resolveTreeView(fx.store)); // the view now unfolds the ghost
-  for (const q of [...fx.store.match(nodeIri(ghostNode.id), null, null, null)]) fx.store.delete(q); // and the ghost has no node
+  const orphanNode = createNode(fx.store, `BlockNode:${generateNodeId()}`, { under: c.alpha }) as unknown as BlockNode;
+  orphanNode.type = 'heading'; orphanNode.title = 'Orphan';
+  tombstoneNode(fx.store, orphanNode.id, new Date().toISOString()); // in no list, and nothing live reaches it
+  // The view unfolds an id that has no node: the engine drops an `unfolds` entry with its target, so the entry is written for an id never made.
+  const ghostId = `BlockNode:${generateNodeId()}`;
+  const view = resolveTreeView(fx.store) as unknown as TreeView;
+  view.unfolds = [...((view.unfolds as unknown as ApeironNode[] | undefined) ?? []), ghostId] as unknown as ApeironNode[];
 
+  // The mirrors are written under a root of their own: the relative mapping of the fixture puts `Apeiron/` and `Apeiron/.state/` under it.
   const variants = join(fx.root, 'variants');
-  mkdirSync(join(variants, '.state'), { recursive: true });
-  dehydrateToJsonLd(fx.store, variants);
-  dehydrateStateToJsonLd(fx.store, join(variants, '.state'));
+  dumpEngineMirror(fx.store.engine, variants, fx.store.mapping);
 
-  // The dropped link: the block keeps its text, loses the pointer to one of its two links.
-  for (const q of [...fx.store.match(nodeIri(c.alpha), predIri('links'), nodeIri(c.alphaLinkToBeta), null)]) fx.store.delete(q);
+  // The dropped link: the block keeps its text, loses its link to `beta.md`.
+  fx.store.write.removePair(graphOfId(fx.store, c.alpha)!, c.alpha, 'links', c.alphaLinkToBeta);
   dumpMirror(fx);
 
-  // What the mirror looks like after the boot sweeps, with the link intact: the variants (link intact) rehydrated and swept in process.
-  const g = rehydrateStore(variants, join(variants, '.state')).store;
+  // What the mirror looks like after the boot sweeps, with the link intact: the variants (link intact) loaded and swept in process.
+  const g = openDb(join(variants, 'Apeiron')).db;
   tombstoneVacuousContainers(g); pruneUnreachableTombstones(g); pruneStaleUnfolds(g);
   const clean = join(fx.root, 'clean');
-  mkdirSync(join(clean, '.state'), { recursive: true });
-  dehydrateToJsonLd(g, clean);
+  dumpEngineMirror(g.engine, clean, newDb().mapping);
   return {
-    c, orphan: orphanNode.id, vacuous, ghost: ghostNode.id, fodder, thread, goodBytes: readFileSync(join(clean, 'BlockNode.jsonld'), 'utf-8'),
-    staleState: readFileSync(join(variants, '.state', 'TreeView.jsonld'), 'utf-8'),
+    c, orphan: orphanNode.id, vacuous, ghost: ghostId, fodder, thread, goodBytes: readFileSync(join(clean, 'Apeiron', 'BlockNode.jsonld'), 'utf-8'),
+    staleState: readFileSync(join(variants, 'Apeiron', '.state', 'TreeView.jsonld'), 'utf-8'),
   };
 }
 
@@ -176,12 +176,12 @@ describe('service lifecycle', () => {
     });
 
     test('the boot sweeps the three kinds, counts them in the log, and flushes at once', () => {
-      assert.ok(serviceLog(iso).some((l) => /Rehydrated \d+ quad\(s\) from /.test(l) && l.includes(fx.apeironRoot)), serviceLog(iso).join('\n'));
-      assert.ok(hasGcLine('1 unreachable tombstone(s), 1 vacuous container(s), 1 stale unfold(s)'), serviceLog(iso).join('\n'));
+      assert.ok(serviceLog(iso).some((l) => /Rehydrated \d+ record\(s\) from /.test(l) && l.includes(fx.apeironRoot)), serviceLog(iso).join('\n'));
+      // the orphan, the removed item of the vacuous list, and the list itself: tombstoned by the vacuous rule, it left its container and is unreachable in the same boot
+      assert.ok(hasGcLine('3 unreachable tombstone(s), 1 vacuous container(s), 1 stale unfold(s)'), serviceLog(iso).join('\n'));
       const blocks = readMirrorFile(iso, 'BlockNode');
       assert.ok(!blocks.includes(seed.orphan), 'the unreachable tombstone is pruned from the file');
-      const vacuous = (JSON.parse(blocks) as Array<{ '@id': string; tombstonedAt?: string }>).find((d) => d['@id'] === seed.vacuous);
-      assert.ok(vacuous?.tombstonedAt, 'the vacuous list is tombstoned in the file');
+      assert.ok(!blocks.includes(seed.vacuous), 'the vacuous list was tombstoned, and being in no list it is pruned from the file in the same boot');
       assert.ok(!stateFile('TreeView').includes(seed.ghost), 'the stale unfold is cleared from the state file');
       brokenBytes = blocks;
     });
@@ -329,21 +329,20 @@ describe('service lifecycle', () => {
       await removeFodder(seed.fodder[0]);
       const r = await req<{ clobbered: boolean; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'flush', clobber: true });
       assert.equal(r.clobbered, true);
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [FODDER_PRUNED, 1, 0]);
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [FODDER_PRUNED, 0, 0], 'the removal tombstoned the list it emptied, so the sweep finds no vacuous container');
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes('Fodder 1.'), 'the heading is gone from the mirror, not only tombstoned');
       const artifact = (JSON.parse(readMirrorFile(iso, 'ArtifactNode')) as Array<{ path?: string; tombstonedAt?: string }>).find((d) => d.path === seed.fodder[0].artifactPath);
-      assert.ok(artifact?.tombstonedAt, 'the artifact itself stays, tombstoned');
-      assert.ok(readMirrorFile(iso, 'BlockNode').includes(seed.fodder[0].list), 'the vacuous list is kept, tombstoned');
+      assert.equal(artifact, undefined, 'the artifact left its folder with the removal, and is pruned with the rest');
+      assert.ok(!readMirrorFile(iso, 'BlockNode').includes(seed.fodder[0].list), 'the list the removal emptied is pruned as well');
     });
 
     test('reload sweeps first, counts what it swept, flushes it, and reads the result back', async () => {
       await removeFodder(seed.fodder[1]);
       const r = await req<{ prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: false });
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [FODDER_PRUNED, 1, 0]);
-      assert.ok(serviceLog(iso).some((l) => l.includes('Reloaded') && l.includes(`GC: ${FODDER_PRUNED} unreachable tombstone(s) pruned, 1 vacuous container(s) tombstoned.`)), serviceLog(iso).join('\n'));
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [FODDER_PRUNED, 0, 0]);
+      assert.ok(serviceLog(iso).some((l) => l.includes('Reloaded') && l.includes(`GC: ${FODDER_PRUNED} unreachable tombstone(s) pruned.`)), serviceLog(iso).join('\n'));
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes('Fodder 2.'));
-      const lines = await req<string[]>({ op: 'tree', pathArg: seed.fodder[1].artifactPath, noHolders: false, showTombstoned: true, reload: false });
-      assert.ok(lines.some((l) => l.includes('f2.md') && l.includes('(tombstoned)')) && !lines.some((l) => l.includes('# F2')), lines.join('\n'));
+      assert.match(await fail({ op: 'tree', pathArg: seed.fodder[1].artifactPath, noHolders: false, showTombstoned: true, reload: false }), /isn't a tracked artifact\/folder path/, 'the artifact is gone with its tombstone');
     });
 
     test('a divergence also stops a reload that has something to sweep, and the file stays as the outside wrote it', async () => {
@@ -391,6 +390,9 @@ describe('service lifecycle', () => {
 
   describe('the stop and the second boot', () => {
     test('a stop sweeps and flushes what is pending, then the process is gone and the lock with it', async () => {
+      // The blocks removed in the thread above are tombstones in no list, which a sweep prunes, and a prune marks the state mirror pending: swept and flushed first, so that the file written
+      // from outside below is not met by a pending flush.
+      await req({ op: 'flush', clobber: true });
       writeStateFile('TreeView', seed.staleState);
       await req({ op: 'reload', discard: false }); // the service now holds a stale unfold; the fodder is removed after, so the stop is what sweeps both
       await removeFodder(seed.fodder[3]);
@@ -401,8 +403,7 @@ describe('service lifecycle', () => {
       assert.deepEqual(leftoverProcesses(iso), []);
       assert.ok(!serviceLog(iso).slice(before).some((l) => /Shutdown WARNING|tombstone GC failed/.test(l)), serviceLog(iso).slice(before).join('\n'));
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes('Fodder 4.'), 'the heading of the last fodder artifact was pruned at the stop and the mirror written without it');
-      const list = (JSON.parse(readMirrorFile(iso, 'BlockNode')) as Array<{ '@id': string; tombstonedAt?: string }>).find((d) => d['@id'] === seed.fodder[3].list);
-      assert.ok(list?.tombstonedAt, 'and its list, vacuous now, is tombstoned at the stop and kept');
+      assert.ok(!readMirrorFile(iso, 'BlockNode').includes(seed.fodder[3].list), 'and its list, which the removal of its item tombstoned, was pruned with the rest');
       assert.ok(!stateFile('TreeView').includes(seed.ghost), 'and the stale unfold the service held is cleared from the state file at the stop');
     });
 

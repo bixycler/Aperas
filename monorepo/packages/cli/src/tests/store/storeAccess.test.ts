@@ -39,6 +39,7 @@ import {
 import { allIdsOfKind } from '@aperas/core/shell/dehydrate';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { ingestLinkedDemo } from '../support/linkedDemo.ts';
+import { oldStoreOf } from '../support/oldFixture.ts';
 
 // The former reads, kept here as the reference: raw quads, no `free()`.
 const rawObj = (term: any): Obj => {
@@ -60,12 +61,15 @@ const rawOrderedChildIds = (store: Store, id: string): string[] => {
 
 describe('store access helpers', () => {
   let fx: FixtureStore;
+  /** The data of the fixture as the old engine holds it (`support/oldFixture.ts`): the frozen helpers act on a raw `Store`. */
+  let store: Store;
   // every (subject id, field, object) in the fixture store, from a raw scan
   let triples: { id: string; field: string; object: Obj; arg: ObjArg | null }[];
   before(() => {
     fx = makeFixtureStore('store_access_demo');
     ingestLinkedDemo(fx);
-    triples = fx.store.match(null, null, null, null).map((q) => {
+    store = oldStoreOf(fx);
+    triples = store.match(null, null, null, null).map((q) => {
       const object = rawObj(q.object);
       const arg: ObjArg | null = object.kind === 'ref' ? { ref: idFromNodeIri(object.iri) } : object.kind === 'literal' ? { lit: object.value } : null;
       return { id: idFromNodeIri(String(q.subject.value)), field: fieldFromPredIri(q.predicate.value), object, arg };
@@ -83,14 +87,14 @@ describe('store access helpers', () => {
   test('allSubjectIds, allIdsOfKind and allObjectRefIds give what the raw scan gives', () => {
     const rawSubjects = new Set<string>();
     const rawRefs = new Set<string>();
-    for (const q of fx.store.match(null, null, null, null)) {
+    for (const q of store.match(null, null, null, null)) {
       if (q.subject.termType === 'NamedNode' && q.subject.value.startsWith(NODE_BASE)) rawSubjects.add(idFromNodeIri(q.subject.value));
       if (q.object.termType === 'NamedNode' && q.object.value.startsWith(NODE_BASE)) rawRefs.add(idFromNodeIri(q.object.value));
     }
-    assert.deepEqual(allSubjectIds(fx.store), [...rawSubjects]);
-    assert.deepEqual([...allObjectRefIds(fx.store)].sort(), [...rawRefs].sort());
+    assert.deepEqual(allSubjectIds(store), [...rawSubjects]);
+    assert.deepEqual([...allObjectRefIds(store)].sort(), [...rawRefs].sort());
     for (const kind of ['BlockNode', 'ArtifactNode', 'FolderNode', 'TreeView', 'Link', 'StringProp']) {
-      assert.deepEqual(allIdsOfKind(fx.store, kind), [...rawSubjects].filter((id) => nodeKindFromId(id) === kind), kind);
+      assert.deepEqual(allIdsOfKind(store, kind), [...rawSubjects].filter((id) => nodeKindFromId(id) === kind), kind);
     }
   });
 
@@ -98,14 +102,14 @@ describe('store access helpers', () => {
     const keys = new Set(triples.map((t) => `${t.id}\u0000${t.field}`));
     for (const key of keys) {
       const [id, field] = key.split('\u0000');
-      const expected = rawObjectsOf(fx.store, id, field);
-      const got = objectsOf(fx.store, id, field);
+      const expected = rawObjectsOf(store, id, field);
+      const got = objectsOf(store, id, field);
       assert.deepEqual(got, expected, `${id} ${field}`);
       const first = expected[0];
-      assert.equal(firstLiteralOf(fx.store, id, field), first.kind === 'literal' ? first.value : undefined, `${id} ${field} first literal`);
-      assert.equal(firstRefIriOf(fx.store, id, field), first.kind === 'ref' ? first.iri : undefined, `${id} ${field} first ref`);
+      assert.equal(firstLiteralOf(store, id, field), first.kind === 'literal' ? first.value : undefined, `${id} ${field} first literal`);
+      assert.equal(firstRefIriOf(store, id, field), first.kind === 'ref' ? first.iri : undefined, `${id} ${field} first ref`);
     }
-    assert.deepEqual(objectsOf(fx.store, 'BlockNode:NOSUCH', 'text'), []);
+    assert.deepEqual(objectsOf(store, 'BlockNode:NOSUCH', 'text'), []);
   });
 
   test('subjectsWhere, firstSubjectWhere and countMatches give the subjects and counts of every field and object', () => {
@@ -116,38 +120,38 @@ describe('store access helpers', () => {
       if (seen.has(key)) continue;
       seen.add(key);
       const objTerm = 'ref' in t.arg ? nodeIri(t.arg.ref) : encodeLiteral(t.arg.lit);
-      const expected = fx.store.match(null, predIri(t.field), objTerm, null).map((m) => idFromNodeIri(String(m.subject.value)));
-      assert.deepEqual(subjectsWhere(fx.store, t.field, t.arg), expected, key);
-      assert.equal(firstSubjectWhere(fx.store, t.field, t.arg), expected[0] ?? null, `${key} first`);
-      assert.equal(countMatches(fx.store, null, t.field, t.arg), expected.length, `${key} count`);
+      const expected = store.match(null, predIri(t.field), objTerm, null).map((m) => idFromNodeIri(String(m.subject.value)));
+      assert.deepEqual(subjectsWhere(store, t.field, t.arg), expected, key);
+      assert.equal(firstSubjectWhere(store, t.field, t.arg), expected[0] ?? null, `${key} first`);
+      assert.equal(countMatches(store, null, t.field, t.arg), expected.length, `${key} count`);
     }
     assert.ok(seen.size > 50, `compared ${seen.size} distinct (field, object) pairs`);
-    assert.equal(firstSubjectWhere(fx.store, 'path', { lit: 'no/such/path.md' }), null);
-    assert.equal(countMatches(fx.store, null, null, null), fx.store.size);
-    assert.equal(countMatches(fx.store, 'BlockNode:NOSUCH', null, null), 0);
+    assert.equal(firstSubjectWhere(store, 'path', { lit: 'no/such/path.md' }), null);
+    assert.equal(countMatches(store, null, null, null), store.size);
+    assert.equal(countMatches(store, 'BlockNode:NOSUCH', null, null), 0);
   });
 
   test('orderedChildIds gives the children in sibling order as before, and nodeExists agrees with the quads', () => {
     const parents = new Set(triples.filter((t) => t.field === PARENT_FIELD && t.object.kind === 'ref').map((t) => idFromNodeIri((t.object as { iri: string }).iri)));
     assert.ok(parents.size >= 3, `expected at least 3 parents, got ${parents.size}`);
     for (const id of parents) {
-      const expected = rawOrderedChildIds(fx.store, id);
+      const expected = rawOrderedChildIds(store, id);
       assert.ok(expected.length > 0);
-      assert.deepEqual(orderedChildIds(fx.store, id), expected, id);
+      assert.deepEqual(orderedChildIds(store, id), expected, id);
     }
-    assert.deepEqual(orderedChildIds(fx.store, 'BlockNode:NOSUCH'), []);
-    for (const id of [...parents].slice(0, 5)) assert.equal(nodeExists(fx.store, id), true);
-    assert.equal(nodeExists(fx.store, 'BlockNode:NOSUCH'), false);
+    assert.deepEqual(orderedChildIds(store, 'BlockNode:NOSUCH'), []);
+    for (const id of [...parents].slice(0, 5)) assert.equal(nodeExists(store, id), true);
+    assert.equal(nodeExists(store, 'BlockNode:NOSUCH'), false);
   });
 
   test('the reads return plain values: no wasm object leaves a helper', () => {
     const [anyParent] = triples.filter((t) => t.field === PARENT_FIELD);
     const rows: unknown[] = [
-      objectsOf(fx.store, anyParent.id, PARENT_FIELD),
-      objectsOf(fx.store, anyParent.id, SIBLING_INDEX_FIELD),
-      subjectsWhere(fx.store, PARENT_FIELD, anyParent.arg!),
-      orderedChildIds(fx.store, idFromNodeIri((anyParent.object as { iri: string }).iri)),
-      allSubjectIds(fx.store).slice(0, 5),
+      objectsOf(store, anyParent.id, PARENT_FIELD),
+      objectsOf(store, anyParent.id, SIBLING_INDEX_FIELD),
+      subjectsWhere(store, PARENT_FIELD, anyParent.arg!),
+      orderedChildIds(store, idFromNodeIri((anyParent.object as { iri: string }).iri)),
+      allSubjectIds(store).slice(0, 5),
     ];
     const walk = (v: unknown): void => {
       if (v === null || typeof v !== 'object') return;

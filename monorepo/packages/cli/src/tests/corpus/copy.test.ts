@@ -1,4 +1,4 @@
-// `makeCorpusCopy()`: the copy is a copy, the real files are not modified, and the scratch roots go away.
+// `makeCorpusCopy()`: the copy is a migrated copy, the real files are not modified, and the scratch roots go away.
 // Reads the real mirror (the files of `AperasKG/Apeiron/`, content mirror and `.state/`) and nothing else.
 // If the service flushes to the real mirror while this runs, the checksum comparison can fail for a reason
 // that is not the helper's; rerun.
@@ -35,17 +35,18 @@ describe('makeCorpusCopy', () => {
       assert.throws(() => assertNotRealMirror(copy.sourceApeironRoot), /real mirror/, 'the real mirror is what the guard refuses');
       assert.doesNotThrow(() => assertNotRealMirror(copy.apeironRoot), 'the copy is not the real mirror');
       assert.notEqual(copy.apeironRoot, copy.sourceApeironRoot);
-      assert.deepEqual(checksums(copy.apeironRoot), realBefore, 'the copy has the same files with the same contents as the real mirror');
+      assert.deepEqual(Object.keys(checksums(copy.apeironRoot)), Object.keys(realBefore), 'the copy has the same files as the real mirror (migrated by the rules, so not the same contents)');
       assert.ok(Object.keys(realBefore).some((f) => f.startsWith('.state')), 'the state mirror is copied too');
       // The process resolves its roots to the copy, and the store holds the copy's data.
       assert.equal(process.env.APERAS_APEIRON_ROOT, copy.apeironRoot);
       assert.equal(process.env.APERAS_ARTIFACTS_ROOT, copy.artifactsRoot);
-      assert.ok(copy.quadCount > 0 && copy.nodeCount > 0 && copy.store.size === copy.quadCount, `the copy was rehydrated: ${copy.quadCount} quads, ${copy.nodeCount} nodes`);
+      assert.ok(copy.recordCount > 0 && copy.documentCount > 0 && copy.load.rejected.length === 0 && copy.load.errors.length === 0, `the copy was loaded: ${copy.recordCount} records, ${copy.documentCount} documents`);
       // Writing to the copy changes the copy and not the real file.
       const victim = join(copy.apeironRoot, 'ArtifactNode.jsonld');
+      const copyBefore = checksums(copy.apeironRoot)['ArtifactNode.jsonld'];
       writeFileSync(victim, readFileSync(victim, 'utf-8') + '\n', 'utf-8');
-      assert.notEqual(checksums(copy.apeironRoot)['ArtifactNode.jsonld'], realBefore['ArtifactNode.jsonld'], 'the write reached the copy');
-      assert.deepEqual(checksums(copy.sourceApeironRoot), realBefore, 'the real files are unchanged by the copy, by rehydrating it and by writing to it');
+      assert.notEqual(checksums(copy.apeironRoot)['ArtifactNode.jsonld'], copyBefore, 'the write reached the copy');
+      assert.deepEqual(checksums(copy.sourceApeironRoot), realBefore, 'the real files are unchanged by the copy, by migrating and loading it and by writing to it');
       const root = copy.root;
       copy.cleanup();
       cleaned = true;

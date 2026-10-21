@@ -3,13 +3,13 @@
  * step 5).
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, type TreeNode } from '@aperas/core/shell/node';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
-export function runPath(store: Store, idArg: string): string {
+export function runPath(store: Db, idArg: string): string {
   const id = resolveDeepPath(store, idArg);
   if (!id) throw new Error(`'${idArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
   const path = (wrap(store, id) as unknown as TreeNode).toPath();

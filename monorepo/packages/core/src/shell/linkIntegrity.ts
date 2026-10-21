@@ -8,12 +8,11 @@
  * `#fragment` anchor) or already tracked separately (`danglingRef`/`retryDanglingRefs`).
  */
 
-import type { Store } from 'oxigraph';
+import { nodeExists, allIdsOfKind, type Db } from './db';
 import { wrap, collectOldWikilinksByBlock, type BlockNode, type Link, type TreeNode } from './node';
-import { allIdsOfKind } from './dehydrate';
 import { collectLinkCodesFromText, type LinkOccurrence } from '../astParser';
 import { resolveBlockLinks, retryDanglingRefs, resolveOneCode } from './artifacts';
-import { nodeKindFromId, nodeExists } from './vocab';
+import { nodeKindFromId } from './nodeIds';
 import { getProps, type HasProps } from '../props';
 import { findByExactPath } from './tree';
 import type { PendingLinkCodes } from '../artifacts';
@@ -107,7 +106,7 @@ function collectAllBlockNodes(node: TreeNode, out: BlockNode[] = []): BlockNode[
  * this block's own `.links` regardless (`issues/linking.md`'s two confirmed incidents both showed
  * "N resolved" at write time with an empty `.links` afterward).
  */
-export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
+export function checkLinkIntegrity(store: Db): LinkIntegrityReport {
   const t0 = Date.now();
   const ids = allIdsOfKind(store, 'BlockNode');
   const t1 = Date.now();
@@ -128,7 +127,7 @@ export function checkLinkIntegrity(store: Store): LinkIntegrityReport {
  *  corpus scan's coverage exactly: `allIdsOfKind(store, 'BlockNode')` excludes `ArtifactNode`s by
  *  kind, and `collectAllBlockNodes` likewise only collects `BlockNode`-kind descendants, so neither
  *  form inspects an artifact root's own text. */
-export function checkArtifactLinkIntegrity(store: Store, artifactId: string): LinkIntegrityReport {
+export function checkArtifactLinkIntegrity(store: Db, artifactId: string): LinkIntegrityReport {
   const artifactNode = wrap(store, artifactId) as unknown as TreeNode;
   return sweepBlocks(store, collectAllBlockNodes(artifactNode));
 }
@@ -136,7 +135,7 @@ export function checkArtifactLinkIntegrity(store: Store, artifactId: string): Li
 /** Walks `.parent` up from any node to the id of the `ArtifactNode`/`FolderNode` that owns it —
  *  `artifactPathOfBlock`'s id-returning counterpart, for callers that need to scope a sweep rather
  *  than name a file. Returns `nodeId` itself when it already is an artifact/folder root. */
-export function owningArtifactId(store: Store, nodeId: string): string | null {
+export function owningArtifactId(store: Db, nodeId: string): string | null {
   let current: TreeNode = wrap(store, nodeId) as unknown as TreeNode;
   for (;;) {
     const kind = nodeKindFromId(current.id);
@@ -157,7 +156,7 @@ function linkTextAt(text: string | undefined, position: number): string | undefi
 /** `block`'s stored `Link`s whose target names no node (`UnresolvedLinkTarget`). A target is looked
  *  up by its id as stored, so an id that has `#id/…` glued onto it (never a node's id) is found here
  *  even though the code in the text resolves "consistently" to that same non-existent id. */
-function unresolvedTargetsOf(store: Store, block: BlockNode, links: Link[], artifactPath: string | null): UnresolvedLinkTarget[] {
+function unresolvedTargetsOf(store: Db, block: BlockNode, links: Link[], artifactPath: string | null): UnresolvedLinkTarget[] {
   const out: UnresolvedLinkTarget[] = [];
   for (const link of links) {
     const targetId = (link.target as unknown as { id?: string } | undefined)?.id ?? null;
@@ -184,7 +183,7 @@ function unresolvedTargetsOf(store: Store, block: BlockNode, links: Link[], arti
   return out;
 }
 
-function sweepBlocks(store: Store, blocks: BlockNode[]): LinkIntegrityReport {
+function sweepBlocks(store: Db, blocks: BlockNode[]): LinkIntegrityReport {
   let totalLiveBlocks = 0;
   let blocksWithLinkText = 0;
   const discrepancies: LinkDiscrepancy[] = [];
@@ -306,7 +305,7 @@ export interface RepairLinkIntegrityResult {
  * leaves a block's already-stored link alone; a *new* bad code is set aside with a warning, `'skip'`,
  * rather than aborting the whole repair). It disappears only when the block's text no longer has it.
  */
-export function repairLinkIntegrity(store: Store, knownReportBefore?: LinkIntegrityReport): RepairLinkIntegrityResult {
+export function repairLinkIntegrity(store: Db, knownReportBefore?: LinkIntegrityReport): RepairLinkIntegrityResult {
   const reportBefore = knownReportBefore ?? checkLinkIntegrity(store);
 
   const discrepanciesByArtifact = new Map<string, LinkDiscrepancy[]>();

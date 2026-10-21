@@ -1,19 +1,14 @@
 // The maps of a literal value (planning/core.md, Batch 10; design/core.md, "Lookups by a literal value"): a profile by its handle, a view by its name,
-// an artifact or a folder by its stored path. Hand-written cases: the reproduction of the issue of the first node found (the reference copy's reader
-// fails it, the primitive does not), the maps built from a loaded fixture (the shared string `default`, the profile named like a view, an absent
+// an artifact or a folder by its stored path. Hand-written cases: the issue of the first node found (the primitive answers the live node), the maps built from a loaded fixture (the shared string `default`, the profile named like a view, an absent
 // key, the two graphs and the kind filter), a tombstoned and a live node at one path built in each order, a key held by two live nodes, each update
 // function, and the update for a write the engine did not take. The random sequences are in `lookups.model.test.ts`.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Store } from 'oxigraph';
 import { MIRROR_GRAPHS } from '@aperas/core/graphConfig';
 import type { Engine, Id } from '@aperas/core/apeironNgn/interface';
 import { createLookups, pathKeyOf, type Lookups } from '@aperas/core/shell/lookups';
 import { createMirrorGraphs } from '@aperas/core/shell/mirrorFiles';
 import { loadMirror } from '@aperas/core/shell/mirrorLoad';
-import { addQuad } from '@aperas/core/shell/storeAccess';
-import { freeWasm } from '@aperas/core/shell/vocab';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { A_DESIGN, A_EMPTY, A_THREAD, F_DOCS, F_ROOT, F_THREADS, P_BARE, P_HUMAN, THREADS, TREE, V_BARE, V_MAIN, V_THREAD, VIEWS, fixtureDocs, idOf, newEngine, scratchRoot, testMapping, textsOf, writeTexts } from '../support/mirrorFixture.ts';
 
 const AT = '2026-10-19T00:00:00.000Z';
@@ -29,23 +24,9 @@ const folder = (n: number, path: string) => ({ id: idOf('FolderNode', n), kind: 
 const profile = (n: number, handle: string, name?: string) => ({ id: idOf('Profile', n), kind: 'Profile', fields: { handle, ...(name !== undefined ? { name } : {}) } });
 const view = (n: number, name: string, owner: Id = idOf('Profile', 1)) => ({ id: idOf('TreeView', n), kind: 'TreeView', fields: { profile: owner, name } });
 
-describe('the reproduction of the first node found at a path', () => {
+describe('the first node found at a path', () => {
   const live = idOf('ArtifactNode', 1);
   const dead = idOf('ArtifactNode', 2);
-
-  test('the reference copy\'s reader takes the first node found, so it returns the tombstoned one when the live one was stored first (goes with the reference copy, Batch 12)', () => {
-    const answers: Record<string, string | null> = {};
-    for (const order of ['live first', 'dead first']) {
-      const store = new Store();
-      for (const id of order === 'live first' ? [live, dead] : [dead, live]) {
-        addQuad(store, id, 'path', { lit: 'a/b.md' });
-        if (id === dead) addQuad(store, id, 'tombstonedAt', { lit: AT });
-      }
-      answers[order] = findByExactPath(store, 'a/b.md');
-      freeWasm(store);
-    }
-    assert.deepEqual(answers, { 'live first': dead, 'dead first': live }, 'the answer depends on the order the store lists the nodes in');
-  });
 
   test('the primitive returns the live one under both orders of building, and under both orders of the tombstone', () => {
     for (const [first, second] of [[live, dead], [dead, live]] as const) {
@@ -271,7 +252,7 @@ describe('the update functions', () => {
     assert.equal(maps.liveAtPath('a.md'), undefined);
   });
 
-  test('subtreeTombstoned drops the nodes of a tombstoned subtree, which have left the containment, and no other', () => {
+  test('tombstoned, told for each member of a tombstoned subtree, drops the nodes that have left the containment, and no other', () => {
     const { engine, maps } = fresh();
     const [root, mid, leaf, other] = [1, 2, 3, 4].map((n) => idOf('FolderNode', n));
     for (const [n, path] of [[1, 'r'], [2, 'r/m'], [3, 'r/m/l'], [4, 'o']] as const) engine.build(TREE, folder(n, path));
@@ -279,7 +260,7 @@ describe('the update functions', () => {
     maps.rebuild();
     engine.tombstoneSubtree(TREE, mid!, AT);
     assert.deepEqual(engine.items(TREE, mid!, 'children'), [], 'the walk from the root would find nothing');
-    maps.subtreeTombstoned(TREE);
+    for (const member of [mid!, leaf!]) maps.tombstoned(TREE, member);
     assert.deepEqual(['r', 'r/m', 'r/m/l', 'o'].map((p) => maps.liveAtPath(p)), [root, undefined, undefined, other]);
   });
 

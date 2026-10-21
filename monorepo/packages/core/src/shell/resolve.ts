@@ -23,10 +23,9 @@
  * `tree.ts`'s `findByExactPath` directly — nothing to port for any of them.
  */
 
-import type { Store } from 'oxigraph';
+import { nodeExists, type Db } from './db';
 import { wrap } from './node';
 import type { TreeNode } from './node';
-import { nodeExists } from './vocab';
 import { findByExactPath } from './tree';
 import { tokenize, pathToNameTokens, type Token } from '../nodeRef';
 
@@ -45,7 +44,7 @@ const APERAS_TREE_PREFIX = 'aperas://tree/';
 
 /** Tiers 1-2 (`directResolve.ts`'s equivalent): a full node id passes through unchanged; a bare
  *  snowflake code is tried as BlockNode, then ArtifactNode, then FolderNode. */
-function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
+function resolveDirectOrSnowflake(store: Db, ref: string): string | null {
   if (FULL_NODE_ID_STRICT_RE.test(ref)) return ref;
   if (!BARE_SNOWFLAKE_RE.test(ref)) return null;
 
@@ -58,14 +57,14 @@ function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
 
 /** §2.1's `..` at the artifact/folder tier: not a field on the node, a property of the stored
  *  `path` string — trim the last segment and re-resolve via `findByExactPath`. */
-function resolveFromFolderPath(store: Store, folderPath: string, restTokens: Token[]): string | null {
+function resolveFromFolderPath(store: Db, folderPath: string, restTokens: Token[]): string | null {
   return resolveTokens(store, [...pathToNameTokens(folderPath), ...restTokens]);
 }
 
 /** §3 entry point: anchor at the true root `FolderNode` and hand off to §4's hop-by-hop descent —
  *  `descend`'s `findChild` call handles folder/file segments exactly like heading segments, so
  *  there's nothing left for this function to special-case ahead of it. */
-function resolveTokens(store: Store, tokens: Token[]): string | null {
+function resolveTokens(store: Db, tokens: Token[]): string | null {
   const rootId = findByExactPath(store, '.');
   if (!rootId) return null;
   return descend(store, rootId, tokens);
@@ -73,7 +72,7 @@ function resolveTokens(store: Store, tokens: Token[]): string | null {
 
 /** §4 + §2.1's nav tokens, starting from an already-resolved node. No holder creation here — a
  *  miss just declines (`return null`), same as any other unresolvable segment. */
-function descend(store: Store, startId: string, tokens: Token[]): string | null {
+function descend(store: Db, startId: string, tokens: Token[]): string | null {
   let currentId = startId;
 
   for (let i = 0; i < tokens.length; i++) {
@@ -135,7 +134,7 @@ export interface ResolveOpts {
  * ordinary miss; *throws* for a genuine usage error (an ambiguous segment, an unresolvable `..`),
  * same distinction `nodeRef.ts`'s `resolveNodeRefOrNull` draws.
  */
-export function resolveDeepPath(store: Store, ref: string, opts: ResolveOpts = {}): string | null {
+export function resolveDeepPath(store: Db, ref: string, opts: ResolveOpts = {}): string | null {
   if (ref.startsWith(APERAS_ID_PREFIX)) return ref.slice(APERAS_ID_PREFIX.length);
   if (ref.startsWith(APERAS_TREE_PREFIX)) return resolveTokens(store, tokenize(ref.slice(APERAS_TREE_PREFIX.length)));
 

@@ -5,7 +5,7 @@
  * off that view's `unfolds` set; omitting it keeps the plain title-only default.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, resolveTreeView, buildRenderTree, type TreeNode, type TreeView, type RenderNodeItem } from '@aperas/core/shell/node';
 import { ensureServiceRunning, request } from './service/serviceClient';
@@ -16,7 +16,7 @@ import { wantsHelp, printHelp } from './kgHelp';
  *  `'text'` case's `aperas://tree/<path>` breadcrumb line, below). */
 export interface TreeRenderResult { path: string | null; tree: RenderNodeItem | null }
 
-export function runTree(store: Store, req: { pathArg?: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload?: boolean }): string[] | TreeRenderResult {
+export function runTree(store: Db, req: { pathArg?: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload?: boolean }): string[] | TreeRenderResult {
   // Unlike `unfold`/`fold` (which always need *some* view to mutate, so an omitted `--view`
   // resolves to the default one), an omitted `--view` here means plain title-only rendering —
   // `view` stays `undefined` rather than falling back to `resolveTreeView`'s own default-view

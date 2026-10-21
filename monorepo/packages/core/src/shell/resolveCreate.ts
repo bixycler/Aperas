@@ -33,10 +33,9 @@
  * machinery, matching the two-tier split the design doc itself draws.
  */
 
-import type { Store } from 'oxigraph';
-import { wrap } from './node';
+import { nodeExists, type Db } from './db';
+import { wrap, createNode } from './node';
 import type { TreeNode, BlockNode, ArtifactNode, FolderNode } from './node';
-import { nodeExists } from './vocab';
 import { findByExactPath } from './tree';
 import { tokenize, pathToNameTokens, type Token } from '../nodeRef';
 import { generateNodeId } from '../snowflake';
@@ -51,7 +50,7 @@ const BARE_SNOWFLAKE_RE = /^[0-9A-HJKMNP-TV-Z]{13}$/;
 const APERAS_ID_PREFIX = 'aperas://id/';
 const APERAS_TREE_PREFIX = 'aperas://tree/';
 
-function resolveDirectOrSnowflake(store: Store, ref: string): string | null {
+function resolveDirectOrSnowflake(store: Db, ref: string): string | null {
   if (FULL_NODE_ID_STRICT_RE.test(ref)) return ref;
   if (!BARE_SNOWFLAKE_RE.test(ref)) return null;
   for (const kind of ['BlockNode', 'ArtifactNode', 'FolderNode']) {
@@ -94,13 +93,13 @@ function hasLaterMdSegment(tokens: Token[], fromIndex: number): boolean {
 /** §3 entry point: hands off entirely to `descend`, starting at the true root `FolderNode` —
  *  `descend` itself now probes/creates every tier (folder/file/heading) uniformly (Aperas-crud-
  *  design.md §8), so there's nothing left for this function to do beyond finding the root. */
-function resolveTokens(store: Store, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
+function resolveTokens(store: Db, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
   const rootId = findByExactPath(store, '.');
   if (!rootId) return null;
   return descend(store, rootId, tokens, opts, trace);
 }
 
-function resolveFromFolderPath(store: Store, folderPath: string, restTokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
+function resolveFromFolderPath(store: Db, folderPath: string, restTokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
   return resolveTokens(store, [...pathToNameTokens(folderPath), ...restTokens], opts, trace);
 }
 
@@ -108,7 +107,7 @@ function resolveFromFolderPath(store: Store, folderPath: string, restTokens: Tok
  *  `opts.titles` tail-aligns against exactly the NAME tokens in `tokens` — every caller passes
  *  only the sub-sequence that constitutes (a piece of) §7.1's `S`, so a fresh per-call count is
  *  always correct. */
-function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
+function descend(store: Db, startId: string, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
   const nameCount = tokens.filter((t) => t.kind === 'name').length;
   const titles = opts.titles ?? [];
   if (titles.length > nameCount) {
@@ -186,7 +185,7 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
         );
       }
       const newId = isArtifact ? `ArtifactNode:${generateNodeId()}` : `FolderNode:${generateNodeId()}`;
-      const created = wrap(store, newId) as unknown as ArtifactNode | FolderNode;
+      const created = createNode(store, newId, { path: newPath }) as unknown as ArtifactNode | FolderNode;
       created.path = newPath;
       created.title = token.text;
       created.holder = true;
@@ -204,7 +203,7 @@ function descend(store: Store, startId: string, tokens: Token[], opts: CreateOpt
     }
 
     const newId = `BlockNode:${generateNodeId()}`;
-    const holder = wrap(store, newId) as unknown as BlockNode;
+    const holder = createNode(store, newId, { under: currentId }) as unknown as BlockNode;
     holder.type = 'heading';
     holder.title = wantTitle;
     holder.children = [];
@@ -233,7 +232,7 @@ export interface ResolveDetail {
  * `min(titles.length, ref's own name-token count)` entries go to `ref`'s own tail and the rest (if
  * any) go to `base`'s own tail.
  */
-export function resolveDeepPathDetail(store: Store, ref: string, opts: CreateOpts = {}): ResolveDetail | null {
+export function resolveDeepPathDetail(store: Db, ref: string, opts: CreateOpts = {}): ResolveDetail | null {
   if (ref.startsWith(APERAS_ID_PREFIX)) return { id: ref.slice(APERAS_ID_PREFIX.length), trace: [] };
   if (ref.startsWith(APERAS_TREE_PREFIX)) {
     const trace: ResolveTraceEntry[] = [];

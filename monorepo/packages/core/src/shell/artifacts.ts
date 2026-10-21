@@ -9,12 +9,10 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Store } from 'oxigraph';
-import { wrap, tombstoneLiveSubtree } from './node';
+import { nodeExists, allIdsOfKind, type Db } from './db';
+import { wrap, createNode, tombstoneLiveSubtree } from './node';
 import type { ArtifactNode, BlockNode, TreeNode, Link, ApeironNode, IngestResult } from './node';
-import { nodeKindFromId, nodeExists } from './vocab';
-import { subjectsWhere } from './storeAccess';
-import { allIdsOfKind } from './dehydrate';
+import { nodeKindFromId } from './nodeIds';
 import { resolveDeepPathDetail } from './resolveCreate';
 import { generateNodeId } from '../snowflake';
 import { listArtifactFiles, getArtifactsDir, expandArtifactPaths, type PendingLinkCodes } from '../artifacts';
@@ -60,7 +58,7 @@ function isBareRelativePath(code: string): boolean {
  *  `resolveDeepPathDetail`'s uniform per-segment `..`) names exactly one file or folder, so — like
  *  the fragment form's own `id/` shortcut — no anchor-matching gate applies, and (matching
  *  `resolveFragmentCode`'s own choice) no holder is ever minted for a target that doesn't exist. */
-function resolveBarePathCode(store: Store, code: string, currentArtifactPath: string | null): string | null {
+function resolveBarePathCode(store: Db, code: string, currentArtifactPath: string | null): string | null {
   if (currentArtifactPath === null) return null;
   const targetPath = relativeToCanonicalArtifactPath(currentArtifactPath, code);
   if (targetPath === null) return null;
@@ -83,7 +81,7 @@ function resolveBarePathCode(store: Store, code: string, currentArtifactPath: st
  *  `false` for a genuinely read-only resolution (`linkIntegrity.ts`'s `checkLinkIntegrity`, which
  *  must never mutate the graph as a side effect of a diagnostic scan; `resolveDeepPathDetail`
  *  itself returns `null` on a miss rather than minting anything once `createHolder` is `false`). */
-export function resolveOneCode(store: Store, code: string, basePath: string | null, artifactPath: string | null, createHolder = true): string | null {
+export function resolveOneCode(store: Db, code: string, basePath: string | null, artifactPath: string | null, createHolder = true): string | null {
   if (isFragmentForm(code)) return resolveFragmentCode(store, code, artifactPath);
   if (isBareRelativePath(code)) return resolveBarePathCode(store, code, artifactPath);
   return resolveDeepPathDetail(store, code, {
@@ -131,7 +129,7 @@ function artifactPathOfBlock(block: BlockNode): string | null {
  *  `stripTrailingHeadingAnchors`); a list item/paragraph has no such prop, so its own `text` is
  *  scanned literally instead — either way, only a *tree*-anchor counts here (an `id/...` fragment
  *  never reaches this check at all — see `resolveFragmentCode` below). */
-function candidateCarriesAnchor(store: Store, candidateId: string, fragment: string): boolean {
+function candidateCarriesAnchor(store: Db, candidateId: string, fragment: string): boolean {
   if (nodeKindFromId(candidateId) !== 'BlockNode') return false;
   const node = wrap(store, candidateId) as unknown as BlockNode;
   const marker = `name='${fragment}' class='aperas-anchor`;
@@ -157,7 +155,7 @@ function candidateCarriesAnchor(store: Store, candidateId: string, fragment: str
  * `createHolder: false` (a coincidental, non-internal anchor-link match must never mint placeholder
  * structure), and the result must pass `candidateCarriesAnchor` to be accepted at all.
  */
-function resolveFragmentCode(store: Store, code: string, currentArtifactPath: string | null): string | null {
+function resolveFragmentCode(store: Db, code: string, currentArtifactPath: string | null): string | null {
   const hashIndex = code.indexOf('#');
   const filePath = code.slice(0, hashIndex);
   const fragment = code.slice(hashIndex + 1);
@@ -185,19 +183,18 @@ function resolveFragmentCode(store: Store, code: string, currentArtifactPath: st
  *  (a filesystem path is either a file or a directory, never both), but a tombstoned entry keeps
  *  its old `path` value forever, so a plain `path`-literal lookup alone (`tree.ts`'s
  *  `findByExactPath`) isn't enough once a path has been reused after a rename/removal. */
-function findLiveByKindAndPath(store: Store, kind: string, path: string): string | null {
-  const matches = subjectsWhere(store, 'path', { lit: path }).filter((id) => nodeKindFromId(id) === kind);
-  return matches.find((id) => !(wrap(store, id) as unknown as ArtifactNode).tombstonedAt) ?? null;
+function findLiveByKindAndPath(store: Db, kind: string, path: string): string | null {
+  return store.maps.liveAtPath(path, { kind }) ?? null;
 }
 
-export function findLiveArtifactByPath(store: Store, path: string): string | null {
+export function findLiveArtifactByPath(store: Db, path: string): string | null {
   return findLiveByKindAndPath(store, 'ArtifactNode', path);
 }
 
 /** Live nodes of `kind` that have a document: a real `ArtifactNode` always has a `path`. An id that is only
  *  named by a parent's `children` is a subject with containment triples and no document (see the same
  *  helper in `folders.ts`); without the `path` check a full `track` listed it for removal as `null`. */
-function allLiveIdsOfKind(store: Store, kind: string): string[] {
+function allLiveIdsOfKind(store: Db, kind: string): string[] {
   return allIdsOfKind(store, kind).filter((id) => {
     const node = wrap(store, id) as unknown as ArtifactNode;
     return !node.tombstonedAt && node.path !== undefined;
@@ -212,9 +209,9 @@ export interface TrackResult {
  *  none is tracked yet — `ArtifactNode.trackFromDisk` (`node.ts`) handles both cases uniformly now
  *  that there's no separate `artifactId` to mint (a brand-new node's `fileHash` just reads
  *  `undefined`, so it's unconditionally "changed"). */
-export function trackArtifact(store: Store, artifactPath: string): TrackResult {
+export function trackArtifact(store: Db, artifactPath: string): TrackResult {
   const existingId = findLiveArtifactByPath(store, artifactPath);
-  const node = (existingId ? wrap(store, existingId) : wrap(store, `ArtifactNode:${generateNodeId()}`)) as unknown as ArtifactNode;
+  const node = (existingId ? wrap(store, existingId) : createNode(store, `ArtifactNode:${generateNodeId()}`, { path: artifactPath })) as unknown as ArtifactNode;
   return node.trackFromDisk(artifactPath);
 }
 
@@ -232,7 +229,7 @@ export interface ArtifactSweepStats {
  *  removal step — a real `ArtifactNode` whose file disappeared from disk is left alone (not
  *  tombstoned) and its path reported via `pendingRemovals` instead, unless `force` is true. Renames
  *  are unaffected — only the removal step itself is gated. */
-export function trackAllArtifacts(store: Store, force: boolean = false): { results: TrackResult[]; sweep: ArtifactSweepStats; pendingRemovals: string[] } {
+export function trackAllArtifacts(store: Db, force: boolean = false): { results: TrackResult[]; sweep: ArtifactSweepStats; pendingRemovals: string[] } {
   const files = listArtifactFiles();
   const diskSet = new Set(files);
 
@@ -312,7 +309,7 @@ export function trackAllArtifacts(store: Store, force: boolean = false): { resul
  *  path) rather than being tombstoned — a scoped call only ever knows about the path(s) it was
  *  given, never enough context to be sure nothing else refers to what's now missing. Removal stays
  *  the full sweep's own decision to make, once that path is safe to run again. */
-export function trackArtifactsScoped(store: Store, paths: string[]): { results: TrackResult[]; sweep: ArtifactSweepStats } {
+export function trackArtifactsScoped(store: Db, paths: string[]): { results: TrackResult[]; sweep: ArtifactSweepStats } {
   const artifactsDir = getArtifactsDir();
   const newPaths = paths.filter((p) => !findLiveArtifactByPath(store, p));
 
@@ -414,7 +411,7 @@ function positionsEqual(a: number[], b: number[]): boolean {
  *  assumption: snowflakes are globally unique across kinds, never reused, so trying each prefix in
  *  turn and taking whichever actually exists resolves either shape correctly, with the by-far-most-
  *  common case (`BlockNode`) checked first. */
-function fullIdForKey(store: Store, key: string): string {
+function fullIdForKey(store: Db, key: string): string {
   if (nodeExists(store, `BlockNode:${key}`)) return `BlockNode:${key}`;
   if (nodeExists(store, `ArtifactNode:${key}`)) return `ArtifactNode:${key}`;
   if (nodeExists(store, `FolderNode:${key}`)) return `FolderNode:${key}`;
@@ -445,7 +442,7 @@ function directIdOfCode(code: string): string | null {
   return DIRECT_ID_RE.test(code) ? code : null;
 }
 
-function idNamesANode(store: Store, id: string): boolean {
+function idNamesANode(store: Db, id: string): boolean {
   try {
     return nodeExists(store, id);
   } catch {
@@ -458,7 +455,7 @@ function idNamesANode(store: Store, id: string): boolean {
  *  shape a link takes when copied back from a preview that appended its own anchor; (2) a direct-id
  *  spelling whose id names no node in `store`. A link to a not-yet-existing *deep path* is neither:
  *  it places a holder, as it always has. Pure and read-only. */
-export function classifyLinkCode(store: Store, code: string): LinkCodeProblem | null {
+export function classifyLinkCode(store: Db, code: string): LinkCodeProblem | null {
   const parts = code.split('#id/');
   const directId = directIdOfCode(code);
   if (parts.length > 2 || (directId !== null && directId.includes('#id/'))) {
@@ -501,7 +498,7 @@ function describeRefusal(r: RefusedLink): string {
  *  `check-links`, which is what the repair of stored bad targets starts from. Read-only; touches nothing
  *  in `store`. */
 export function findRefusedLinks(
-  store: Store,
+  store: Db,
   pending: PendingLinkCodes[],
   oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map()
 ): RefusedLink[] {
@@ -533,7 +530,7 @@ export function findRefusedLinks(
  *  and the repeated fragment or the id that names no node); does nothing when there are none.
  *  Exported so a write path can call it *before* it changes anything. */
 export function assertLinksAcceptable(
-  store: Store,
+  store: Db,
   pending: PendingLinkCodes[],
   oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map()
 ): void {
@@ -551,7 +548,7 @@ export function assertLinksAcceptable(
 export type BadLinkPolicy = 'throw' | 'skip';
 
 export function resolveBlockLinks(
-  store: Store,
+  store: Db,
   pending: PendingLinkCodes[],
   oldLinkTargets: Map<string, Set<string>> = new Map(),
   oldWikilinksByBlock: Map<string, Array<{ id: string; target: string; positions: number[] }>> = new Map(),
@@ -662,7 +659,7 @@ export function resolveBlockLinks(
  * chain of three or more artifacts each newly unblocking the next is vanishingly unlikely in
  * practice, and not worth the added complexity to cover today.
  */
-export function retryDanglingRefs(store: Store, force: boolean = false): { reingested: string[]; failed: IngestFailure[] } {
+export function retryDanglingRefs(store: Db, force: boolean = false): { reingested: string[]; failed: IngestFailure[] } {
   const reingested: string[] = [];
   const failed: IngestFailure[] = [];
   for (const id of allLiveIdsOfKind(store, 'ArtifactNode')) {
@@ -702,7 +699,7 @@ export function retryDanglingRefs(store: Store, force: boolean = false): { reing
  *
  *  `bypassUnchangedCheck`: passed straight through to `ingestFromDisk` — see its own doc comment
  *  (`node.ts`); `retryDanglingRefs` below is the one caller that ever passes `true`. */
-export function ingestArtifact(store: Store, artifactPath: string, force: boolean = false, bypassUnchangedCheck: boolean = false): (IngestResult & { linkResolution: LinkResolutionStats; pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }> }) | null {
+export function ingestArtifact(store: Db, artifactPath: string, force: boolean = false, bypassUnchangedCheck: boolean = false): (IngestResult & { linkResolution: LinkResolutionStats; pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }> }) | null {
   const existingId = findLiveArtifactByPath(store, artifactPath);
   if (!existingId) {
     throw new Error(`Artifact '${artifactPath}' is not tracked yet — run track first.`);
@@ -735,7 +732,7 @@ export interface IngestFailure {
  *  instead — matching the pattern this module already uses for `untracked` below — means a bad
  *  file no longer silently aborts the rest of the batch, and the caller gets an accurate report of
  *  exactly what succeeded and what didn't instead of a mid-loop throw. */
-function ingestOne(store: Store, file: string, force: boolean, ingested: Array<{ path: string } & SingleIngestResult>, failed: IngestFailure[]): void {
+function ingestOne(store: Db, file: string, force: boolean, ingested: Array<{ path: string } & SingleIngestResult>, failed: IngestFailure[]): void {
   try {
     const result = ingestArtifact(store, file, force);
     if (result) ingested.push({ path: file, ...result });
@@ -750,7 +747,7 @@ function ingestOne(store: Store, file: string, force: boolean, ingested: Array<{
  *  `kg:ingest`) to pick it up. `untracked` is returned rather than logged directly because this
  *  runs inside the shared service process, spawned with `stdio: 'ignore'` (`serviceClient.ts`) —
  *  anything printed here is discarded; only the CLI client that issued the request can surface it. */
-export function ingestAllArtifacts(store: Store, force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; untracked: string[]; failed: IngestFailure[] } {
+export function ingestAllArtifacts(store: Db, force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; untracked: string[]; failed: IngestFailure[] } {
   const files = listArtifactFiles();
   const ingested: Array<{ path: string } & SingleIngestResult> = [];
   const untracked: string[] = [];
@@ -770,7 +767,7 @@ export function ingestAllArtifacts(store: Store, force: boolean = false): { inge
  *  Assumes every path is already tracked — `kgIngest.ts`'s `runIngest` tracks each one first (and
  *  rebuilds the folder tree) *before* calling this, specifically so a brand-new file's own folder
  *  is already attached by the time this ingests it and resolves its wikilinks against it. */
-export function ingestArtifacts(store: Store, paths: string[], force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; failed: IngestFailure[] } {
+export function ingestArtifacts(store: Db, paths: string[], force: boolean = false): { ingested: Array<{ path: string } & SingleIngestResult>; failed: IngestFailure[] } {
   const ingested: Array<{ path: string } & SingleIngestResult> = [];
   const failed: IngestFailure[] = [];
   for (const path of expandArtifactPaths(paths)) {

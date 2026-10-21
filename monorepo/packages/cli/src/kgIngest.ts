@@ -23,7 +23,7 @@
  * callers: it answers no to every prompt without reading stdin, so nothing is removed and nothing blocks.
  */
 
-import type { Store } from 'oxigraph';
+import type { Db } from '@aperas/core/shell/db';
 import { expandArtifactPaths } from '@aperas/core/artifacts';
 import { runTrack, type TrackResult } from './kgTrack';
 import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact, retryDanglingRefs } from '@aperas/core/shell/artifacts';
@@ -37,7 +37,7 @@ import { wantsHelp, printHelp } from './kgHelp';
  *  the FolderNode structural sweep (`ingestFolderTree`). Without it, either one can hold back a
  *  removal it would otherwise have applied, reporting it instead so the CLI client can confirm
  *  interactively (or the caller can just retry with `force: true`). */
-export function runIngest(store: Store, paths: string[] = [], track: boolean = false, force: boolean = false) {
+export function runIngest(store: Db, paths: string[] = [], track: boolean = false, force: boolean = false) {
   const trackResult: TrackResult | null = track ? runTrack(store, paths, force) : null;
 
   // Every explicit path must be tracked *before* the folder tree gets rebuilt below — otherwise a

@@ -236,11 +236,14 @@ describe('render commands', () => {
       const hidden = parseTree(lines(runTree(fx.store, { pathArg: 'cmd_demo/beta.md', ...plain })));
       assert.equal(hidden.some((e) => e.id === c.betaOther), false);
       assert.ok(hidden.some((e) => e.id === c.betaSec), 'its sibling is still there');
+      // A tombstone leaves the list of its container (design/core.md, "Tombstones"): in place there is nothing to show, with or without the flag.
       const shown = parseTree(lines(runTree(fx.store, { pathArg: 'cmd_demo/beta.md', noHolders: false, showTombstoned: true })));
-      const line = shown.find((e) => e.id === c.betaOther);
-      assert.ok(line, 'shown');
-      assert.ok(line.rest.endsWith('(tombstoned)'), line.line);
-      assert.equal(shown.length, hidden.length + 1);
+      assert.equal(shown.some((e) => e.id === c.betaOther), false, 'a removed child is not in its container');
+      assert.equal(shown.length, hidden.length);
+      // A tombstone is shown by its id, tagged.
+      const byId = parseTree(lines(runTree(fx.store, { pathArg: c.betaOther, noHolders: false, showTombstoned: true })));
+      assert.equal(byId.length, 1);
+      assert.ok(byId[0].rest.endsWith('(tombstoned)'), byId[0].line);
     });
 
     test('show prints a tombstoned node with its tombstonedAt, and a live node without one', () => {
@@ -248,15 +251,14 @@ describe('render commands', () => {
       assert.equal(runShow(fx.store, c.betaSec).tombstonedAt, undefined);
     });
 
-    test('unfold refuses a tombstoned node unless showTombstoned, and hides its tombstoned children by default', () => {
+    test('unfold refuses a tombstoned node unless showTombstoned, and does not preview a removed child, which has left its container', () => {
       refuses(() => runUnfold(fx.store, c.betaOther, null), /is tombstoned — pass --tombstoned/);
       const direct = runUnfold(fx.store, c.betaOther, null, true);
       assert.ok(direct.title.endsWith('(tombstoned)'), direct.title);
       const live = runUnfold(fx.store, c.beta, null);
       assert.deepEqual((live.children as Array<{ id: string }>).map((k) => k.id), [c.betaSec], 'the removed child is not previewed');
       const all = runUnfold(fx.store, c.beta, null, true);
-      assert.deepEqual(sorted((all.children as Array<{ id: string }>).map((k) => k.id)), sorted([c.betaSec, c.betaOther]));
-      assert.ok((all.children as Array<{ id: string; text: string }>).find((k) => k.id === c.betaOther)!.text.endsWith('(tombstoned)'));
+      assert.deepEqual((all.children as Array<{ id: string }>).map((k) => k.id), [c.betaSec], 'with the flag too: the removed child is in no list');
     });
 
     test('a link to a removed node is hidden from the preview of its block unless showTombstoned', () => {

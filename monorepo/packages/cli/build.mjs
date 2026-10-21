@@ -64,6 +64,8 @@ console.log(`[build:aperas] Copied ${join(webDir, 'dist')} -> ${join(distDir, 'w
 cpSync(join(cliDir, 'README.md'), join(distDir, 'README.md'));
 
 const repoRoot = join(cliDir, '..', '..', '..'); // packages/cli -> packages -> monorepo -> repo root
+cpSync(join(repoRoot, 'LICENSE'), join(distDir, 'LICENSE'));
+
 const BUNDLED_SKILLS = ['aperas', 'aperas-orchestrator', 'aperas-grapher', 'aperas-coder', 'kg-doc-ingest'];
 for (const skill of BUNDLED_SKILLS) {
   cpSync(join(repoRoot, 'skills', skill), join(distDir, 'skills', skill), { recursive: true });
@@ -73,6 +75,7 @@ console.log(`[build:aperas] Copied skills/{${BUNDLED_SKILLS.join(',')}} -> ${joi
 const distPkg = {
   name: 'aperas',
   version: cliPkg.version,
+  license: cliPkg.license || 'Unlicense',
   type: 'module',
   bin: { aperas: './aperas.js' },
   dependencies: { oxigraph: oxigraphVersion },

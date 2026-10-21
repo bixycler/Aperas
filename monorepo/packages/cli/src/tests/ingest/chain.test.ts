@@ -1,7 +1,8 @@
 // The ingestion chain on one demo artifact (steps 3, 4, 5, 5b, 5c, 5d, 5e, 5f of the legacy suite): track
 // and ingest, read the tree back, re-ingest an edited file and reconcile, then the wikilink checks that
 // each later re-ingestion builds on (links extraction, regeneration without duplicates, deduplicated
-// links with positions, identity kept across an unrelated edit, identity kept across position drift).
+// links with positions, identity kept across an unrelated edit, identity kept across position drift, and the ids of a
+// link's position props kept across an unrelated edit).
 // The cases share one store, one artifact file and the ids found along the way, and run in order, so the
 // file is the unit: a single case cannot run alone.
 import { describe, test, before, after } from 'node:test';
@@ -9,20 +10,20 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from 'oxigraph';
-import { WIKILINK_PREDICATE } from '@aperas/core/astParser';
 import { getArtifactsDir } from '@aperas/core/artifacts';
 import { getProps } from '@aperas/core/props';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
 import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/shell/node';
-import { runAddBlockLink } from '../../kgLink';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { sampleMarkdown } from '../support/sampleMarkdown.ts';
 import { collectIds, findByText } from '../support/tree.ts';
 
-type LinkView = { target: BlockNode; predicate: string; id: string };
+type LinkView = { target: BlockNode; id: string };
 const linksOf = (store: Store, blockId: string): LinkView[] => ((wrap(store, blockId) as unknown as BlockNode).links as unknown as LinkView[] | undefined) ?? [];
+/** The ids of the `position` props of a `Link`, in the order the store gives them (a case compares them as a set). */
+const positionPropIds = (link: LinkView): string[] => ((link as unknown as { props?: Array<{ key: string; id?: string }> }).props ?? []).filter((p) => p.key === 'position').map((p) => p.id as string);
 const targetId = (l: LinkView): string => (l.target as unknown as { id: string }).id;
 
 describe('ingestion chain', () => {
@@ -37,9 +38,11 @@ describe('ingestion chain', () => {
   let editedMarkdown = '';
   let thirdMarkdown = '';
   let dedupMarkdown = '';
+  let latestMarkdown = '';
   let linkBlockId = '';
   let dedupBlockId = '';
   let wikilinkIdsByTarget = new Map<string, string>();
+  let positionPropIdsByTarget = new Map<string, string[]>();
   let dedupLinkId = '';
   let positions: number[] = [];
 
@@ -102,7 +105,6 @@ describe('ingestion chain', () => {
     assert.equal(links.length, 2, 'two resolved links (self-link and the forward reference); the dangling one is skipped');
     const selfLink = links.find((l) => targetId(l) === rootId);
     assert.ok(selfLink, `a resolved Link targeting ${rootId}`);
-    assert.equal(selfLink.predicate, WIKILINK_PREDICATE);
     const holderLink = links.find((l) => targetId(l) !== rootId);
     assert.ok(holderLink, 'a second resolved Link targeting a newly created holder');
     const holder = holderLink.target as unknown as { holder?: boolean; title?: string };
@@ -110,18 +112,16 @@ describe('ingestion chain', () => {
     assert.equal(holder.title, 'NotYetWritten');
   });
 
-  test('5c: wikilink Links are regenerated, not duplicated; a manual link survives', () => {
-    // A manual reference, distinct from any [[wikilink]]: it must survive a re-ingestion untouched.
-    assert.ok(runAddBlockLink(fx.store, linkBlockId, rootId).resolved, 'the manual link resolves against the artifact itself');
+  test('5c: wikilink Links are regenerated, not duplicated', () => {
     // The paragraph's own text is unchanged, a heading added elsewhere forces a real file-hash change.
     thirdMarkdown = editedMarkdown + `\n\n## Yet Another Section\n\nUnrelated content, just to force a real file-hash change elsewhere.`;
     const result = ingest(thirdMarkdown);
     assert.ok(result?.reconciliation, 'a reconciliation report on the third ingestion');
     const links = linksOf(fx.store, linkBlockId);
-    assert.equal(links.filter((l) => l.predicate === WIKILINK_PREDICATE).length, 2, 'wikilink Links regenerated, not duplicated');
-    assert.equal(links.filter((l) => l.predicate === 'references').length, 1, 'the manual link survives');
+    assert.equal(links.length, 2, 'wikilink Links regenerated, not duplicated');
     // Captured here, checked again in 5e.
-    wikilinkIdsByTarget = new Map(links.filter((l) => l.predicate === WIKILINK_PREDICATE).map((l) => [targetId(l), l.id]));
+    wikilinkIdsByTarget = new Map(links.map((l) => [targetId(l), l.id]));
+    positionPropIdsByTarget = new Map(links.map((l) => [targetId(l), positionPropIds(l)]));
   });
 
   test('5d: the same target twice in one paragraph is one Link carrying two positions', () => {
@@ -131,7 +131,7 @@ describe('ingestion chain', () => {
     const summary = findByText(wrap(fx.store, demoId), 'Mentioned twice');
     assert.ok(summary, 'the paragraph mentioning the same target twice');
     dedupBlockId = summary.id;
-    const dedupWikilinks = linksOf(fx.store, dedupBlockId).filter((l) => l.predicate === WIKILINK_PREDICATE);
+    const dedupWikilinks = linksOf(fx.store, dedupBlockId);
     assert.equal(dedupWikilinks.length, 1, 'two mentions of one target collapse into one Link');
     positions = getProps(dedupWikilinks[0] as any, 'position').map(Number).sort((a, b) => a - b);
     assert.equal(positions.length, 2, `one 'position' prop per occurrence: ${JSON.stringify(positions)}`);
@@ -145,7 +145,7 @@ describe('ingestion chain', () => {
   test('5e: a wikilink Link keeps its id across a later, unrelated re-ingestion', () => {
     // 5d added a section elsewhere without touching the self-link paragraph. (The forward reference to
     // "NotYetWritten" is not checked: each ingestion mints a new holder for it, so its target changes.)
-    const selfLink = linksOf(fx.store, linkBlockId).find((l) => l.predicate === WIKILINK_PREDICATE && targetId(l) === rootId);
+    const selfLink = linksOf(fx.store, linkBlockId).find((l) => targetId(l) === rootId);
     assert.ok(selfLink, 'the self-link wikilink Link');
     assert.equal(selfLink.id, wikilinkIdsByTarget.get(rootId));
   });
@@ -154,14 +154,29 @@ describe('ingestion chain', () => {
     // An inserted clause shifts both occurrences without changing the target; `target` is the identity key.
     const driftedMarkdown = dedupMarkdown.replace('Mentioned twice: a [first mention]', 'Mentioned twice: with an inserted clause first, a [first mention]');
     assert.notEqual(driftedMarkdown, dedupMarkdown, 'the dedup paragraph text actually changed');
+    latestMarkdown = driftedMarkdown;
     const result = ingest(driftedMarkdown);
     assert.ok(result?.reconciliation, 'a reconciliation report on the fifth ingestion');
-    const dedupWikilinks = linksOf(fx.store, dedupBlockId).filter((l) => l.predicate === WIKILINK_PREDICATE);
+    const dedupWikilinks = linksOf(fx.store, dedupBlockId);
     assert.equal(dedupWikilinks.length, 1);
     assert.equal(dedupWikilinks[0].id, dedupLinkId);
     const text = (wrap(fx.store, dedupBlockId) as unknown as BlockNode).text as unknown as string;
     const drifted = getProps(dedupWikilinks[0] as any, 'position').map(Number).sort((a, b) => a - b);
     for (const position of drifted) assert.equal(text[position], '[', `drifted position ${position} still lands on '['`);
     assert.notDeepEqual(drifted, positions, 'the positions actually shifted');
+  });
+
+  test('5g: the position props of a wikilink Link keep their ids across a later ingestion of the same paragraph text', () => {
+    // The paragraph of 5b has not changed since 5c captured the ids; a heading added elsewhere forces a real file-hash change.
+    const before = positionPropIdsByTarget.get(rootId) ?? [];
+    assert.ok(before.length > 0 && before.every((id) => typeof id === 'string' && id.length > 0), `the self-link has position props with ids: ${JSON.stringify(before)}`);
+    const text = (wrap(fx.store, linkBlockId) as unknown as BlockNode).text as unknown as string;
+    const result = ingest(latestMarkdown + `\n\n## One More Section\n\nUnrelated content again, so that the file hash moves and the paragraph is not.\n`);
+    assert.ok(result?.reconciliation, 'a reconciliation report on the sixth ingestion');
+    assert.equal((wrap(fx.store, linkBlockId) as unknown as BlockNode).text as unknown as string, text, 'the paragraph text is unchanged');
+    const selfLink = linksOf(fx.store, linkBlockId).find((l) => targetId(l) === rootId);
+    assert.ok(selfLink, 'the self-link wikilink Link');
+    assert.equal(selfLink.id, wikilinkIdsByTarget.get(rootId), 'the Link id is the same');
+    assert.deepEqual([...positionPropIds(selfLink)].sort(), [...before].sort(), 'its position props are the same nodes, not rewritten ones');
   });
 });

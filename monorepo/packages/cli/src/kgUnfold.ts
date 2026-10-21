@@ -110,7 +110,7 @@ function previewChildren(store: Store, node: TreeNode, showTombstoned: boolean):
     .filter((link) => showTombstoned || !isTombstoned((link.target as unknown as { tombstonedAt?: string } | undefined)))
     .map((link) => {
       const target = link.target as unknown as TreeNode | undefined;
-      return { id: link.id, label: 'Link', text: target ? `${link.predicate as unknown as string} → ${target.id}  ${previewText(target, { full: true })}${tombstoneTag(target as unknown as { tombstonedAt?: string })}${foldTag(target)}` : '<no target>' };
+      return { id: link.id, label: 'Link', text: target ? `→ ${target.id}  ${previewText(target, { full: true })}${tombstoneTag(target as unknown as { tombstonedAt?: string })}${foldTag(target)}` : '<no target>' };
     });
   return [...children, ...links];
 }
@@ -141,11 +141,11 @@ export function runUnfold(store: Store, pathArg: string, view: TreeView | null, 
     return {
       id,
       label: 'Link',
-      title: `${link.predicate as unknown as string} → ${target?.id ?? '<no target>'}`,
+      title: `→ ${target?.id ?? '<no target>'}`,
       // The breadcrumb is the *target*'s path, not the Link's own (a Link has none — same reason
       // `resolveUnfoldRef` above can't route one through `resolveDeepPath`'s path-segment
       // machinery): the target is what's actually being revealed here, same as its own line below
-      // getting the full/uncapped treatment while the Link's is just the `predicate → target` summary.
+      // getting the full/uncapped treatment while the Link's is just the `→ target` summary.
       path: target ? target.toPath() : null,
       // Unfolding a Link reveals its target — that's the thing actually being unfolded here, same
       // as the plain-`TreeNode` branch below: its own line gets the full/uncapped treatment, and

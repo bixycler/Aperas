@@ -1,5 +1,5 @@
-// A demo artifact with links, for the tests that need a live block carrying wikilinks and a manual link
-// (view state, garbage collection, unlinking). Each test file builds its own copy in its own fixture store.
+// A demo artifact with links, for the tests that need a live block carrying wikilinks
+// (view state, garbage collection). Each test file builds its own copy in its own fixture store.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
@@ -7,17 +7,16 @@ import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
 import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode } from '@aperas/core/shell/node';
-import { runAddBlockLink } from '../../kgLink';
 import type { FixtureStore } from './fixture.ts';
 import { sampleMarkdown } from './sampleMarkdown.ts';
 import { findByText } from './tree.ts';
 
 export interface LinkedDemo {
   demoId: string;
-  /** The artifact's own id, the target of the self-link and of the manual link. */
+  /** The artifact's own id, the target of the self-link. */
   rootId: string;
   title: string;
-  /** The paragraph holding the self-link, the forward reference and the dangling link; it also carries a manual `references` link to the root when `manualLink` was asked for. */
+  /** The paragraph holding the self-link, the forward reference and the dangling link. */
   linkBlockId: string;
   /** The paragraph that mentions the same target twice. */
   dedupBlockId: string;
@@ -26,10 +25,9 @@ export interface LinkedDemo {
 /**
  * Ingests `sampleMarkdown`, then the same file with two more sections (a self-link, a forward reference, a
  * dangling link, and a paragraph that mentions one target twice), the way a document is edited and
- * re-ingested. With `manualLink` (the default) it then adds a manual `kg:link` from the link paragraph to
- * the artifact itself.
+ * re-ingested.
  */
-export function ingestLinkedDemo(fx: FixtureStore, { manualLink = true } = {}): LinkedDemo {
+export function ingestLinkedDemo(fx: FixtureStore): LinkedDemo {
   const path = `${fx.demoDir}/demo.md`;
   const file = join(getArtifactsDir(), path);
   const ingest = (markdown: string) => {
@@ -50,8 +48,5 @@ export function ingestLinkedDemo(fx: FixtureStore, { manualLink = true } = {}): 
   if (!linkBlock) throw new Error('Expected to find the paragraph containing the self-link.');
   const dedupBlock = findByText(reingested, 'Mentioned twice');
   if (!dedupBlock) throw new Error('Expected to find the paragraph mentioning the same target twice.');
-  if (manualLink && !runAddBlockLink(fx.store, linkBlock.id, rootId).resolved) {
-    throw new Error('Expected the manual kg:link to resolve against the artifact itself.');
-  }
   return { demoId, rootId, title: artifact.title as unknown as string, linkBlockId: linkBlock.id, dedupBlockId: dedupBlock.id };
 }

@@ -60,8 +60,8 @@ describe('removal prompt', () => {
     }
   });
 
-  test('project and link keep their own prompts', () => {
-    for (const file of ['kgProject.ts', 'kgLink.ts']) {
+  test('project keeps its own prompt', () => {
+    for (const file of ['kgProject.ts']) {
       assert.doesNotMatch(readFileSync(join(srcDir, file), 'utf-8'), /--no-prompt/, `${file} is unchanged`);
     }
   });

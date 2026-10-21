@@ -28,7 +28,7 @@ describe('tree view state', () => {
   test('8: a tombstoned link target is hidden from the tree by default and marked when shown', () => {
     // Tombstoning clears a dead node's own children, links and props but never other documents' references to
     // it, so the render has to hide it (and tag it once `showTombstoned` opts back in). Built directly against
-    // the store: a standalone victim node plus a manual link to it from an already-ingested block.
+    // the store: a standalone victim node plus a wikilink to it from an already-ingested block.
     const victimId = `BlockNode:${generateNodeId()}`;
     const victim = wrap(fx.store, victimId) as unknown as BlockNode;
     victim.type = 'heading';
@@ -49,6 +49,7 @@ describe('tree view state', () => {
     const tombstonedLine = shownLines.find((l) => l.includes(victimId));
     assert.ok(tombstonedLine, `a rendered line for the tombstoned target ${victimId} with showTombstoned`);
     assert.ok(tombstonedLine.includes('(tombstoned)'), `that line is tagged '(tombstoned)': ${JSON.stringify(tombstonedLine)}`);
+    assert.ok(tombstonedLine.includes(`${victimLinkId}  [Link]  → ${victimId}`), `a Link line names its target and no predicate: ${JSON.stringify(tombstonedLine)}`);
   });
 
   test('9: deleting an unfolded Link sweeps it out of the view\'s unfolds', () => {

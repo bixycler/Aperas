@@ -101,12 +101,10 @@ export const FOLDER_NODE_SHAPE: ClassShape = {
  *  design.md §7), applied here so a wikilink-derived `Link` can carry one `{key: 'position',
  *  value: '<offset>'}` prop per occurrence of its target in the owning block's text (a real
  *  multiset — reusing already-proven embed/mint/dehydrate machinery instead of a bespoke
- *  `positions` field), and so a manual `kg:link` entry has the same slot available for whatever
- *  it wants to carry later. `SHAPE` tables don't rely on the class hierarchy for composition
+ *  `positions` field). `SHAPE` tables don't rely on the class hierarchy for composition
  *  (fully flattened per class), so this one extra field doesn't need `Link extends BaseNode`. */
 export const LINK_SHAPE: ClassShape = {
   target: { cardinality: 'one', storageKind: 'reference' },
-  predicate: { cardinality: 'one' },
   props: { cardinality: 'set', storageKind: 'embed' },
 };
 

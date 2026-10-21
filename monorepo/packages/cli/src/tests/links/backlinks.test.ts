@@ -2,7 +2,7 @@
 // hand-built blocks: a target and a paragraph that references it. Independent of every other case.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, type BlockNode } from '@aperas/core/shell/node';
+import { wrap, type BlockNode, type ApeironNode } from '@aperas/core/shell/node';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runBacklinks } from '../../kgBacklinks';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
@@ -19,7 +19,7 @@ describe('backlinks', () => {
     const referrerId = `BlockNode:${generateNodeId()}`;
     const referrer = wrap(fx.store, referrerId) as unknown as BlockNode;
     referrer.type = 'paragraph'; referrer.title = 'Referrer Para'; referrer.text = 'See the target above.'; referrer.children = [];
-    referrer.addLink('references', targetId);
+    referrer.links = [referrer.mintWikilink(targetId, [0])] as unknown as ApeironNode[];
 
     const results = runBacklinks(fx.store, targetId, false);
     assert.equal(results.length, 1, `exactly 1 backlink to ${targetId}`);

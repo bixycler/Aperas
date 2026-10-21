@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { predIri } from '@aperas/core/shell/vocab';
 import { makeCorpusCopy, type CorpusCopy } from '../support/corpus.ts';
 
 const CHILD = join(import.meta.dirname, '..', 'support', 'roundtripChild.ts');
@@ -30,7 +31,12 @@ interface ReadResult {
   danglingCount: number;
   linesBefore: number;
   linesAfter: number;
-  firstDifference?: string;
+  /** The quads of the first store that the second lacks, how many of them are the `predicate` quad of a `Link`, the rest (up to 5) and the quads only the second holds (up to 5). */
+  missingCount: number;
+  missingLinkPredicateCount: number;
+  missingNotLinkPredicate: string[];
+  extraCount: number;
+  extra: string[];
 }
 
 /** Runs one phase of the child in a new process and returns its `RESULT` line. */
@@ -61,7 +67,10 @@ describe('corpus: round trip of the whole mirror', () => {
   // Two children, each started fresh: the first rehydrates the copy and dehydrates it into a scratch directory, the second
   // rehydrates that directory and compares its quads with the first's. So the second rehydrate does not run in a process that has
   // just dehydrated a store of the same size; this file tests the round trip's fidelity, not that cost.
-  test('7: a round trip through a scratch directory keeps every quad', () => {
+  // The old engine no longer writes the `predicate` of a `Link` (the manual links are gone), but the real mirror is not yet
+  // migrated: its `Link`s still carry a `predicate`. So the round trip differs from the original by exactly those quads and by
+  // nothing else. The migration at the cutover removes the `predicate`s from the mirror, and with them the difference.
+  test('7: a round trip through a scratch directory keeps every quad but the predicate of a Link', () => {
     scratchDir = mkdtempSync(join(tmpdir(), 'apeironngn-verify-'));
     const w = runChild<WriteResult>('write', copy.apeironRoot, scratchDir);
     console.log(`round trip, child 1: rehydrate ${w.timings.rehydrate1} ms, dehydrate ${w.timings.dehydrate} ms`);
@@ -70,9 +79,15 @@ describe('corpus: round trip of the whole mirror', () => {
     assert.equal(w.quadCount, copy.store.size, 'the child rehydrated the same quads as this process did');
     assert.ok(Object.values(w.counts).some((n) => Number(n) > 0) && Object.values(w.stateCounts).some((n) => Number(n) > 0), `both mirrors were dehydrated: ${JSON.stringify(w.counts)}, state ${JSON.stringify(w.stateCounts)}`); // new
     assert.deepEqual(r.danglingRefs, [], `zero dangling references after a round trip (${r.danglingCount})`);
-    assert.equal(r.quadCountAfter, w.quadCount, 'the round-tripped store has the same quad count as the original');
-    // new: the same quads, not only the same number of them
-    assert.equal(r.linesAfter, r.linesBefore);
-    assert.equal(r.firstDifference, undefined, `the round-tripped store holds the same quads; first difference: ${r.firstDifference}`);
+    // The `predicate` quads of the mirror's `Link`s, counted from the mirror (not a constant).
+    const predicateQuads = [...copy.store.match(null, predIri('predicate'), null, null)];
+    assert.ok(predicateQuads.every((q) => q.subject.value.includes(':links:Link:')), 'every `predicate` quad of the mirror is on a Link');
+    assert.equal(r.quadCountAfter, w.quadCount - predicateQuads.length, 'the round-tripped store is short by the `predicate` quads and no other');
+    assert.equal(r.linesBefore, w.quadCount);
+    assert.equal(r.linesAfter, r.linesBefore - predicateQuads.length);
+    assert.equal(r.missingCount, predicateQuads.length, 'the quads the round trip lost number the mirror\'s `predicate` quads');
+    assert.equal(r.missingLinkPredicateCount, r.missingCount, `every missing quad is the \`predicate\` of a Link; first others: ${JSON.stringify(r.missingNotLinkPredicate)}`);
+    assert.deepEqual(r.missingNotLinkPredicate, []);
+    assert.equal(r.extraCount, 0, `the round trip adds no quad; first: ${JSON.stringify(r.extra)}`);
   });
 });

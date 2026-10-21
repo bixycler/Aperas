@@ -425,17 +425,6 @@ export function findLeadInSpliceOffset(text: string, lang: DocLang): number | nu
   return findLeadInColonOffset(paragraphNode, lang);
 }
 
-/**
- * Reserved `Link.predicate` for every `Link` auto-extracted from `[[wikilink]]` syntax
- * (Aperas-interactive-summarization-design.md §7) — distinguishes them from `kg:link`-authored
- * `Link`s, which always use `"references"`. The distinction matters structurally, not just for
- * display: `resolveBlockLinks` (artifacts.ts) regenerates the *complete* current set of
- * wikilink-derived `Link`s from a block's text on every ingest — it needs to tell those apart
- * from manually-curated ones so it only ever replaces its own kind, never a `kg:link` entry, and
- * never leaves a stale wikilink-derived `Link` (or a growing pile of duplicates) behind.
- */
-export const WIKILINK_PREDICATE = '[[wikilink]]';
-
 /** A `link` node's visible text, flattened from its children's `value`s — see `LinkOccurrence.text`. */
 function linkLabel(linkNode: any): string {
   const parts: string[] = [];

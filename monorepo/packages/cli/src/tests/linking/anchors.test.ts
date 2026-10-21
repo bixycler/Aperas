@@ -9,7 +9,7 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { WIKILINK_PREDICATE, HEADING_TREE_ANCHOR_PROP } from '@aperas/core/astParser';
+import { HEADING_TREE_ANCHOR_PROP } from '@aperas/core/astParser';
 import { getProp, getProps } from '@aperas/core/props';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { findByExactPath } from '@aperas/core/shell/tree';
@@ -118,13 +118,13 @@ Should not resolve: [nope](linking-a.md#h1-heading/unanchored-heading).
     const bId = findByExactPath(fx.store, bPath)!;
     const bArtifact = wrap(fx.store, bId) as unknown as ArtifactNode;
     const referrer = findHeadingByTitle(bArtifact, 'Cross-File Referrer');
-    const referrerLinks = ((referrer.links as unknown as Link[] | undefined) ?? []).filter((l) => l.predicate === WIKILINK_PREDICATE);
+    const referrerLinks = (referrer.links as unknown as Link[] | undefined) ?? [];
     assert.equal(referrerLinks.length, 1, 'the 3 equivalent link forms dedupe onto exactly 1 target (same block)');
     assert.equal((referrerLinks[0].target as unknown as { id: string } | undefined)?.id, h2Id, "the deduped link's target is H2");
     assert.equal(getProps(referrerLinks[0] as unknown as { props?: any[] }, 'position').length, 3, 'one occurrence position per link form is folded onto the one deduped Link');
 
     const gateReferrer = findHeadingByTitle(bArtifact, 'Anchor Gate Referrer');
-    const gateLinks = ((gateReferrer.links as unknown as Link[] | undefined) ?? []).filter((l) => l.predicate === WIKILINK_PREDICATE);
+    const gateLinks = (gateReferrer.links as unknown as Link[] | undefined) ?? [];
     assert.ok(!gateLinks.some((l) => (l.target as unknown as { id: string } | undefined)?.id === unanchoredHeading.id),
       "a #fragment link matching an unanchored heading's title-derived slug is rejected by the anchor-matching gate");
   });

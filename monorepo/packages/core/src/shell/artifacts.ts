@@ -18,7 +18,7 @@ import { allIdsOfKind } from './dehydrate';
 import { resolveDeepPathDetail } from './resolveCreate';
 import { generateNodeId } from '../snowflake';
 import { listArtifactFiles, getArtifactsDir, expandArtifactPaths, type PendingLinkCodes } from '../artifacts';
-import { parseMarkdownTree, extractAbstract, stripInlineAnchors, WIKILINK_PREDICATE, HEADING_TREE_ANCHOR_PROP } from '../astParser';
+import { parseMarkdownTree, extractAbstract, stripInlineAnchors, HEADING_TREE_ANCHOR_PROP } from '../astParser';
 import { getProp, getProps, type PropEntry } from '../props';
 import { matchLeftoverByAbstract } from '../reconcile';
 import { relativeToCanonicalArtifactPath } from '../leadingPart';
@@ -401,8 +401,8 @@ function positionsEqual(a: number[], b: number[]): boolean {
  * grounds to mint a fresh `Link` — a matched `Link`'s `props` are instead rewritten in place to the
  * fresh position list when they differ, keeping its id (and anything referencing it, e.g.
  * `TreeView.unfolds`) stable. A target with no old match at all mints a fresh `Link`. `block.links`
- * is written exactly once at the end with the full surviving set (manual `kg:link`s untouched,
- * wikilink `Link`s either reused-and-repositioned or freshly minted) — `writeField`'s own embed-diff
+ * is written exactly once at the end with the full surviving set (wikilink `Link`s either
+ * reused-and-repositioned or freshly minted) — `writeField`'s own embed-diff
  * cleanup deletes whatever old wikilink `Link` isn't in that final set, i.e. one whose target
  * disappeared from this block's text entirely.
  */
@@ -608,9 +608,6 @@ export function resolveBlockLinks(
     }
 
     const oldWikilinks = oldWikilinksByBlock.get(blockId) ?? [];
-    const manualLinkIds = ((block.links as unknown as Link[] | undefined) ?? [])
-      .filter((l) => l.predicate !== WIKILINK_PREDICATE)
-      .map((l) => l.id);
     const wikilinkIds = [...positionsByTarget.entries()].map(([target, positions]) => {
       const reused = oldWikilinks.find((w) => w.target === target);
       if (!reused) return block.mintWikilink(target, positions);
@@ -622,15 +619,14 @@ export function resolveBlockLinks(
         // `position` is metadata *on* that identity, not part of it). Updates in place: `Link.
         // props` is itself `storageKind: 'embed'` (Step 8), so this assignment's own embed-diff
         // (`writeField`) deletes the stale position `StringProp`s and mints the fresh ones, without
-        // touching the `Link`'s own id or its `target`/`predicate`.
+        // touching the `Link`'s own id or its `target`.
         (wrap(store, reused.id) as unknown as Link).props = positions.map(
           (position) => ({ '@type': 'StringProp', key: 'position', value: String(position) })
         ) as unknown as ApeironNode[];
       }
       return reused.id;
     });
-    const finalLinkIds = [...manualLinkIds, ...wikilinkIds];
-    block.links = finalLinkIds.length ? (finalLinkIds as unknown as ApeironNode[]) : undefined;
+    block.links = wikilinkIds.length ? (wikilinkIds as unknown as ApeironNode[]) : undefined;
 
     if (!targetSetsEqual(oldLinkTargets.get(blockId) ?? new Set(), newTargets)) changed++;
   }

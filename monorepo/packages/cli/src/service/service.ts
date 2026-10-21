@@ -85,7 +85,6 @@ import { runInsert } from '../kgInsert';
 import { runUpdate } from '../kgUpdate';
 import { runRemove } from '../kgRemove';
 import { runRetype } from '../kgRetype';
-import { runLinkCandidates, runAddBlockLink, runRemoveBlockLink } from '../kgLink';
 import { runProject } from '../kgProject';
 import { runTree } from '../kgTree';
 import { runPath } from '../kgPath';
@@ -599,21 +598,6 @@ export function main(): void {
         dirty = true;
         if (req.flush) flushIfDirty();
         return withLinkCheck(result, artifactId, before);
-      }
-      case 'linkCandidates':
-        if (req.reload) reloadStore();
-        return runLinkCandidates(store, req.pathArg, req.recursive, req.all);
-      case 'addBlockLink': {
-        const result = runAddBlockLink(store, req.blockId, req.targetRef);
-        if (result.resolved) dirty = true;
-        if (req.flush) flushIfDirty();
-        return result;
-      }
-      case 'removeBlockLink': {
-        const result = runRemoveBlockLink(store, req.blockId, req.targetRef);
-        if (result.removed) dirty = true;
-        if (req.flush) flushIfDirty();
-        return result;
       }
       case 'project': {
         if (req.reload) reloadStore();

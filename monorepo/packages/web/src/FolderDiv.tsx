@@ -531,7 +531,7 @@ function LinkRow(props: FolderDivProps & { item: Extract<RenderItem, { kind: 'li
         <Show when={l().mode === 'no-target'}>
           <div class="fd-line fd-dangling">
             <span class="fd-kind">🔗</span>
-            <span class="fd-title">{l().predicate} — no target</span>
+            <span class="fd-title">link — no target</span>
             <CopyIdButton id={l().id} />
           </div>
         </Show>

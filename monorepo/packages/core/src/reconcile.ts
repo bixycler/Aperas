@@ -117,20 +117,13 @@ function leafKey(node: any): string {
 /**
  * A matched pair (reconcileNode / detectCrossParentMoves) is content-equivalent by construction
  * — Stage A/B only match on exact key equality — so besides `blockId`, every operator/runtime-set
- * field on the old node (`links` via `kg:link`) should survive onto its replacement rather than
+ * field on the old node should survive onto its replacement rather than
  * reset to the fresh parse's defaults. `unfolded` no longer exists as a per-node field to carry
  * forward (Aperas-treeview-design.md — fold state moved to `TreeView.unfolds`, per-view rather
  * than per-node). `links` here is `oldNode`'s already-resolved ref-id strings, carried forward
- * wholesale (this function has no `Store` to check — it's deliberately engine-agnostic, so it
- * can't tell a manual `kg:link` apart from a previously-resolved `[[wikilink]]` by id alone).
- * `node.ts`'s `BlockNode.hydrateFromParsed`, which *does* have a `Store`, is where that split
- * actually happens: it drops every carried-forward wikilink-predicate entry before writing, since
- * `resolveBlockLinks` (`artifacts.ts`) regenerates those fresh right after — only a manual link
- * genuinely survives this carry-forward through to the write. An earlier version of this doc
- * comment claimed `resolveBlockLinks` "merges" its fresh wikilinks onto whatever this function
- * leaves here — it never actually did (plain `BaseNode.addLink` append, no dedup), so every
- * re-ingestion of a block with an unchanged `[[wikilink]]` added one more duplicate `Link`
- * forever; fixed by the drop in `hydrateFromParsed` instead of a merge here.
+ * wholesale (this function has no `Store` to check — it's deliberately engine-agnostic).
+ * Every `Link` is a resolved `[[wikilink]]`, and `resolveBlockLinks` (`artifacts.ts`) reuses or
+ * replaces each carried-forward one right after, writing `.links` once with the final set.
  *
  * `title` is deliberately *not* carried forward any more — `kg:title` (an out-of-band, graph-only
  * override decoupled from the text) was removed in favor of the explicit lead-in term

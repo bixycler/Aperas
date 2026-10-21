@@ -39,7 +39,6 @@ export interface RenderLinkItem {
   kind: 'link';
   id: string;
   depth: number;
-  predicate: string;
   targetId?: string;
   targetTitle?: string;
   targetDisplayLabel?: string;

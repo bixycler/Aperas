@@ -164,9 +164,11 @@ describe('runner', () => {
     assert.match(r.stdout, /^usage: run\.mjs/);
     assert.match(r.stdout, /^ {2}essential +5 s +\d+ files?/m);
     assert.match(r.stdout, /^ {2}commit +60 s +\d+ files?/m);
+    assert.match(r.stdout, /^ {2}models +30 s +\d+ files?/m);
+    assert.match(r.stdout, /^ {2}tools +30 s +1 file/m);
     assert.match(r.stdout, /^ {2}demand +no budget +\d+ files?/m);
-    assert.match(r.stdout, /^ {2}runner +1 file/m);
-    for (const name of ['essential', 'commit', 'demand']) {
+    assert.match(r.stdout, /^ {2}runner +2 files/m);
+    for (const name of ['essential', 'commit', 'models', 'tools', 'demand']) {
       const line = lines(r.stdout).find((l) => l.startsWith(`  ${name} `));
       assert.ok(line, name);
       assert.match(line, /(\.|\.\.\.)$/, `${name}: description ends with a period or an ellipsis`);

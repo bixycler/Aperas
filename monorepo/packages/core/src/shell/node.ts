@@ -45,7 +45,7 @@ import { SHAPE_BY_KIND, type FieldSpec, type ClassShape, BLOCK_NODE_SHAPE, ARTIF
 import { allIdsOfKind } from './dehydrate';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
-import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, WIKILINK_PREDICATE, extractLangFromFrontmatter, parseFrontmatterFields, collectLinkCodesFromText, extractAnchorNames, HEADING_TREE_ANCHOR_PROP, type ParsedBlockNode, type DocLang } from '../astParser';
+import { parseMarkdownTree, extractAbstract, truncateForPreview, truncateForPreviewWithHint, extractLangFromFrontmatter, parseFrontmatterFields, collectLinkCodesFromText, extractAnchorNames, HEADING_TREE_ANCHOR_PROP, type ParsedBlockNode, type DocLang } from '../astParser';
 import { reconcileTree, type ReconciliationStats } from '../reconcile';
 import { getArtifactsDir, computeFileHash, countBlocks, extractLinkCodes, type PendingLinkCodes } from '../artifacts';
 import { serializeBlock, renderChildren, withFrontmatter } from '../project';
@@ -160,8 +160,8 @@ function clearField(store: Store, id: string, field: string): void {
 /** Mints a fresh embedded subdocument (`StringProp` under `props`, `Link` under `links`) and
  *  writes its own literal fields as quads on its own new id — `${parentId}/(props|links)/${type}/
  *  <snowflake>`. Generic per `SHAPE_BY_KIND`, not type-specific: this is what lets a fresh `Link`
- *  literal (`{ predicate, target }`) mint correctly on its own now that `links` is `storageKind:
- *  'embed'` (`BaseNode.addLink`), the same path `props` already used. */
+ *  literal (`{ target }`) mint correctly on its own now that `links` is `storageKind:
+ *  'embed'`, the same path `props` already used. */
 function mintEmbedded(store: Store, parentId: string, field: string, entry: Record<string, unknown>): string {
   const type = (entry['@type'] as string) ?? (field === 'links' ? 'Link' : 'StringProp');
   const newId = `${parentId}:${field}:${type}:${generateNodeId()}`;
@@ -171,8 +171,8 @@ function mintEmbedded(store: Store, parentId: string, field: string, entry: Reco
     if (k === '@type' || k === '@id' || k === 'id') continue;
     if (v === null || v === undefined) continue;
     // Reference-kind fields checked *before* the literal branch below, regardless of whether `v`
-    // is a bare id string or an object carrying one (`idOf` handles both) -- `BaseNode.addLink`'s
-    // normal calling convention (`{ predicate, target: <string id> }`) passes a plain string for
+    // is a bare id string or an object carrying one (`idOf` handles both) -- a `{ target: <string id> }`
+    // literal passes a plain string for
     // `target`, which a string-first check would wrongly encode as a literal instead of a node
     // reference (silently breaking every freshly-minted `Link.target`: it decodes back as a bare
     // string on read, not a wrapped node, so `.target.id`/backlinks on it come back `undefined`).
@@ -199,7 +199,7 @@ function mintEmbedded(store: Store, parentId: string, field: string, entry: Reco
  *  WASM-memory note, a *permanent* one: WebAssembly linear memory only grows, so a peak this avoided
  *  can never be handed back to the OS short of restarting the process regardless. Confirmed live as
  *  the mechanism behind exactly this leak, pre-generalization: a wikilink `Link` dropped by
- *  `BlockNode.hydrateFromParsed` on re-ingestion kept its own `target`/`predicate`/`props` quads
+ *  `BlockNode.hydrateFromParsed` on re-ingestion kept its own `target`/`props` quads
  *  sitting orphaned, `Link.props`'s own `position` `StringProp`s included (one level of embedding
  *  deeper than anything `props`/`links` previously nested). */
 function hardDeleteNode(store: Store, id: string): void {
@@ -336,24 +336,16 @@ export class BaseNode extends ApeironInstance {
   declare tombstonedAt?: string;
   declare holder?: boolean;
 
-  /** The direct payoff of `links` becoming `storageKind: 'embed'`: a fresh `{ predicate, target }`
-   *  literal mints correctly on its own now, so this replaces the old "mint a `Link/<snowflake>`
-   *  id, `wrap()` it, set `target`/`predicate`, attach by id" workaround `kg:link`/
-   *  `resolveBlockLinks` both used to need. */
-  addLink(predicate: string, target: string): void {
-    this.links = [...(this.links ?? []), { predicate, target } as unknown as ApeironNode];
-  }
-
   /** `resolveBlockLinks`'s (`artifacts.ts`) own way of minting a wikilink-derived `Link` — one per
    *  distinct target, never one per raw `[[code]]` occurrence (Aperas-apeironngn-design.md §4
    *  Step 8: `.links` is a real traversal axis alongside `children`, so two edges to the same
    *  target is a graph-correctness smell, not just a display nit). `positions` (block-relative
    *  offsets, one per occurrence of `target` in this block's text) become one `{key: 'position',
    *  value: '<offset>'}` prop per entry. Reintroduces the "mint id, wrap, set fields" half of the
-   *  workaround `addLink`'s own doc comment says `links` becoming `storageKind: 'embed'` retired —
-   *  necessarily so this time: `mintEmbedded` only writes an entry's own top-level reference/
-   *  literal fields, it doesn't recurse into a nested `Set`-typed one, so a single-call
-   *  `{predicate, target, props}` literal can't mint its `props` correctly.
+   *  workaround `links` becoming `storageKind: 'embed'` retired — necessarily so:
+   *  `mintEmbedded` only writes an entry's own top-level reference/literal fields, it doesn't
+   *  recurse into a nested `Set`-typed one, so a single-call `{target, props}` literal can't mint
+   *  its `props` correctly.
    *
    *  Deliberately does *not* attach the fresh `Link` to `this.links` itself (the "attach by id"
    *  half of that old workaround) — `resolveBlockLinks` calls this only for a target/position-set
@@ -366,7 +358,6 @@ export class BaseNode extends ApeironInstance {
   mintWikilink(target: string, positions: number[]): string {
     const linkId = `${this.id}:links:Link:${generateNodeId()}`;
     const link = wrap(this.store, linkId) as unknown as Link;
-    link.predicate = WIKILINK_PREDICATE;
     link.target = target as unknown as TreeNode;
     link.props = positions.map((position) => ({ '@type': 'StringProp', key: 'position', value: String(position) })) as unknown as ApeironNode[];
     return linkId;
@@ -544,8 +535,8 @@ export class BlockNode extends TreeNode {
    *  forward from its old match by `reconcile.ts`'s `carryForwardFields`) — `this` is already
    *  `wrap()`ped at that id, nothing left to mint here.
    *
-   *  Carries `links` forward unconditionally now — manual `kg:link` *and* wikilink `Link`s alike.
-   *  Earlier this dropped every carried-forward `WIKILINK_PREDICATE` entry unconditionally here
+   *  Carries `links` forward unconditionally now.
+   *  Earlier this dropped every carried-forward wikilink `Link` unconditionally here
    *  (the fix for a real duplication bug: `resolveBlockLinks`, run right after this, used to
    *  unconditionally append a fresh wikilink `Link` on top of whatever survived, so an unchanged
    *  `[[wikilink]]` grew one more duplicate every re-ingestion). That fix is now one layer further
@@ -843,8 +834,8 @@ export interface IngestResult {
 /** Applies one `reconcile.ts` tombstone record — an unmatched old subtree node, already fully
  *  detached from `finalTree`'s own structure, so this only needs to set its own fields (`children:
  *  []` clears whatever it used to point at; nothing re-attaches it). `links`/`props` both cleared
- *  too — a dead, unaddressable node has no more use for a manual `kg:link`, a resolved wikilink
- *  `Link`, or a prop than for its own children (Aperas-apeironngn-design.md §5's tombstone-
+ *  too — a dead, unaddressable node has no more use for a resolved wikilink
+ *  `Link` or a prop than for its own children (Aperas-apeironngn-design.md §5's tombstone-
  *  consistency open question — `props` was the one field this left live, inconsistently with the
  *  stated rationale for the other two). */
 export function applyTombstone(store: Store, tombstone: any): void {
@@ -1064,7 +1055,7 @@ export function collectOldWikilinksByBlock(
   recursive = true
 ): void {
   const links = (node.links as unknown as Link[] | undefined) ?? [];
-  const wikilinks = links.filter((l) => l.predicate === WIKILINK_PREDICATE && l.target);
+  const wikilinks = links.filter((l) => l.target);
   if (wikilinks.length > 0) {
     out.set(
       node.key,
@@ -1198,12 +1189,11 @@ export class FolderNode extends TreeNode {
   }
 }
 
-/** Leaf subdoc — data only (`target`/`predicate`/`props`), never a `this` for any migrated
+/** Leaf subdoc — data only (`target`/`props`), never a `this` for any migrated
  *  function. `props` (Aperas-apeironngn-design.md §4 Step 8) is a `LINK_SHAPE` field, not
  *  inherited — `Link` deliberately doesn't extend `BaseNode`. */
 export class Link extends ApeironInstance {
   declare target?: TreeNode;
-  declare predicate?: string;
   declare props?: ApeironNode[];
 }
 
@@ -1640,7 +1630,6 @@ export interface RenderLinkItem {
   kind: 'link';
   id: string;
   depth: number;
-  predicate: string;
   targetId?: string;
   targetTitle?: string;
   /** Every mode except `no-target` — there's no target to label there. Lets a UI show what *kind* of
@@ -1831,9 +1820,8 @@ function buildLinkItem(
 ): RenderLinkItem | null {
   const link = wrap(store, linkId) as unknown as Link;
   const targetId = (link.target as unknown as TreeNode | undefined)?.id;
-  const predicate = (link.predicate as unknown as string) ?? '';
   if (!targetId) {
-    return { kind: 'link', id: linkId, depth, predicate, mode: 'no-target', children: [] };
+    return { kind: 'link', id: linkId, depth, mode: 'no-target', children: [] };
   }
   const targetNode = wrap(store, targetId) as unknown as TreeNode;
   if (shouldHideTombstoned(targetNode as unknown as { tombstonedAt?: string }, opts)) return null;
@@ -1859,7 +1847,7 @@ function buildLinkItem(
     // they're always all emitted) this position's `hiddenCount` is never omitted when the target
     // has any real content of its own.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', id: linkId, depth, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'preview', hiddenCount, tombstonedAt, children: [] };
   }
   const canon = zs.canonical.get(targetId);
   const isCanonicalHere = canon?.kind === 'link' && canon.linkId === linkId;
@@ -1884,7 +1872,7 @@ function buildLinkItem(
       if (item) children.push(item);
     }
     return {
-      kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText,
+      kind: 'link', id: linkId, depth, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText,
       mode: 'expanded', starred: starred.has(linkId), zoomPath, tombstonedAt, children,
     };
   }
@@ -1895,10 +1883,10 @@ function buildLinkItem(
     // at — unlike `home`/`link`, `upward` never claims a position anywhere). Flat, non-recursing
     // reference instead, same shape as a rule-a preview, tagged to explain why it stops here.
     const hiddenCount = targetNode.treeChildren.length + ((targetNode.links as ApeironNode[] | undefined)?.length ?? 0);
-    return { kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
+    return { kind: 'link', id: linkId, depth, targetId, targetTitle, targetDisplayLabel, abstract: targetAbstract, text: targetFullText, mode: 'outside-view', hiddenCount, tombstonedAt, children: [] };
   }
   const pointerTo = canon?.kind === 'home' ? (targetNode.toPath() ?? targetId) : `${canon?.linkId ?? targetId} (link)`;
-  return { kind: 'link', id: linkId, depth, predicate, targetId, targetTitle, targetDisplayLabel, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
+  return { kind: 'link', id: linkId, depth, targetId, targetTitle, targetDisplayLabel, mode: 'pointer', pointerTarget: pointerTo, tombstonedAt, children: [] };
 }
 
 /** `RenderItem`'s text serializer — the sole remaining consumer of the string format `buildNodeItem`/
@@ -1933,11 +1921,11 @@ function toText(items: RenderItem[], lines: string[]): void {
     }
     // item.kind === 'link'
     const tomb = item.tombstonedAt ? '  (tombstoned)' : '';
-    const head = `${indent}${item.id}  [Link]  ${item.predicate} → ${item.targetId}  `;
+    const head = `${indent}${item.id}  [Link]  → ${item.targetId}  `;
     const preview = item.abstract !== undefined ? `${item.targetTitle}  ║  ${item.text ?? item.abstract}` : (item.targetTitle ?? '');
     switch (item.mode) {
       case 'no-target':
-        lines.push(`${indent}${item.id}  [Link]  ${item.predicate}  <no target>`);
+        lines.push(`${indent}${item.id}  [Link]  <no target>`);
         break;
       case 'preview': {
         const foldTag = (item.hiddenCount ?? 0) > 0 ? `  [+${item.hiddenCount}]` : '';
@@ -2143,8 +2131,7 @@ export function backlinks(store: Store, id: string, field: string): ApeironNode[
  *  since a live `BlockNode` is always reachable transitively through its owning artifact — and walks
  *  `treeChildren` (structural descent, kind-agnostic) plus each visited node's own `Link.target`s
  *  (the one non-structural edge a tombstoned node can still be kept alive by, e.g. a still-live
- *  manual `kg:link` elsewhere — which is exactly why `kg:unlink`, not just this GC, is needed to ever
- *  let such a node go). Anything tombstoned that's never marked — including a whole disconnected
+ *  wikilink `Link` elsewhere). Anything tombstoned that's never marked — including a whole disconnected
  *  dead cluster — is genuinely unreachable and gets `hardDeleteNode`d, which also sweeps its own
  *  `unfolds` entries via `removeDanglingUnfolds`.
  *

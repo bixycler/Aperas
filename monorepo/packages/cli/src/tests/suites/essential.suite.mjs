@@ -12,4 +12,5 @@ export default defineSuite(import.meta.url, [
   '../links/refusals.test.ts',
   '../engine/boundary.test.ts',
   '../linking/anchors.test.ts',
+  '../commands/render.test.ts',
 ], 5);

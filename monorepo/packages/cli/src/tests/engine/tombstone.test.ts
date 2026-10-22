@@ -6,11 +6,12 @@
 // embedded nodes. The random sequences are in `tombstone.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
 import { APERAS_SCHEMA } from '@aperas/core/shell/aperasSchema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { noNode, refused, refusedInShape } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { checkTree } from '../support/engineTree.ts';
 
@@ -32,8 +33,6 @@ const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
   assert.deepEqual(read(o), expected, `oracle: ${why}`);
 };
 const sameSet = (read: (x: Engine) => readonly (string | number | boolean)[], expected: string[], why: string): void => same((x) => sorted(read(x) as string[]), sorted(expected), why);
-const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
 const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
   assert.throws(() => run(e), check, `engine: ${why}`);
   assert.throws(() => run(o), check, `oracle: ${why}`);
@@ -168,16 +167,15 @@ describe('tombstone', () => {
     assert.deepEqual([e, o].map((s) => snapshot(s, ids)), before, 'nothing changed');
   });
 
-  test('a node with no record is Undecided of Existence, even with incoming pairs, and no bucket moves; exists and size stay Undecided', () => {
+  test('a node with no record is refused as no node, even with incoming pairs, and no bucket moves; exists and size do not count it', () => {
     const watcher = mk('Leaf'); const ghost = mint('Leaf');
-    bothThrow((s) => s.tombstone(G, ghost, AT), undecided('Existence'), 'an id nobody created');
+    bothThrow((s) => s.tombstone(G, ghost, AT), noNode, 'an id nobody created');
     both((s) => s.addPair(G, watcher, 'likes', ghost));
     sameSet((s) => s.subjectsOf(G, 'likes', ghost), [watcher], 'built: the bucket waits');
-    bothThrow((s) => s.tombstone(G, ghost, AT), undecided('Existence'), 'a node that incoming pairs name');
+    bothThrow((s) => s.tombstone(G, ghost, AT), noNode, 'a node that incoming pairs name');
     assert.deepEqual(inspectEngine(e).waitingIds(), [ghost], 'no bucket moved');
-    bothThrow((s) => s.tombstone(G, mint('Loose'), AT), undecided('Existence'), 'a kind with no marker but no record: the record is checked first');
-    bothThrow((s) => s.exists(G, watcher), undecided('Existence'), 'exists');
-    bothThrow((s) => s.size(G), undecided('Existence'), 'size');
+    bothThrow((s) => s.tombstone(G, mint('Loose'), AT), noNode, 'a kind with no marker but no record: the record is checked first');
+    same((s) => [s.exists(G, watcher), s.exists(G, ghost), s.size(G)], [true, false, 1], 'exists and size read the records');
   });
 
   test('the checks come in the order: the role, the record, the marker of the kind', () => {
@@ -185,13 +183,13 @@ describe('tombstone', () => {
     const x = createEngine(noRole); const y = new Oracle(x.schema);
     const leaf = mint('Leaf');
     for (const s of [x, y]) {
-      assert.throws(() => s.tombstone(G, leaf, AT), refused, 'no role and no record: the role first');
+      assert.throws(() => s.tombstone(G, leaf, AT), refusedInShape, 'no role and no record: the role first');
       s.createNode(G, leaf, 'Leaf');
       assert.throws(() => s.tombstone(G, leaf, AT), refused, 'no role');
       assert.throws(() => s.tombstoneSubtree(G, leaf, AT), refused, 'no role, a subtree');
-      assert.throws(() => s.tombstoneSubtree(G, mint('Leaf'), AT), refused, 'no role and no record: the role first, a subtree');
+      assert.throws(() => s.tombstoneSubtree(G, mint('Leaf'), AT), refusedInShape, 'no role and no record: the role first, a subtree');
     }
-    bothThrow((s) => s.tombstone(G, mint('Loose'), AT), undecided('Existence'), 'the record before the kind');
+    bothThrow((s) => s.tombstone(G, mint('Loose'), AT), noNode, 'the record before the kind');
   });
 
   test('a schema with no containment role: the tombstone works and leaves no container, because there is none', () => {
@@ -310,11 +308,11 @@ describe('tombstoneSubtree', () => {
     assert.deepEqual(inspectEngine(e).rootIds(G), rootsBefore, 'and the tree is as it was');
   });
 
-  test('a node with no record is Undecided of Existence', () => {
-    bothThrow((s) => s.tombstoneSubtree(G, mint('Box'), AT), undecided('Existence'), 'an id nobody created');
+  test('a node with no record is refused as no node', () => {
+    bothThrow((s) => s.tombstoneSubtree(G, mint('Box'), AT), noNode, 'an id nobody created');
     const ghost = mint('Box'); const watcher = mk('Leaf');
     both((s) => s.addPair(G, watcher, 'likes', ghost));
-    bothThrow((s) => s.tombstoneSubtree(G, ghost, AT), undecided('Existence'), 'incoming pairs but no record');
+    bothThrow((s) => s.tombstoneSubtree(G, ghost, AT), noNode, 'incoming pairs but no record');
   });
 
   test('a leaf is a subtree of one, and a Loose alone is Refused', () => {

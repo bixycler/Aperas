@@ -1,8 +1,8 @@
 // The write layer (planning/core.md, Batch 11 steps 1 and 2; design/core.md, "Lookups by a literal value", "Enforcement"): the one object whose functions
 // are the writes of the engine that the shell makes, each followed by the call that tells the maps of Batch 10 (`lookups.ts`). The shell writes through it
 // and through nothing else, so that a map is told for every write and told only for a write the engine took.
-//   - Each function calls the engine first and the map after: the engine throws before the map is touched when it refuses (`Refused`, or `Undecided` on
-//     Enforcement or Existence, which pass through to the caller: the shell obeys the schema, so a throw is a finding), and a map is never updated for a
+//   - Each function calls the engine first and the map after: the engine throws before the map is touched when it refuses (`Refused`, which passes
+//     through to the caller: the shell obeys the schema and writes to nodes that have a record, so a throw is a finding), and a map is never updated for a
 //     write that did not happen. The maps read the node back from the engine, so a call for a write the engine took in part leaves them as the engine is.
 //   - `createNode` is the one function that does not take a graph: a new node takes the graph of `graphOfNewNode` (a profile in the main graph, a view in
 //     the views graph, an artifact or a folder by its path, a block and what a node owns in the graph of the node they are built under). It gives the graph.
@@ -120,6 +120,7 @@ export function createWriteLayer(engine: Engine, maps: Lookups, touch: Touch = (
       for (const member of members) maps.tombstoned(graph, member);
     },
     removeNode(graph, id) {
+      if (!engine.exists(graph, id)) return; // no record: the engine changes nothing, and so no file and no map
       engine.removeNode(graph, id);
       touch(undefined);
       maps.removed(graph, id);

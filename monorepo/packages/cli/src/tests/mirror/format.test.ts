@@ -4,15 +4,9 @@
 // reads the records out of the engine and rebuilds nothing from pairs. The shuffle cases build the same records in many orders.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { BuildRecord, Engine } from '@aperas/core/apeironNgn/interface';
 import { dumpDocuments, dumpText } from '@aperas/core/shell/mirrorDump';
-import { dehydrateToJsonLd } from '@aperas/core/shell/dehydrate';
-import { rehydrateStore } from '@aperas/core/shell/store';
-import { freeWasm } from '@aperas/core/shell/vocab';
 import { rng } from '../support/prng.ts';
 import { FORMAT_ORDER, THREADS, TREE, idOf, newEngine } from '../support/mirrorFixture.ts';
 
@@ -222,34 +216,5 @@ describe('the derived entry', () => {
     assert.equal(withContainer!.parent, root);
     assert.equal('parent' in without!, false);
     assert.equal('parent' in dumpDocuments(engine, THREADS, 'FolderNode', [THREADS])[0]!, false, 'the bridge reads the graphs the caller names and no others');
-  });
-});
-
-describe('the same on the reference copy (goes with it, Batch 12)', () => {
-  test('dehydrate sorts with localeCompare: under a collation that reads digit runs as numbers its file is out of code-point order; the dump is not', () => {
-    // The issue's Symptom is "none observed": every collation of the mirror's ASCII ids agrees with the code points. A collation that is
-    // numeric (a runtime whose default locale carries it) is one that does not, so this simulates one for the length of the case.
-    const ids = ['BlockNode:00T5MX0000010', 'BlockNode:00T5MX000009Z', 'BlockNode:00T5MX0000011'];
-    const inCodePoint = [...ids].sort(codePoint);
-    const dir = mkdtempSync(join(tmpdir(), 'aperas-format-'));
-    const original = String.prototype.localeCompare;
-    try {
-      mkdirSync(join(dir, 'in'));
-      for (const kind of ['ArtifactNode', 'FolderNode', 'Profile']) writeFileSync(join(dir, 'in', `${kind}.jsonld`), '[]\n');
-      writeFileSync(join(dir, 'in', 'BlockNode.jsonld'), JSON.stringify(ids.map((id) => ({ '@id': id, '@type': 'BlockNode', title: id, type: 'p', children: [] }))));
-      const reference = rehydrateStore(join(dir, 'in'));
-      mkdirSync(join(dir, 'out'));
-      String.prototype.localeCompare = function (this: string, that: string): number { return original.call(this, that, 'en', { numeric: true }); };
-      dehydrateToJsonLd(reference.store, join(dir, 'out'));
-      const referenceOrder = (JSON.parse(readFileSync(join(dir, 'out', 'BlockNode.jsonld'), 'utf8')) as { '@id': string }[]).map((d) => d['@id']);
-      assert.notDeepEqual(referenceOrder, inCodePoint, 'the reference copy\'s file follows the collation');
-      freeWasm(reference.store);
-
-      const engine = engineWith(ids.map((id) => ({ id, kind: 'BlockNode', fields: { title: id, type: 'p' } })));
-      assert.deepEqual(dumpDocuments(engine, TREE, 'BlockNode').map((d) => d['@id']), inCodePoint, 'and the dump does not');
-    } finally {
-      String.prototype.localeCompare = original;
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

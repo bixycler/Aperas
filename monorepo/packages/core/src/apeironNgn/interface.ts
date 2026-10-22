@@ -44,13 +44,13 @@ export interface EngineReads {
   firstSubjectOf(graph: GraphName, field: string, value: Id): Id | undefined;
   /** The count of those subjects. */
   countSubjectsOf(graph: GraphName, field: string, value: Id): number;
-  /** The items of an ordered field in order, such as the contents of a container. */
+  /** The items of an ordered field in order, such as the contents of a container; none for a host with no record, as `values` gives none (a read does not refuse on absence). */
   items(graph: GraphName, host: Id, field: string): Id[];
-  /** The place (an index) of an item in an ordered field, read from its port. */
+  /** The place (an index) of an item in an ordered field, read from its port; nothing for a host with no record. */
   placeOf(graph: GraphName, host: Id, field: string, item: Id): number | undefined;
   /** All ids of a kind in a graph (the read-out of Persistence is this call), an iteration over the collection of the kind. */
   idsOfKind(graph: GraphName, kind: string): Id[];
-  /** Whether a node exists. */
+  /** Whether a node exists: whether a record stands for the id in that graph. A node that pairs name and that has no record does not exist (it is a dangling reference). */
   exists(graph: GraphName, id: Id): boolean;
   /**
    * The graph whose record has the id, or nothing when no graph holds one: an id does not say its graph, so this is the read from an id
@@ -58,14 +58,17 @@ export interface EngineReads {
    * user's confirmation (design/core.md, "The interface"). Names no graph, as it reads across all of them.
    */
   graphOf(id: Id): GraphName | undefined;
-  /** The size of the store. */
+  /** The size of a graph: the number of its records. A graph that does not exist holds none. */
   size(graph: GraphName): number;
 }
 
 export interface EngineWrites {
   /** Create a node with the id the shell mints, its kind and its graph. */
   createNode(graph: GraphName, id: Id, kind: string): void;
-  /** Add a pair (or set a literal); adding a pair that is already present changes nothing. */
+  /**
+   * Add a pair (or set a literal); adding a pair that is already present changes nothing. `Refused` for a subject with no record, a field the kind
+   * does not declare (or a derived one), a value of the wrong sort and a second value in a `one` or `optional` field (a replacement is a clear, then an add).
+   */
   addPair(graph: GraphName, subject: Id, field: string, value: Value): void;
   /** Clear a field of a subject, which a write of the field does before it adds the new values. */
   clearField(graph: GraphName, subject: Id, field: string): void;
@@ -75,7 +78,7 @@ export interface EngineWrites {
    * embeds in turn. A pair that is not there changes nothing. On an ordered field the other items keep their order.
    */
   removePair(graph: GraphName, subject: Id, field: string, value: Value): void;
-  /** Remove a node, all of its pairs at once. */
+  /** Remove a node, all of its pairs at once. A node with no record: nothing changes, as for a pair that is not there. */
   removeNode(graph: GraphName, id: Id): void;
   /** Insert an item into an ordered field at `at` (the end when omitted), as one splice of its list. */
   insertItem(graph: GraphName, host: Id, field: string, item: Id, at?: number): void;

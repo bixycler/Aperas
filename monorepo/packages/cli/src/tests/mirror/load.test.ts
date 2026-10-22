@@ -2,8 +2,7 @@
 // "Persistence"): the graph of a record is the graph of the file it is read from, an embedded entry is built as a node of its own, a reference
 // to a node not built yet is accepted, a repeated `@id` rejects every document that carries it, `parent` wins over `children`, a file that is
 // absent is not an error, what the engine refuses for a document is reported with its id and class, and the ids referenced and never defined
-// are returned. The two reproductions (the repeated id and the disagreeing `parent`) are shown against the reference copy's `rehydrateStore`
-// too, in the last block: it merges the repeated id and holds two containers for the node. That block goes with the reference copy (Batch 12).
+// are returned. Two reproductions are covered: a repeated id and a `parent` that disagrees with `children`.
 import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -12,10 +11,7 @@ import { DEFAULT_GRAPH } from '@aperas/core/apeironNgn/interface';
 import { MirrorFileError, loadMirror, problemOf, skippedDocuments, startGraphs } from '@aperas/core/shell/mirrorLoad';
 import { documentsText, type MirrorMapping } from '@aperas/core/shell/mirrorFiles';
 import { dumpDocuments } from '@aperas/core/shell/mirrorDump';
-import { rehydrateStore } from '@aperas/core/shell/store';
-import { objectsOf } from '@aperas/core/shell/storeAccess';
-import { freeWasm } from '@aperas/core/shell/vocab';
-import { Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { Refused } from '@aperas/core/apeironNgn/engine';
 import { THREADS, TREE, idOf, newEngine, scratchRoot, writeTexts } from '../support/mirrorFixture.ts';
 
 const MAPPING: MirrorMapping = [
@@ -257,15 +253,15 @@ describe('a file or a document the load cannot take', () => {
     assert.deepEqual(engine.idsOfKind(TREE, 'BlockNode'), [blk(1)]);
   });
 
-  test('what the engine refuses for a document is reported with its id, the class and the open point, and the load goes on', () => {
+  test('what the engine refuses for a document is reported with its id and the class of the refusal, and the load goes on', () => {
     write({ 'Apeiron/BlockNode.jsonld': [block(1, { predicate: 'x' }), block(2, { title: ['a', 'b'] }), block(3), { ...block(4), '@type': 'Nonesuch' }, block(5, { text: { nested: true } })] });
     const { engine, result } = load();
     const byId = Object.fromEntries(result.errors.map((e) => [e.subject, e]));
-    assert.equal(byId[blk(1)]!.class, 'Undecided');
-    assert.equal(byId[blk(1)]!.point, 'Enforcement');
-    assert.equal(byId[blk(2)]!.class, 'Undecided', 'a doubled one field');
+    assert.equal(byId[blk(1)]!.class, 'Refused', 'a key outside the shape');
+    assert.match(byId[blk(1)]!.message, /declares no field predicate/);
+    assert.equal(byId[blk(2)]!.class, 'Refused', 'a doubled one field');
     assert.equal(byId[blk(4)]!.class, 'Refused', 'a kind that is not one');
-    assert.equal(byId[blk(5)]!.class, 'Undecided', 'a value that is neither a literal nor an entry');
+    assert.equal(byId[blk(5)]!.class, 'Refused', 'a value that is neither a literal nor an entry');
     assert.deepEqual(engine.idsOfKind(TREE, 'BlockNode'), [blk(3)]);
     assert.equal(result.documents, 1);
   });
@@ -274,13 +270,12 @@ describe('a file or a document the load cannot take', () => {
     const bad = `${blk(1)}:links:Link:00T5MX0000300`;
     write({ 'Apeiron/BlockNode.jsonld': [block(1, { links: [{ '@id': bad, '@type': 'Link', target: blk(2), nonsense: true }] })] });
     const { engine, result } = load();
-    assert.deepEqual(result.errors.map((e) => [e.subject, e.class, e.point]), [[bad, 'Undecided', 'Enforcement']]);
+    assert.deepEqual(result.errors.map((e) => [e.subject, e.class]), [[bad, 'Refused']]);
     assert.equal(engine.record(TREE, blk(1))!.id, blk(1));
     assert.ok(result.dangling.includes(bad), 'and the id the owner holds is returned as dangling');
   });
 
-  test('problemOf reads an engine error by its class and point, and throws on any other', () => {
-    assert.deepEqual(problemOf('X', new Undecided('Enforcement')), { subject: 'X', class: 'Undecided', point: 'Enforcement', message: 'undecided: Enforcement' });
+  test('problemOf reads a refusal of the engine by its class, and throws on any other error', () => {
     assert.deepEqual(problemOf('X', new Refused('no')), { subject: 'X', class: 'Refused', message: 'refused: no' });
     assert.throws(() => problemOf('X', new TypeError('bug')), TypeError);
     assert.throws(() => problemOf('X', 'a string'));
@@ -337,28 +332,5 @@ describe('the documents a load did not build, as the files hold them', () => {
     const { result } = load();
     assert.deepEqual(skippedDocuments(scratch.root, MAPPING, result), []);
     assert.deepEqual(skippedDocuments(scratch.root, MAPPING, { rejected: [{ id: blk(1), files: [] }], errors: [] }), [{ file: join(scratch.root, 'Apeiron/BlockNode.jsonld'), documents: [block(1)] }], 'asked for an id, it finds the document in whichever file of the mapping holds it');
-  });
-});
-
-describe('the same two reproductions on the reference copy (goes with it, Batch 12)', () => {
-  const instanceFiles = { 'Apeiron/ArtifactNode.jsonld': '[]\n', 'Apeiron/FolderNode.jsonld': '[]\n', 'Apeiron/Profile.jsonld': '[]\n' };
-
-  test('rehydrateStore merges the quads of a repeated @id and keeps both titles; the load keeps neither document', () => {
-    write({ 'Apeiron/BlockNode.jsonld': [block(1, { title: 'first' }), block(1, { title: 'second' })] });
-    writeTexts(scratch.root, instanceFiles);
-    const reference = rehydrateStore(join(scratch.root, 'Apeiron'));
-    assert.deepEqual(reference.duplicateIds, [blk(1)]);
-    assert.deepEqual(objectsOf(reference.store, blk(1), 'title').map((o) => (o.kind === 'literal' ? o.value : '')).sort(), ['first', 'second'], 'the reference copy holds a node with two titles: the documents merged');
-    freeWasm(reference.store);
-    assert.deepEqual(load().engine.idsOfKind(TREE, 'BlockNode'), [], 'and the load holds no node');
-  });
-
-  test('rehydrateStore gives a node whose parent and container disagree two parents; the load gives it the one the parent names', () => {
-    write({ 'Apeiron/BlockNode.jsonld': [block(1, { children: [blk(2)] }), block(2, { parent: blk(3) }), block(3)] });
-    writeTexts(scratch.root, instanceFiles);
-    const reference = rehydrateStore(join(scratch.root, 'Apeiron'));
-    assert.equal(objectsOf(reference.store, blk(2), 'parent').length, 2, 'the reference copy writes the parent from the container and from the node\'s own pair');
-    freeWasm(reference.store);
-    assert.deepEqual(load().engine.values(TREE, blk(2), 'parent'), [blk(3)]);
   });
 });

@@ -5,9 +5,10 @@
 // old engine fails, then the tree the records are arranged in. The random sequences are in `containment.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { refusedInShape } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { checkTree } from '../support/engineTree.ts';
 
@@ -23,8 +24,6 @@ const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
   assert.deepEqual(read(e), expected, `engine: ${why}`);
   assert.deepEqual(read(o), expected, `oracle: ${why}`);
 };
-const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
 const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
   assert.throws(() => run(e), check, `engine: ${why}`);
   assert.throws(() => run(o), check, `oracle: ${why}`);
@@ -70,12 +69,12 @@ describe('the parent of a node', () => {
     same((x) => [x.values('elsewhere', leaf, 'up'), x.first('elsewhere', leaf, 'up')], [[], undefined], 'another graph');
   });
 
-  test('holds no pair: addPair, removePair and clearField of it are Undecided of Enforcement', () => {
+  test('holds no pair: addPair, removePair, clearField and insertItem of it are refused', () => {
     const box = mk('Box'); const leaf = mk('Leaf');
-    bothThrow((x) => x.addPair(G, leaf, 'up', box), undecided('Enforcement'), 'addPair');
-    bothThrow((x) => x.removePair(G, leaf, 'up', box), undecided('Enforcement'), 'removePair');
-    bothThrow((x) => x.clearField(G, leaf, 'up'), undecided('Enforcement'), 'clearField');
-    bothThrow((x) => x.insertItem(G, leaf, 'up', box), undecided('Enforcement'), 'insertItem');
+    bothThrow((x) => x.addPair(G, leaf, 'up', box), refusedInShape, 'addPair');
+    bothThrow((x) => x.removePair(G, leaf, 'up', box), refusedInShape, 'removePair');
+    bothThrow((x) => x.clearField(G, leaf, 'up'), refusedInShape, 'clearField');
+    bothThrow((x) => x.insertItem(G, leaf, 'up', box), refusedInShape, 'insertItem');
   });
 
   test('the reverse reads of the containment field give the container, and of the derived name give nothing', () => {
@@ -134,11 +133,11 @@ describe('a node taken out of its container', () => {
     parentIs(a, b2, 'inserted elsewhere');
   });
 
-  test('moving to another container is a removal then an insertion, and the insertion is refused while the node is in the first list', () => {
+  test('moving to another container is a removal then an insertion, and the insertion is refusedInShape while the node is in the first list', () => {
     const b1 = mk('Box'); const b2 = mk('Box'); const a = mk('Leaf');
     both((x) => x.insertItem(G, b1, 'items', a));
-    bothThrow((x) => x.insertItem(G, b2, 'items', a), refused, 'no cross-container move');
-    bothThrow((x) => x.moveItem(G, b2, 'items', a, 0), refused, 'moveItem is inside one list');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a), refusedInShape, 'no cross-container move');
+    bothThrow((x) => x.moveItem(G, b2, 'items', a, 0), refusedInShape, 'moveItem is inside one list');
     parentIs(a, b1, 'still in the first');
   });
 
@@ -164,8 +163,8 @@ describe('a node removed while a container lists it', () => {
     parentIs(b, undefined, 'an absent node has no parent');
     same((x) => x.subjectsOf(G, 'items', b), [box], 'but the bucket of its id is the container');
     assert.deepEqual(inspectEngine(e).waitingIds(), [b], 'which waits in the waiting map');
-    bothThrow((x) => x.exists(G, b), undecided('Existence'), 'exists is still an open point');
-    bothThrow((x) => x.size(G), undecided('Existence'), 'and size');
+    same((x) => x.exists(G, b), false, 'the container that lists it does not make it exist');
+    same((x) => x.size(G), 3, 'and size counts the records: the box and the two leaves that remain');
   });
 
   test('is created again under the id: it reads its old container as its parent', () => {
@@ -185,10 +184,10 @@ describe('a node removed while a container lists it', () => {
     same((x) => x.idsOfKind(G, 'Leaf'), [later], 'in its collection');
   });
 
-  test('removed twice is Undecided of Existence the second time and changes nothing', () => {
+  test('removed twice: the second removal changes nothing', () => {
     const box = mk('Box'); const a = mk('Leaf');
     both((x) => { x.insertItem(G, box, 'items', a); x.removeNode(G, a); });
-    bothThrow((x) => x.removeNode(G, a), undecided('Existence'), 'the second removal');
+    both((x) => x.removeNode(G, a)); // the second removal
     same((x) => x.items(G, box, 'items'), [a], 'the entry is as it was');
   });
 });
@@ -209,11 +208,11 @@ describe('the two issues of the old engine', () => {
 
   // issues/core.md, "A child can end with two `parent` pairs: writing `children` detaches only the children the container already
   // has". The old engine, run from the working checkout, ends with the child under container1 and container2.
-  test('two parent pairs: a child written into a second container is refused, and has one container; after a removal and an insertion it has the other', () => {
+  test('two parent pairs: a child written into a second container is refusedInShape, and has one container; after a removal and an insertion it has the other', () => {
     const c1 = mk('Box'); const c2 = mk('Box'); const child = mk('Leaf');
     both((x) => x.insertItem(G, c1, 'items', child));
-    bothThrow((x) => x.insertItem(G, c2, 'items', child), refused, 'insertItem into the second');
-    bothThrow((x) => { x.clearField(G, c2, 'items'); x.addPair(G, c2, 'items', child); }, refused, 'the generic write: a clear then an add of the child');
+    bothThrow((x) => x.insertItem(G, c2, 'items', child), refusedInShape, 'insertItem into the second');
+    bothThrow((x) => { x.clearField(G, c2, 'items'); x.addPair(G, c2, 'items', child); }, refusedInShape, 'the generic write: a clear then an add of the child');
     same((x) => x.subjectsOf(G, 'items', child), [c1], 'one container');
     parentIs(child, c1, 'its parent');
     both((x) => { x.removeItem(G, c1, 'items', child); x.insertItem(G, c2, 'items', child); });
@@ -299,13 +298,13 @@ describe('the records follow containment', () => {
     assert.equal(tree().treeParentOf(child), containerLater);
   });
 
-  test('a refused write and a failed build leave the tree as it was', () => {
+  test('a refusedInShape write and a failed build leave the tree as it was', () => {
     const b1 = mkt('Box'); const b2 = mkt('Box'); const a = mkt('Leaf'); const later = mint('Box');
     both((x) => { x.insertItem(G, b1, 'items', a); x.insertItem(G, b1, 'items', b2); });
     const before = [tree().rootIds(G), tree().nestedIds(b1)];
-    bothThrow((x) => x.insertItem(G, b2, 'items', a), refused, 'a second container');
-    bothThrow((x) => x.insertItem(G, b2, 'items', b1), refused, 'a cycle');
-    bothThrow((x) => x.build(G, { id: later, kind: 'Box', fields: { items: [a] } }), refused, 'a build');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a), refusedInShape, 'a second container');
+    bothThrow((x) => x.insertItem(G, b2, 'items', b1), refusedInShape, 'a cycle');
+    bothThrow((x) => x.build(G, { id: later, kind: 'Box', fields: { items: [a] } }), refusedInShape, 'a build');
     assert.deepEqual([tree().rootIds(G), tree().nestedIds(b1)], before);
     check('after the refusals');
   });
@@ -342,8 +341,8 @@ describe('the records follow containment', () => {
   test('a node that is embedded is not listed by a container: the list refuses it, and the node stays beneath its owner', () => {
     const leaf = mkt('Leaf'); const box = mkt('Box');
     const ref = own(leaf, 'refs', 'Ref');
-    both((x) => assert.throws(() => x.insertItem(G, box, 'items', ref), refused));
-    both((x) => assert.throws(() => x.addPair(G, box, 'items', ref), refused));
+    both((x) => assert.throws(() => x.insertItem(G, box, 'items', ref), refusedInShape));
+    both((x) => assert.throws(() => x.addPair(G, box, 'items', ref), refusedInShape));
     check('listed and embedded');
     assert.equal(tree().treeParentOf(ref), leaf);
     assert.deepEqual(tree().nestedIds(box), []);

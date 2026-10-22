@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import { createEngine, inspectEngine } from '@aperas/core/apeironNgn/engine';
 import type { BuildRecord, Engine, Value } from '@aperas/core/apeironNgn/interface';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { checkTree } from '../support/engineTree.ts';
 import { rng } from '../support/prng.ts';
@@ -55,8 +56,8 @@ type Op =
   | { op: 'record'; graph: string; id: string }
   | { op: 'graphOf'; id: string };
 
-/** What an operation gave: a value, or the class and the open point of the error it threw. */
-type Outcome = { value: unknown } | { error: string; point?: string };
+/** What an operation gave: a value, or the class of the error it threw, and the rule that refused it when it is the existence of the subject. */
+type Outcome = { value: unknown } | { error: string; rule?: string };
 
 function run(x: Engine, o: Op): Outcome {
   try {
@@ -88,8 +89,8 @@ function run(x: Engine, o: Op): Outcome {
       case 'graphOf': return { value: x.graphOf(o.id) };
     }
   } catch (e) {
-    const err = e as Error & { point?: string };
-    return { error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+    const err = e as Error;
+    return { error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
   }
 }
 
@@ -293,6 +294,10 @@ describe('the engine against the oracle: several graphs', () => {
         for (const subject of inspectEngine(engine).bucketedSubjects()) assert.ok(homes.has(subject), `${at}: a bucket names ${subject}, which has no record`);
         for (const graph of POOL) {
           const here = universe.filter((id) => homes.get(id) === graph);
+          // Existence is a record in that graph: exists and size read the records, the oracle's too, whatever the pairs name.
+          assert.equal(engine.size(graph), here.length, `${at}: size of ${graph}`);
+          assert.equal(oracle.size(graph), here.length, `${at}: the oracle's size of ${graph}`);
+          for (const id of universe) assert.deepEqual([engine.exists(graph, id), oracle.exists(graph, id)], [homes.get(id) === graph, homes.get(id) === graph], `${at}: exists ${id} in ${graph}`);
           for (const f of FIELDS) {
             const scan = new Map<string, string[]>();
             for (const host of here) for (const v of engine.values(graph, host, f) as string[]) scan.set(v, [...(scan.get(v) ?? []), host]);
@@ -323,7 +328,7 @@ describe('the engine against the oracle: several graphs', () => {
         const nodesBefore = op.op === 'dropGraph' ? universe.filter((id) => engine.record(op.name, id) !== undefined).length : 0;
         const r = run(engine, op);
         if ('error' in r) {
-          seen.errors.add(`${r.error}:${r.point ?? ''}`);
+          seen.errors.add(`${r.error}:${r.rule ?? ''}`);
           if (op.op === 'createGraph') { if (POOL.includes(op.name)) seen.graphsTaken++; else seen.namesRefused++; }
           else if (op.op === 'dropGraph') { if (POOL.includes(op.name) && universe.some((id) => engine.graphOf(id) !== undefined)) seen.dropsRefusedByPair++; else seen.dropsNoGraph++; }
           else if ((op.op === 'insert' || op.op === 'move') && ownerOf(op.item) !== undefined && r.error === 'Refused') seen.embeddedRefused++;
@@ -353,6 +358,6 @@ describe('the engine against the oracle: several graphs', () => {
     assert.ok(seen.sweepsOfOther > 40, `sweeps that removed something while another graph held nodes: ${seen.sweepsOfOther}`);
     assert.ok(seen.embeddedRefused > 15, `embedded ids refused in the containment field: ${seen.embeddedRefused}`);
     assert.ok(seen.graphOfSome > 20 && seen.graphOfNone > 5, `graphOf: ${seen.graphOfSome} answered, ${seen.graphOfNone} not`);
-    for (const e of ['Refused:', 'Undecided:Enforcement', 'Undecided:Existence']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
+    for (const e of ['Refused:', 'Refused:no node']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
   });
 });

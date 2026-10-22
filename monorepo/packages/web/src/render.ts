@@ -1,7 +1,7 @@
 /**
  * Client-side mirror of `@aperas/core/shell/node`'s `RenderItem` shape (design/webapp.md's
  * render contract, planning/webapp.md's Slice 1). Kept as a plain local type rather than importing
- * the core package's own export: importing it as a *value* would pull `node:fs`/`oxigraph`-touching
+ * the core package's own export: importing it as a *value* would pull `node:fs`-touching
  * code into the browser bundle (`discussion/webapp.md`'s "Code inventory" freeflow entry names this
  * exact hazard), and `import type` — while runtime-safe on its own — still couples this bundle's
  * build to core's internal module graph for no benefit, since the wire shape is already just JSON

@@ -3,12 +3,12 @@
 // and imports nothing of the engine's behaviour, only its types. Every later batch tests the engine against it with
 // seeded random sequences of operations (planning/core.md, Batch 3 step 4).
 //
-// Scope: it implements every operation whose meaning the design states in full. The meanings the design leaves
-// open are one function each, and each throws "undecided: <Open point>" until they are decided:
-//   - `existence`: whether a node exists by being in a registry or by having a pair (the read `exists`, the read
-//     `size`, and a write to a subject that has no node);
-//   - `enforcement`: a write outside the shape of the schema (a field the kind does not declare, a value of the
-//     wrong sort, a second value for a single-valued field, an embedded value of another kind than the field embeds).
+// Scope: it implements every operation of the interface. The two rules the design settled (design/core.md, "Open points settled") are
+// one function each, and each throws `Refused`:
+//   - `existence`: a node exists by its record, so a write whose subject has no record is refused, and the reverse side of an id with no
+//     record is not its existence (the read `exists` is whether a record stands for the id in the graph, `size` the number of records);
+//   - `inShape`: a write outside the shape of the schema (a field the kind does not declare, a value of the wrong sort, an embedded value
+//     of another kind than the field embeds) is refused, and so is a second value for a single-valued field.
 // The id grammar is the oracle's own, written apart from the engine's (a regular expression and a split on `:`).
 // Not built: the order of links without a position (the oracle sorts nothing: a set comes back in insertion order, which is
 // promised to no reader) and the ports (Batch 14). The sweep is written by scan: a mark over the pairs, then one drop of every
@@ -18,16 +18,6 @@ import type { FieldDef, Schema } from '@aperas/core/apeironNgn/schema';
 
 /** The graph that exists from the start. */
 const DEFAULT_GRAPH_NAME: GraphName = 'default';
-
-/** A meaning that the design leaves open. */
-export class Undecided extends Error {
-  readonly point: string;
-  constructor(point: string) {
-    super(`undecided: ${point}`);
-    this.name = 'Undecided';
-    this.point = point;
-  }
-}
 
 /** An operation that no batch has designed yet. */
 export class NotBuilt extends Error {
@@ -80,22 +70,22 @@ export class Oracle implements Engine {
     this.schema = schema;
   }
 
-  // -- the two open meanings, one function each ------------------------------------------------------------------
+  // -- the two rules, one function each -------------------------------------------------------------------------
 
-  /** Existence: whether a node exists by being in a registry or by having a pair. */
-  private existence(): never {
-    throw new Undecided('Existence');
+  /** Existence: a node exists by its record, so a write to a subject that has none is refused. */
+  private existence(graph: GraphName, id: Id): never {
+    throw new Refused(`no node ${id} in the graph ${graph}`);
   }
 
-  /** Enforcement: a write outside the shape of the schema. Gives the field when the write is inside it. */
+  /** Enforcement: a write outside the shape of the schema is refused. Gives the field when the write is inside it. */
   private inShape(kind: string, name: string, value?: Value, subject?: Id): FieldDef {
     const field = this.field(kind, name);
-    if (field === undefined || field.derived) throw new Undecided('Enforcement');
-    if (value !== undefined && (field.storage === 'literal' ? !isLiteral(value) : typeof value !== 'string')) throw new Undecided('Enforcement');
+    if (field === undefined || field.derived) throw new Refused(`${kind} has no writable field ${name}`);
+    if (value !== undefined && (field.storage === 'literal' ? !isLiteral(value) : typeof value !== 'string')) throw new Refused(`${JSON.stringify(value)} is not a value of ${name}`);
     // The value of an embed field, for a write that names its subject: an id of a node the subject embeds in this field, of the embedded kind or below it.
     if (value !== undefined && subject !== undefined && field.storage === 'embed') {
       if (oracleOwnerOfId(value as string) !== subject || oracleFieldOfId(value as string) !== name) throw new Refused(`${JSON.stringify(value)} is not an id of a node embedded by ${subject} in ${name}`);
-      if (!this.isKindOrBelow(oracleKindOfId(value as string), field.embeds!)) throw new Undecided('Enforcement');
+      if (!this.isKindOrBelow(oracleKindOfId(value as string), field.embeds!)) throw new Refused(`${value} is not of the kind ${field.embeds} that ${name} embeds`);
     }
     return field;
   }
@@ -177,6 +167,8 @@ export class Oracle implements Engine {
   }
 
   items(graph: GraphName, host: Id, field: string): Id[] {
+    const node = this.node(graph, host);
+    if (node === undefined) return [];
     this.mustBeOrdered(graph, host, field);
     return this.pairsOf(graph, host, field).map((p) => p.value as Id);
   }
@@ -194,12 +186,12 @@ export class Oracle implements Engine {
     return this.nodes.find((n) => n.id === id)?.graph;
   }
 
-  exists(_graph: GraphName, _id: Id): boolean {
-    return this.existence();
+  exists(graph: GraphName, id: Id): boolean {
+    return this.node(graph, id) !== undefined;
   }
 
-  size(_graph: GraphName): number {
-    return this.existence();
+  size(graph: GraphName): number {
+    return this.nodes.filter((n) => n.graph === graph).length;
   }
 
   // -- Writes ----------------------------------------------------------------------------------------------------
@@ -215,19 +207,19 @@ export class Oracle implements Engine {
 
   addPair(graph: GraphName, subject: Id, field: string, value: Value): void {
     const node = this.node(graph, subject);
-    if (node === undefined) return this.existence();
+    if (node === undefined) return this.existence(graph, subject);
     const def = this.inShape(node.kind, field, value, subject);
     this.notOwned(field, value);
     if (this.pairsOf(graph, subject, field).some((p) => p.value === value)) return; // already present: nothing changes
     if (def.cardinality === 'ordered') return this.insertItem(graph, subject, field, value as Id);
-    if ((def.cardinality === 'one' || def.cardinality === 'optional') && this.pairsOf(graph, subject, field).length > 0) throw new Undecided('Enforcement');
+    if ((def.cardinality === 'one' || def.cardinality === 'optional') && this.pairsOf(graph, subject, field).length > 0) throw new Refused(`${field} of ${subject} holds one value`);
     if (def.partitioning) this.mustPartition(subject, field, value as Id);
     this.pairs.push({ graph, subject, field, value });
   }
 
   clearField(graph: GraphName, subject: Id, field: string): void {
     const node = this.node(graph, subject);
-    if (node === undefined) return this.existence();
+    if (node === undefined) return this.existence(graph, subject);
     const def = this.inShape(node.kind, field);
     const gone = this.pairsOf(graph, subject, field);
     this.pairs = this.pairs.filter((p) => !gone.includes(p));
@@ -236,7 +228,7 @@ export class Oracle implements Engine {
 
   removePair(graph: GraphName, subject: Id, field: string, value: Value): void {
     const node = this.node(graph, subject);
-    if (node === undefined) return this.existence();
+    if (node === undefined) return this.existence(graph, subject);
     const def = this.inShape(node.kind, field, value);
     const gone = this.pairsOf(graph, subject, field).filter((p) => p.value === value);
     if (gone.length === 0) return; // not there: nothing changes
@@ -245,7 +237,7 @@ export class Oracle implements Engine {
   }
 
   removeNode(graph: GraphName, id: Id): void {
-    if (this.node(graph, id) === undefined) return this.existence();
+    if (this.node(graph, id) === undefined) return; // not there: nothing changes, as the removal of a pair that is not there
     this.drop(graph, id);
   }
 
@@ -294,7 +286,7 @@ export class Oracle implements Engine {
 
   private mustBeOrdered(graph: GraphName, host: Id, field: string): PairRow[] {
     const node = this.node(graph, host);
-    if (node === undefined) return this.existence();
+    if (node === undefined) return this.existence(graph, host);
     const def = this.inShape(node.kind, field);
     if (def.cardinality !== 'ordered') throw new Refused(`${field} is not an ordered field`);
     return this.pairsOf(graph, host, field);
@@ -317,7 +309,7 @@ export class Oracle implements Engine {
     const marker = this.schema.roles.tombstone;
     if (marker === undefined) throw new Refused('the schema assigns no tombstone marker');
     const node = this.node(graph, id);
-    if (node === undefined) return this.existence();
+    if (node === undefined) return this.existence(graph, id);
     if (this.field(node.kind, marker) === undefined) throw new Refused(`${node.kind} has no tombstone marker ${marker}`);
     if (this.pairsOf(graph, id, marker).length > 0) return; // already a tombstone: the first timestamp stays
     const containment = this.schema.roles.containment;
@@ -331,7 +323,7 @@ export class Oracle implements Engine {
   tombstoneSubtree(graph: GraphName, id: Id, at: string): void {
     const marker = this.schema.roles.tombstone;
     if (marker === undefined) throw new Refused('the schema assigns no tombstone marker');
-    if (this.node(graph, id) === undefined) return this.existence();
+    if (this.node(graph, id) === undefined) return this.existence(graph, id);
     const containment = this.schema.roles.containment;
     const subtree: Id[] = [];
     const stack: Id[] = [id];
@@ -412,6 +404,7 @@ export class Oracle implements Engine {
       this.createNode(graph, record.id, record.kind);
       for (const [name, input] of Object.entries(record.fields) as [string, FieldInput][]) {
         if (this.field(record.kind, name)?.derived) continue; // an assertion by the shell, never a pair
+        this.inShape(record.kind, name); // a field the kind does not declare is refused even with no value
         for (const value of Array.isArray(input) ? (input as readonly Value[]) : [input as Value]) this.addPair(graph, record.id, name, value);
       }
     } catch (e) {

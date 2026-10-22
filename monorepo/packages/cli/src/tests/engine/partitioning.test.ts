@@ -4,10 +4,11 @@
 // cases, each given to the engine and the oracle; the random sequences are in `containment.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { refusedInShape } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
@@ -22,8 +23,6 @@ const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
   assert.deepEqual(read(e), expected, `engine: ${why}`);
   assert.deepEqual(read(o), expected, `oracle: ${why}`);
 };
-const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
 const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
   assert.throws(() => run(e), check, `engine: ${why}`);
   assert.throws(() => run(o), check, `oracle: ${why}`);
@@ -34,33 +33,33 @@ const snapshot = (x: Engine, ids: readonly string[]): unknown => ({ records: ids
 beforeEach(() => { e = createEngine(TEST_SCHEMA); o = new Oracle(e.schema); });
 
 describe('a second container', () => {
-  test('is refused by insertItem and by addPair, and nothing changes', () => {
+  test('is refusedInShape by insertItem and by addPair, and nothing changes', () => {
     const b1 = mk('Box'); const b2 = mk('Box'); const a = mk('Leaf'); const c = mk('Leaf');
     both((x) => { x.insertItem(G, b1, 'items', a); x.insertItem(G, b2, 'items', c); });
     const before = snapshot(e, [b1, b2, a, c]);
-    bothThrow((x) => x.insertItem(G, b2, 'items', a), refused, 'insertItem');
-    bothThrow((x) => x.insertItem(G, b2, 'items', a, 0), refused, 'insertItem at a place');
-    bothThrow((x) => x.addPair(G, b2, 'items', a), refused, 'addPair');
-    assert.deepEqual(snapshot(e, [b1, b2, a, c]), before, 'the refused writes left the engine as it was');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a), refusedInShape, 'insertItem');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a, 0), refusedInShape, 'insertItem at a place');
+    bothThrow((x) => x.addPair(G, b2, 'items', a), refusedInShape, 'addPair');
+    assert.deepEqual(snapshot(e, [b1, b2, a, c]), before, 'the refusedInShape writes left the engine as it was');
     same((x) => [x.items(G, b1, 'items'), x.items(G, b2, 'items')], [[a], [c]], 'the lists');
     same((x) => x.subjectsOf(G, 'items', a), [b1], 'and the container of a');
   });
 
-  test('is refused when the item\'s record is gone and its container still lists it, and when it never had a record', () => {
+  test('is refusedInShape when the item\'s record is gone and its container still lists it, and when it never had a record', () => {
     const b1 = mk('Box'); const b2 = mk('Box'); const a = mk('Leaf'); const never = mint('Leaf');
     both((x) => { x.insertItem(G, b1, 'items', a); x.insertItem(G, b1, 'items', never); x.removeNode(G, a); });
     same((x) => x.items(G, b1, 'items'), [a, never], 'the entry of a node removed stays in its container');
-    bothThrow((x) => x.insertItem(G, b2, 'items', a), refused, 'a removed item, still listed by b1');
-    bothThrow((x) => x.insertItem(G, b2, 'items', never), refused, 'an item with no record, listed by b1');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a), refusedInShape, 'a removed item, still listed by b1');
+    bothThrow((x) => x.insertItem(G, b2, 'items', never), refusedInShape, 'an item with no record, listed by b1');
     both((x) => x.createNode(G, a, 'Leaf'));
-    bothThrow((x) => x.addPair(G, b2, 'items', a), refused, 'the same item created again is still b1\'s');
+    bothThrow((x) => x.addPair(G, b2, 'items', a), refusedInShape, 'the same item created again is still b1\'s');
     same((x) => x.items(G, b2, 'items'), [], 'b2 holds nothing');
   });
 
   test('is free once the first container no longer lists the item: removed from the list, the list cleared, or the container removed', () => {
     const b1 = mk('Box'); const b2 = mk('Box'); const b3 = mk('Box'); const [a, c, d, f] = [mk('Leaf'), mk('Leaf'), mk('Leaf'), mk('Leaf')];
     both((x) => { x.insertItem(G, b1, 'items', a); x.insertItem(G, b1, 'items', c); x.insertItem(G, b3, 'items', d); x.insertItem(G, b3, 'items', f); });
-    bothThrow((x) => x.insertItem(G, b2, 'items', a), refused, 'a is in b1');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a), refusedInShape, 'a is in b1');
     both((x) => x.removeItem(G, b1, 'items', a));
     both((x) => x.insertItem(G, b2, 'items', a));
     same((x) => [x.items(G, b1, 'items'), x.items(G, b2, 'items')], [[c], [a]], 'a moved by a removal then an insertion');
@@ -85,21 +84,21 @@ describe('a second container', () => {
 describe('a cycle', () => {
   test('of one: a box is not in its own list', () => {
     const b = mk('Box');
-    bothThrow((x) => x.insertItem(G, b, 'items', b), refused, 'insertItem');
-    bothThrow((x) => x.addPair(G, b, 'items', b), refused, 'addPair');
+    bothThrow((x) => x.insertItem(G, b, 'items', b), refusedInShape, 'insertItem');
+    bothThrow((x) => x.addPair(G, b, 'items', b), refusedInShape, 'addPair');
     same((x) => x.items(G, b, 'items'), [], 'nothing was listed');
   });
 
   test('of two, of three, and of a long chain: a box into its own descendant', () => {
     const [a, b, c, d] = [mk('Box'), mk('Box'), mk('Box'), mk('Box')];
     both((x) => { x.insertItem(G, a, 'items', b); });
-    bothThrow((x) => x.insertItem(G, b, 'items', a), refused, 'a in b in a');
+    bothThrow((x) => x.insertItem(G, b, 'items', a), refusedInShape, 'a in b in a');
     both((x) => { x.insertItem(G, b, 'items', c); });
-    bothThrow((x) => x.insertItem(G, c, 'items', a), refused, 'a in c in b in a');
-    bothThrow((x) => x.addPair(G, c, 'items', b), refused, 'b in c in b');
+    bothThrow((x) => x.insertItem(G, c, 'items', a), refusedInShape, 'a in c in b in a');
+    bothThrow((x) => x.addPair(G, c, 'items', b), refusedInShape, 'b in c in b');
     both((x) => { x.insertItem(G, c, 'items', d); });
-    bothThrow((x) => x.insertItem(G, d, 'items', a), refused, 'a chain of four');
-    bothThrow((x) => x.insertItem(G, d, 'items', b), refused, 'b is above d');
+    bothThrow((x) => x.insertItem(G, d, 'items', a), refusedInShape, 'a chain of four');
+    bothThrow((x) => x.insertItem(G, d, 'items', b), refusedInShape, 'b is above d');
     same((x) => [a, b, c, d].map((id) => x.items(G, id, 'items')), [[b], [c], [d], []], 'the lists are as they were');
     both((x) => x.removeItem(G, b, 'items', c));
     both((x) => x.insertItem(G, c, 'items', a));
@@ -111,18 +110,18 @@ describe('a cycle', () => {
     const inner = mk('Box'); const outer = mint('Box'); const leaf = mint('Leaf');
     both((x) => x.insertItem(G, inner, 'items', outer));
     const before = snapshot(e, [inner, outer, leaf]);
-    bothThrow((x) => x.build(G, { id: outer, kind: 'Box', fields: { items: [leaf, inner] } }), refused, 'inner is under outer');
+    bothThrow((x) => x.build(G, { id: outer, kind: 'Box', fields: { items: [leaf, inner] } }), refusedInShape, 'inner is under outer');
     assert.deepEqual(snapshot(e, [inner, outer, leaf]), before, 'a build that fails changes nothing');
     same((x) => x.record(G, outer), undefined, 'outer was not built');
     both((x) => x.build(G, { id: outer, kind: 'Box', fields: { items: [leaf] } }));
     same((x) => x.subjectsOf(G, 'items', outer), [inner], 'built without it');
   });
 
-  test('a second container is refused by a build, and so is the host itself in its own list', () => {
+  test('a second container is refusedInShape by a build, and so is the host itself in its own list', () => {
     const b1 = mk('Box'); const a = mk('Leaf'); const b2 = mint('Box'); const stub = mk('Stub');
     both((x) => x.insertItem(G, b1, 'items', a));
-    bothThrow((x) => x.build(G, { id: b2, kind: 'Box', fields: { items: [stub, a] } }), refused, 'a is in b1');
-    bothThrow((x) => x.build(G, { id: b2, kind: 'Box', fields: { items: [b2] } }), refused, 'itself');
+    bothThrow((x) => x.build(G, { id: b2, kind: 'Box', fields: { items: [stub, a] } }), refusedInShape, 'a is in b1');
+    bothThrow((x) => x.build(G, { id: b2, kind: 'Box', fields: { items: [b2] } }), refusedInShape, 'itself');
     same((x) => x.record(G, b2), undefined, 'nothing was built');
     same((x) => x.subjectsOf(G, 'items', a), [b1], 'and a is still b1\'s');
   });
@@ -153,26 +152,26 @@ describe('the rule is the field\'s and not containment\'s', () => {
   test('a set that is partitioning gives each object one subject, and no cycle', () => {
     const [a, b, c] = [mkp(), mkp(), mkp()];
     bothP((s) => { s.addPair(G, a, 'reports', b); s.addPair(G, a, 'reports', c); });
-    throwsP((s) => s.addPair(G, c, 'reports', b), refused, 'a second subject for b');
-    throwsP((s) => s.addPair(G, b, 'reports', a), refused, 'a cycle of two');
-    throwsP((s) => s.addPair(G, a, 'reports', a), refused, 'itself');
-    throwsP((s) => s.addPair(G, b, 'reports', c), refused, 'c is already a\'s');
+    throwsP((s) => s.addPair(G, c, 'reports', b), refusedInShape, 'a second subject for b');
+    throwsP((s) => s.addPair(G, b, 'reports', a), refusedInShape, 'a cycle of two');
+    throwsP((s) => s.addPair(G, a, 'reports', a), refusedInShape, 'itself');
+    throwsP((s) => s.addPair(G, b, 'reports', c), refusedInShape, 'c is already a\'s');
     for (const s of [x, y]) assert.deepEqual([a, b, c].map((id) => s.values(G, id, 'reports')), [[b, c], [], []], 'and nothing changed');
   });
 
   test('an optional field that is partitioning: the cardinality is looked at first, then the rule', () => {
     const [a, b, c] = [mkp(), mkp(), mkp()];
     bothP((s) => s.addPair(G, a, 'sponsor', c));
-    throwsP((s) => s.addPair(G, b, 'sponsor', c), refused, 'c already has a subject sponsoring it: the climbed side is the reverse');
-    throwsP((s) => s.addPair(G, a, 'sponsor', b), undecided('Enforcement'), 'a second value for an optional field is Enforcement\'s, before the rule');
+    throwsP((s) => s.addPair(G, b, 'sponsor', c), refusedInShape, 'c already has a subject sponsoring it: the climbed side is the reverse');
+    throwsP((s) => s.addPair(G, a, 'sponsor', b), refusedInShape, 'a second value for an optional field is Enforcement\'s, before the rule');
     bothP((s) => s.addPair(G, b, 'sponsor', a));
-    throwsP((s) => s.addPair(G, c, 'sponsor', b), refused, 'a cycle of three, b sponsoring a sponsoring c');
+    throwsP((s) => s.addPair(G, c, 'sponsor', b), refusedInShape, 'a cycle of three, b sponsoring a sponsoring c');
   });
 
   test('the reverse of a partitioning field that is not ordered is built at the first write, like any other', () => {
     const [a, b] = [mkp(), mkp()];
     assert.deepEqual(inspectEngine(x).reversesBuilt(), []);
-    throwsP((s) => s.addPair(G, a, 'reports', a), refused, 'a refused first write');
+    throwsP((s) => s.addPair(G, a, 'reports', a), refusedInShape, 'a refusedInShape first write');
     assert.deepEqual(inspectEngine(x).reversesBuilt(), [], 'builds nothing');
     bothP((s) => s.addPair(G, a, 'reports', b));
     assert.deepEqual(inspectEngine(x).reversesBuilt(), ['reports'], 'the first write built it');
@@ -180,15 +179,15 @@ describe('the rule is the field\'s and not containment\'s', () => {
 });
 
 describe('the reverse of a partitioning field is built at the first write or the first ask', () => {
-  test('not before, not by a refused write, and at the first write of the field', () => {
+  test('not before, not by a refusedInShape write, and at the first write of the field', () => {
     const b1 = mk('Box'); const b2 = mk('Box'); const a = mk('Leaf');
     assert.deepEqual(inspectEngine(e).reversesBuilt(), [], 'created nodes build nothing');
-    bothThrow((x) => x.insertItem(G, b1, 'items', b1), refused, 'a refused first write');
-    bothThrow((x) => x.insertItem(G, b1, 'items', a, 3), refused, 'another');
+    bothThrow((x) => x.insertItem(G, b1, 'items', b1), refusedInShape, 'a refusedInShape first write');
+    bothThrow((x) => x.insertItem(G, b1, 'items', a, 3), refusedInShape, 'another');
     assert.deepEqual(inspectEngine(e).reversesBuilt(), [], 'builds nothing');
     both((x) => x.insertItem(G, b1, 'items', a));
     assert.deepEqual(inspectEngine(e).reversesBuilt(), ['items'], 'the first write built it');
-    bothThrow((x) => x.insertItem(G, b2, 'items', a), refused, 'and the rule reads it');
+    bothThrow((x) => x.insertItem(G, b2, 'items', a), refusedInShape, 'and the rule reads it');
   });
 
   test('the first ask builds it too', () => {

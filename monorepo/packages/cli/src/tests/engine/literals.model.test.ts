@@ -2,7 +2,7 @@
 // oracle get the same seeded random sequence of operations, `createNode`, `addPair`, `clearField`, `values`,
 // `first`, `idsOfKind` and `record`, and what they answer is compared after every operation. A set's values and
 // the ids of a kind are sorted before the comparison, since their order is promised to no reader, and a thrown
-// error is compared by its class and its open point, not by its message. The writes stay inside the shape of the
+// error is compared by its class and the rule that refused it, not by its message. The writes stay inside the shape of the
 // schema, apart from a few cases outside it, which both implementations must meet with the same error. A failing
 // run names its seed and the operation, and the seed replays it.
 import { describe, test } from 'node:test';
@@ -11,6 +11,7 @@ import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine, Value } from '@aperas/core/apeironNgn/interface';
 import type { FieldDef, SchemaSpec } from '@aperas/core/apeironNgn/schema';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { rng } from '../support/prng.ts';
 
@@ -36,8 +37,8 @@ type Op =
   | { op: 'idsOfKind'; kind: string }
   | { op: 'record'; subject: string };
 
-/** What an operation gave: a value, or the class and the open point of the error it threw. */
-type Outcome = { value: unknown } | { error: string; point?: string };
+/** What an operation gave: a value, or the class of the error it threw, and the rule that refused it when it is the existence of the subject. */
+type Outcome = { value: unknown } | { error: string; rule?: string };
 
 const canon = (v: unknown): string => JSON.stringify([typeof v, v]);
 const sortedValues = (vs: readonly Value[]): string[] => vs.map(canon).sort();
@@ -58,8 +59,8 @@ function run(x: Engine, o: Op): Outcome {
       }
     }
   } catch (e) {
-    const err = e as Error & { point?: string };
-    return { error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+    const err = e as Error;
+    return { error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
   }
 }
 
@@ -150,7 +151,7 @@ describe('the engine against the oracle: literal fields', () => {
       const engine = createEngine(MODEL_SCHEMA);
       for (const op of ops) {
         const r = run(engine, op);
-        if ('error' in r) seen.errors.add(`${r.error}:${r.point ?? ''}`);
+        if ('error' in r) seen.errors.add(`${r.error}:${r.rule ?? ''}`);
         else if (op.op === 'createNode') seen.created++;
         const recs = engine.idsOfKind(G, 'Bag').map((id) => engine.record(G, id)!);
         if (op.op !== 'idsOfKind' && recs.some((rec) => rec.fields.some((f) => f.values.length > 1))) seen.multi++;
@@ -159,6 +160,6 @@ describe('the engine against the oracle: literal fields', () => {
     }
     assert.ok(seen.created > 100, `creations: ${seen.created}`);
     assert.ok(seen.multi > 100, `states, after an operation, in which a set holds several values: ${seen.multi}`);
-    for (const e of ['Refused:', 'Undecided:Enforcement', 'Undecided:Existence']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
+    for (const e of ['Refused:', 'Refused:no node']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
   });
 });

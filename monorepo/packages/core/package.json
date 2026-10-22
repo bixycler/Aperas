@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@rdfjs/data-model": "^2.1.2",
-    "oxigraph": "^0.5.11",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",

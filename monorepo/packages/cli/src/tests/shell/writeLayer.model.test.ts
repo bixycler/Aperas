@@ -6,7 +6,7 @@
 // a removal and a sweep; a write the schema or the engine refuses is in them too (a second value of a one-valued field, a node that does not exist, an id
 // taken, an item twice).
 // After every operation:
-//   - the engine and the oracle answer alike (taken, or refused with the same error and open point; the graph of a creation; the ids of a sweep);
+//   - the engine and the oracle answer alike (taken, or refused with the same error and rule; the graph of a creation; the ids of a sweep);
 //   - the three maps equal a linear scan of the oracle (a profile by handle, a view by name, a path with and without the graph and the kind, the
 //     duplicates, the sizes), whether the write was taken or refused;
 //   - the reads of the handle equal what the oracle gives: `allIdsOfKind` and `liveIdsOfKind` (by a scan of every graph), `nodeExists`, `graphOfId` and
@@ -30,6 +30,7 @@ import { dumpText } from '@aperas/core/shell/mirrorDump';
 import { KINDS_OF_GRAPH } from '@aperas/core/shell/mirrorFiles';
 import { runRemove } from '../../kgRemove';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { rng } from '../support/prng.ts';
 import { THREADS, TREE, VIEWS, idOf, newEngine } from '../support/mirrorFixture.ts';
 
@@ -59,11 +60,11 @@ type Op =
   | { op: 'tombstone' | 'subtree' | 'remove'; graph: string; id: Id }
   | { op: 'sweep'; graph: string };
 
-type Outcome = { ok: true; value?: unknown } | { ok: false; error: string; point?: string };
+type Outcome = { ok: true; value?: unknown } | { ok: false; error: string; rule?: string };
 
 const failed = (e: unknown): Outcome => {
-  const err = e as Error & { point?: string };
-  return { ok: false, error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+  const err = e as Error;
+  return { ok: false, error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
 };
 
 /** One write on the handle, through its write layer. */
@@ -234,7 +235,7 @@ function plan(seed: number) {
     const id = there();
     const kind = kindOf(id);
     if (t < 50 && KEY_FIELD[kind] !== undefined) {
-      // A second value for a one-valued field is not taken (`Undecided` on Enforcement): most writes go to a field that is empty.
+      // A second value for a one-valued field is not taken (`Refused`): most writes go to a field that is empty.
       const at = probe.graphOf(id);
       if (at !== undefined && probe.first(at, id, KEY_FIELD[kind]!) !== undefined && g.chance(0.85)) return { op: 'clear', graph: at, id, field: KEY_FIELD[kind]! };
       return { op: 'add', graph: graphFor(id, probe), id, field: KEY_FIELD[kind]!, value: keyOf(kind) };

@@ -63,7 +63,7 @@ describe('the engine imports only files inside its directory', () => {
     ['node:fs/promises', "import { readFile } from 'node:fs/promises';"],
     ['fs/promises', "import { readFile } from 'fs/promises';"],
     ['another node: module', "import { join } from 'node:path';"],
-    ['oxigraph', "import { Store } from 'oxigraph';"],
+    ['a store library', "import { Store } from 'some-store';"],
     ['another package', "import { namedNode } from '@rdfjs/data-model';"],
     ['the shell, relative', "import { wrap } from '../shell/node.ts';"],
     ['a file beside the directory', "import { generateNodeId } from '../snowflake';"],
@@ -71,12 +71,12 @@ describe('the engine imports only files inside its directory', () => {
     ['the package form of a sibling', "import { x } from '@aperas/core/snowflake';"],
     ['a type-only import', "import type { BlockNode } from '../shell/node.ts';"],
     ['an export from', "export { wrap } from '../shell/node.ts';"],
-    ['an export star from', "export * from 'oxigraph';"],
-    ['a bare import', "import 'oxigraph';"],
+    ['an export star from', "export * from 'some-store';"],
+    ['a bare import', "import 'some-store';"],
     ['a dynamic import', "const m = await import('node:fs');"],
     ['a require', "const fs = require('fs');"],
     ['an import equals require', "import fs = require('fs');"],
-    ['an import() in a type', "type S = typeof import('oxigraph');"],
+    ['an import() in a type', "type S = typeof import('some-store');"],
     ['a dynamic import of an expression', 'const m = await import(name);'],
     ['a require of an expression', 'const m = require(name);'],
   ];
@@ -100,7 +100,7 @@ describe('the engine imports only files inside its directory', () => {
       "import './e.ts';",
       "const lazy = await import('./f.ts');",
       "// import fs from 'node:fs'; and a string: \"require('fs')\"",
-      "const text = \"import x from 'oxigraph'\";",
+      "const text = \"import x from 'some-store'\";",
     ].join('\n');
     assert.deepEqual(violationsOf(clean, AT), []);
     assert.deepEqual(violationsOf("import { a } from '../a.ts'; import { b } from './b.ts';", NESTED), []);

@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { BuildRecord, Engine, Value } from '@aperas/core/apeironNgn/interface';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { checkTree } from '../support/engineTree.ts';
 import { rng } from '../support/prng.ts';
@@ -38,8 +39,8 @@ type Op =
   | { op: 'record'; id: string }
   | { op: 'outside'; host: string; item: string; how: number };
 
-/** What an operation gave: a value, or the class and the open point of the error it threw. */
-type Outcome = { value: unknown } | { error: string; point?: string };
+/** What an operation gave: a value, or the class of the error it threw, and the rule that refused it when it is the existence of the subject. */
+type Outcome = { value: unknown } | { error: string; rule?: string };
 
 function run(x: Engine, o: Op): Outcome {
   try {
@@ -78,8 +79,8 @@ function run(x: Engine, o: Op): Outcome {
       }
     }
   } catch (e) {
-    const err = e as Error & { point?: string };
-    return { error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+    const err = e as Error;
+    return { error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
   }
 }
 
@@ -276,7 +277,7 @@ describe('the engine against the oracle: containment', () => {
         const wasListed = op.op === 'removeNode' ? engine.subjectsOf(G, 'items', op.id).length > 0 : false;
         const wasHost = op.op === 'removeNode' && kindOf(op.id) === 'Box' && engine.record(G, op.id) !== undefined;
         const r = run(engine, op);
-        if ('error' in r) { seen.errors.add(`${r.error}:${r.point ?? ''}`); if (op.op === 'insertItem' && r.error === 'Refused') seen.refusedSecond++; continue; }
+        if ('error' in r) { seen.errors.add(`${r.error}:${r.rule ?? ''}`); if (op.op === 'insertItem' && r.error === 'Refused') seen.refusedSecond++; continue; }
         if (op.op === 'createNode') seen.created++;
         else if (op.op === 'insertItem' || op.op === 'addPair') seen.inserted++;
         else if (op.op === 'moveItem') seen.moved++;
@@ -297,6 +298,6 @@ describe('the engine against the oracle: containment', () => {
     assert.ok(seen.refusedSecond > 30, `insertions refused: ${seen.refusedSecond}`);
     assert.ok(seen.nonEmptyUp > 20, `reads of a parent that found one: ${seen.nonEmptyUp}`);
     assert.ok(seen.deepest >= 3, `a tree at least three deep: ${seen.deepest}`);
-    for (const e of ['Refused:', 'Undecided:Enforcement', 'Undecided:Existence']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
+    for (const e of ['Refused:', 'Refused:no node']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
   });
 });

@@ -4,10 +4,10 @@
 // each given to the engine and the oracle; the random sequences are in `relations.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine, Refused } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle, Refused as OracleRefused } from '../support/oracle.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
@@ -27,11 +27,6 @@ const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
   assert.deepEqual(read(o), expected, `oracle: ${why}`);
 };
 const sameSet = (read: (x: Engine) => readonly (string | number | boolean)[], expected: string[], why: string): void => same((x) => sorted(read(x) as string[]), sorted(expected), why);
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
-const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
-  assert.throws(() => run(e), check, `engine: ${why}`);
-  assert.throws(() => run(o), check, `oracle: ${why}`);
-};
 const built = (): string[] => inspectEngine(e).reversesBuilt();
 
 beforeEach(() => { e = createEngine(TEST_SCHEMA); o = new Oracle(e.schema); });
@@ -110,11 +105,16 @@ describe('removeNode', () => {
     assert.deepEqual(inspectEngine(e).waitingIds(), [], 'and no bucket waits');
   });
 
-  test('a node with no record is Undecided of Existence', () => {
-    bothThrow((s) => s.removeNode(G, mint('Leaf')), undecided('Existence'), 'an id nobody created');
+  test('a node with no record: the removal changes nothing, as the removal of a pair that is not there', () => {
+    const watcher = mk('Leaf');
+    both((s) => s.removeNode(G, mint('Leaf'))); // an id nobody created
     const a = mk('Leaf');
-    both((s) => s.removeNode(G, a));
-    bothThrow((s) => s.removeNode(G, a), undecided('Existence'), 'a node removed twice');
+    both((s) => { s.addPair(G, watcher, 'likes', a); s.removeNode(G, a); });
+    sameSet((s) => s.subjectsOf(G, 'likes', a), [watcher], 'the bucket waits');
+    both((s) => s.removeNode(G, a)); // a node removed twice
+    sameSet((s) => s.subjectsOf(G, 'likes', a), [watcher], 'and the second removal moves nothing');
+    same((s) => [s.size(G), s.values(G, watcher, 'likes')], [1, [a]], 'the pair that names it stays');
+    assert.deepEqual(inspectEngine(e).waitingIds(), [a]);
   });
 
   test('literals go with the record, and nothing else changes', () => {

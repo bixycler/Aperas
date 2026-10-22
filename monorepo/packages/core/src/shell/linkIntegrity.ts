@@ -1,6 +1,6 @@
 /**
  * Link Integrity Check & Repair Sweep — `issues/linking.md` Shared Fix Direction:
- * Compares live `BlockNode` text against stored `.links` RDF triples in Oxigraph Store.
+ * Compares live `BlockNode` text against stored `.links` in the store.
  * Detects live nodes whose text contains an internal-style link occurrence (`[[code]]`,
  * `aperas://...`, `path#fragment`) that *resolves* (via `artifacts.ts#resolveOneCode`, the same
  * dispatch `resolveBlockLinks` itself uses, read-only here) to a live target with no matching
@@ -89,7 +89,7 @@ function collectAllBlockNodes(node: TreeNode, out: BlockNode[] = []): BlockNode[
 }
 
 /**
- * Sweeps the entire Oxigraph Store for live BlockNodes and compares their text against stored
+ * Sweeps the entire store for live BlockNodes and compares their text against stored
  * `.links`, resolving each occurrence for real (`resolveOneCode`, `createHolder: false` so a scan
  * never mutates the graph) instead of guessing from the raw code string. A substring/containment
  * check against `Link.target.id` only ever happens to work for `path#id/<ID>`/`aperas://id/<ID>`

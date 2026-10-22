@@ -14,6 +14,7 @@ import { createEngine, inspectEngine } from '@aperas/core/apeironNgn/engine';
 import { ownerOfId } from '@aperas/core/apeironNgn/ids';
 import type { BuildRecord, Engine, Value } from '@aperas/core/apeironNgn/interface';
 import { Oracle, oracleOwnerOfId } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { rng } from '../support/prng.ts';
 
@@ -38,10 +39,12 @@ type Op =
   | { op: 'values' | 'first'; subject: string; field: string }
   | { op: 'subjectsOf' | 'firstSubjectOf' | 'countSubjectsOf'; field: string; value: string }
   | { op: 'idsOfKind'; kind: string }
-  | { op: 'record'; subject: string };
+  | { op: 'record'; subject: string }
+  | { op: 'exists'; id: string }
+  | { op: 'size' };
 
-/** What an operation gave: a value, or the class and the open point of the error it threw. */
-type Outcome = { value: unknown } | { error: string; point?: string };
+/** What an operation gave: a value, or the class of the error it threw, and the rule that refused it when it is the existence of the subject. */
+type Outcome = { value: unknown } | { error: string; rule?: string };
 
 const canon = (v: unknown): string => JSON.stringify([typeof v, v]);
 const sortedValues = (vs: readonly Value[]): string[] => vs.map(canon).sort();
@@ -67,14 +70,16 @@ function run(x: Engine, o: Op): Outcome {
       case 'firstSubjectOf': { const v = x.firstSubjectOf(G, o.field, o.value); return { value: v === undefined ? undefined : 'some' }; }
       case 'countSubjectsOf': return { value: x.countSubjectsOf(G, o.field, o.value) };
       case 'idsOfKind': return { value: x.idsOfKind(G, o.kind).sort() };
+      case 'exists': return { value: x.exists(G, o.id) };
+      case 'size': return { value: x.size(G) };
       case 'record': {
         const r = x.record(G, o.subject);
         return { value: r === undefined ? undefined : { id: r.id, kind: r.kind, fields: r.fields.map((f) => ({ name: f.name, values: sortedValues(f.values) })) } };
       }
     }
   } catch (e) {
-    const err = e as Error & { point?: string };
-    return { error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+    const err = e as Error;
+    return { error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
   }
 }
 
@@ -155,6 +160,7 @@ function generate(seed: number): Plan {
     if (roll < 3) fields.nonsense = 'x';
     else if (roll < 6 && declares(kind, 'refs')) fields.refs = [`${id}:refs:Attr:${flake()}`];
     else if (roll < 9 && declares(kind, 'refs')) fields.refs = [`${g.pick(tops)}:refs:Ref:${flake()}`];
+    else if (roll < 11) fields.nonsense = []; // a field the kind does not declare, with no value: refused as well
     return { op: 'build', record: { id, kind, fields } };
   };
 
@@ -199,8 +205,10 @@ function generate(seed: number): Plan {
       record({ op: g.pick(['subjectsOf', 'firstSubjectOf', 'countSubjectsOf'] as const), field, value });
     } else if (t < 93) {
       record({ op: 'idsOfKind', kind: g.pick(['Leaf', 'Box', 'Ref', 'Attr', 'Stub']) });
-    } else if (t < 97) {
+    } else if (t < 95) {
       record({ op: 'record', subject: g.pick(all) });
+    } else if (t < 97) { // existence is a record, whatever points at the id; size is the number of records
+      record(g.chance(0.7) ? { op: 'exists', id: g.pick(all) } : { op: 'size' });
     } else { // outside the shape: both implementations meet it with the same error
       const subject = g.pick(withField('likes'));
       const outside = g.int(6);
@@ -224,7 +232,8 @@ function touched(o: Op): string[] {
     case 'clearField': case 'values': case 'first': case 'record': return [o.subject];
     case 'build': return [o.record.id, ...Object.values(o.record.fields).flat().filter((v): v is string => typeof v === 'string')];
     case 'subjectsOf': case 'firstSubjectOf': case 'countSubjectsOf': return [o.value];
-    case 'idsOfKind': return [];
+    case 'exists': return [o.id];
+    case 'size': case 'idsOfKind': return [];
   }
 }
 
@@ -258,6 +267,10 @@ describe('the engine against the oracle: the relations and their reverse side', 
         for (const f of builtNow) assert.ok(asked.has(f as Field) || f === 'pinned', `${at}: ${f} was built before it was asked`);
         for (const f of asked) assert.ok(builtNow.has(f), `${at}: ${f} was asked and is not built`);
         for (const f of FIELDS) if (i < askAt[f] && f !== 'pinned') assert.ok(!asked.has(f), `${at}: ${f} was asked before its draw`);
+
+        // Existence is a record: exists is whether the record is there, and size the number of records, whatever the pairs name.
+        for (const id of all) assert.equal(engine.exists(G, id), engine.record(G, id) !== undefined, `${at}: exists ${id}`);
+        assert.equal(engine.size(G), all.filter((id) => engine.record(G, id) !== undefined).length, `${at}: size`);
 
         // What the operation touched, and the whole state every FULL_EVERY operations, against the oracle.
         const ids = i % FULL_EVERY === 0 || i === ops.length - 1 ? all : touched(op);
@@ -310,7 +323,7 @@ describe('the engine against the oracle: the relations and their reverse side', 
       for (const op of ops) {
         const before = op.op === 'removeNode' || op.op === 'removePair' || op.op === 'clearField' ? all.filter((id) => engine.record(G, id) !== undefined).length : 0;
         const r = run(engine, op);
-        if ('error' in r) { seen.errors.add(`${r.error}:${r.point ?? ''}`); continue; }
+        if ('error' in r) { seen.errors.add(`${r.error}:${r.rule ?? ''}`); continue; }
         if (op.op === 'createNode') seen.created++;
         else if (op.op === 'build') seen.built++;
         else if (op.op === 'removeNode') seen.removed++;
@@ -325,6 +338,6 @@ describe('the engine against the oracle: the relations and their reverse side', 
     assert.ok(seen.cascades > 5, `removals that took an embedded node with them: ${seen.cascades}`);
     assert.ok(seen.reverseNonEmpty > 25, `reverse reads that found a subject: ${seen.reverseNonEmpty}`);
     for (const set of [seen.earliest, seen.late, seen.never]) assert.ok(set.size > 0, 'a reverse asked at the start, late and never are all drawn');
-    for (const e of ['Refused:', 'Undecided:Enforcement', 'Undecided:Existence']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
+    for (const e of ['Refused:', 'Refused:no node']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
   });
 });

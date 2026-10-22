@@ -1,5 +1,5 @@
 // What the shell reads from an id (planning/core.md, Batch 11 step 2; design/core.md, "Ids"): the kind of a node, from the grammar the engine reads ids by
-// (`apeironNgn/ids`), and whether a string is a reference to a top-level node. The half of the old `vocab.ts` that has nothing to do with Oxigraph.
+// (`apeironNgn/ids`), and whether a string is a reference to a top-level node.
 import { kindOfId, ownerOfId } from '@aperas/core/apeironNgn/ids';
 
 /** The kinds a top-level id carries: the ones with a document of their own. A `Link` or a `StringProp` is only ever embedded, inside the id of its owner. */

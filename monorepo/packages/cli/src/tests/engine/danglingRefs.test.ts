@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { rng } from '../support/prng.ts';
 
@@ -108,7 +109,7 @@ describe('danglingRefs among random builds and removals over two graphs', () => 
         const roll = g.next();
         // Each side runs the step alone, so that an error of one does not keep the other from it; both must meet the same one.
         const attempt = (run: (x: Engine) => void): string[] => [e, o].map((x) => {
-          try { run(x); return 'ok'; } catch (err) { return `${(err as Error).name}:${(err as { point?: string }).point ?? ''}`; }
+          try { run(x); return 'ok'; } catch (err) { return `${(err as Error).name}${noNode(err) ? ':no node' : ''}`; }
         });
         let outcomes: string[] = ['ok', 'ok'];
         if (roll < 0.45) {

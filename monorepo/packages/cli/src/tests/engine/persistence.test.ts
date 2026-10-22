@@ -6,9 +6,10 @@
 // as it was. A case of `build` among random operations is in `relations.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine, Refused } from '@aperas/core/apeironNgn/engine';
 import type { BuildRecord, Engine, Value } from '@aperas/core/apeironNgn/interface';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { noNode, refusedInShape } from '../support/refusals.ts';
 import { checkTree } from '../support/engineTree.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { rng } from '../support/prng.ts';
@@ -145,8 +146,6 @@ describe('a build', () => {
   let o: Oracle;
   beforeEach(() => { e = createEngine(TEST_SCHEMA); o = new Oracle(e.schema); });
   const both = (run: (x: Engine) => void): void => { run(e); run(o); };
-  const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
-  const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
   const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
     assert.deepEqual(read(e), expected, `engine: ${why}`);
     assert.deepEqual(read(o), expected, `oracle: ${why}`);
@@ -206,14 +205,15 @@ describe('a build', () => {
     const a = mint('Leaf'); const taken = mint('Leaf'); const stranger = `${mint('Leaf')}:refs:Ref:${'0'.repeat(12)}8`;
     both((x) => x.createNode(G, taken, 'Leaf'));
     const cases: [string, BuildRecord, (err: unknown) => boolean][] = [
-      ['a taken id', { id: taken, kind: 'Leaf', fields: { likes: 'x' } }, refused],
-      ['a bad id', { id: 'Leaf:1', kind: 'Leaf', fields: {} }, refused],
-      ['a kind that is not the id\'s', { id: a, kind: 'Box', fields: {} }, refused],
-      ['a field the kind does not declare', { id: a, kind: 'Leaf', fields: { likes: 'x', nonsense: 'y' } }, undecided('Enforcement')],
-      ['a second value for an optional field', { id: a, kind: 'Leaf', fields: { likes: 'x', mate: ['p', 'q'] } }, undecided('Enforcement')],
-      ['a value of the wrong sort in a later field', { id: a, kind: 'Leaf', fields: { likes: 'x', mate: 'p', rank: {} as unknown as Value } }, undecided('Enforcement')],
-      ['a number for a reference field', { id: a, kind: 'Leaf', fields: { likes: 4 as unknown as Value } }, undecided('Enforcement')],
-      ['an embedded id of another owner', { id: a, kind: 'Leaf', fields: { label: 'L', refs: stranger } }, refused],
+      ['a taken id', { id: taken, kind: 'Leaf', fields: { likes: 'x' } }, refusedInShape],
+      ['a bad id', { id: 'Leaf:1', kind: 'Leaf', fields: {} }, refusedInShape],
+      ['a kind that is not the id\'s', { id: a, kind: 'Box', fields: {} }, refusedInShape],
+      ['a field the kind does not declare', { id: a, kind: 'Leaf', fields: { likes: 'x', nonsense: 'y' } }, refusedInShape],
+      ['a field the kind does not declare, with no value', { id: a, kind: 'Leaf', fields: { likes: 'x', nonsense: [] } }, refusedInShape],
+      ['a second value for an optional field', { id: a, kind: 'Leaf', fields: { likes: 'x', mate: ['p', 'q'] } }, refusedInShape],
+      ['a value of the wrong sort in a later field', { id: a, kind: 'Leaf', fields: { likes: 'x', mate: 'p', rank: {} as unknown as Value } }, refusedInShape],
+      ['a number for a reference field', { id: a, kind: 'Leaf', fields: { likes: 4 as unknown as Value } }, refusedInShape],
+      ['an embedded id of another owner', { id: a, kind: 'Leaf', fields: { label: 'L', refs: stranger } }, refusedInShape],
     ];
     for (const [why, record, check] of cases) {
       assert.throws(() => e.build(G, record), check, `engine: ${why}`);
@@ -263,7 +263,7 @@ describe('a build', () => {
         try { e.build(G, record); } catch (err) { errorOfEngine = err; }
         try { o.build(G, record); } catch (err) { errorOfOracle = err; }
         assert.equal((errorOfEngine as Error).name, (errorOfOracle as Error).name, `${why}: the same class of error`);
-        assert.equal((errorOfEngine as { point?: string }).point, (errorOfOracle as { point?: string }).point, `${why}: the same open point`);
+        assert.equal(noNode(errorOfEngine), noNode(errorOfOracle), `${why}: the same rule`);
         assert.deepEqual(snapshot(e, universe), before, `engine: ${why}: the engine is as it was`);
         assert.deepEqual(readOut(o), readOut(e), `${why}: the oracle too`);
       }

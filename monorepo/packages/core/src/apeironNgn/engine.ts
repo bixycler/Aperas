@@ -5,7 +5,7 @@
 // that builds it.
 // The signatures are the interface's (`interface.ts`); a later batch may amend them where its work shows a shape the
 // sentence of the design did not.
-import { Refused, Undecided } from './errors.ts';
+import { Refused } from './errors.ts';
 import { isGraphName } from './graphName.ts';
 import { fieldOfId, kindOfId, ownerOfId } from './ids.ts';
 import { DEFAULT_GRAPH, type Engine, type GraphName, type Id, type NodeRecord, type Value } from './interface.ts';
@@ -13,7 +13,7 @@ import { compareIds } from './order.ts';
 import { Registry, type Rec } from './records.ts';
 import { closeSchema, type FieldDef, type LiteralValue, type Schema, type SchemaSpec } from './schema.ts';
 
-export { Refused, Undecided } from './errors.ts';
+export { Refused } from './errors.ts';
 
 /** The error of an operation whose batch has not been done. */
 export class NotBuiltError extends Error {
@@ -27,7 +27,7 @@ export class NotBuiltError extends Error {
   }
 }
 
-/** The batch that builds each operation (planning/core.md). `exists` and `size` are in Batch 4 and wait on an open point (`WAITING_ON`). */
+/** The batch that builds each operation (planning/core.md). */
 export const BUILT_BY: Readonly<Record<Exclude<keyof Engine, 'schema'>, string>> = {
   values: 'Batch 4',
   first: 'Batch 4',
@@ -64,19 +64,20 @@ export const BUILT_BY: Readonly<Record<Exclude<keyof Engine, 'schema'>, string>>
 };
 
 /** The operations that a batch has built. */
-export const BUILT: ReadonlySet<keyof typeof BUILT_BY> = new Set(['createNode', 'addPair', 'removePair', 'clearField', 'values', 'first', 'subjectsOf', 'firstSubjectOf', 'countSubjectsOf', 'removeNode', 'build', 'idsOfKind', 'record', 'items', 'placeOf', 'insertItem', 'moveItem', 'removeItem', 'tombstone', 'tombstoneSubtree', 'sweep', 'createGraph', 'dropGraph', 'graphOf', 'danglingRefs']);
-
-/** The operations that stay in the engine and throw `Undecided`, not `NotBuiltError`: the batch is not what is missing. */
-export const WAITING_ON: Readonly<Partial<Record<keyof typeof BUILT_BY, string>>> = { exists: 'Existence', size: 'Existence' };
+export const BUILT: ReadonlySet<keyof typeof BUILT_BY> = new Set(['createNode', 'addPair', 'removePair', 'clearField', 'values', 'first', 'subjectsOf', 'firstSubjectOf', 'countSubjectsOf', 'removeNode', 'build', 'idsOfKind', 'record', 'items', 'placeOf', 'insertItem', 'moveItem', 'removeItem', 'tombstone', 'tombstoneSubtree', 'sweep', 'createGraph', 'dropGraph', 'graphOf', 'danglingRefs', 'exists', 'size']);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const unbuilt = (operation: keyof typeof BUILT_BY) => (..._args: any[]): never => { throw new NotBuiltError(operation, BUILT_BY[operation]); };
 
-// -- the two open meanings, one function each ----------------------------------------------------------------------
+// -- the two rules the engine enforces, one function each -------------------------------------------------------------
 
-/** Existence: whether a node exists by being in a registry or by having a pair. Waits on the open point. */
-function existence(): never {
-  throw new Undecided('Existence');
+/**
+ * Existence (design/core.md, "Open points settled"): a node exists by its record, as in a labelled property graph, and not by a pair
+ * that names it. A write whose subject has no record is refused; the reverse side of an id with no record (the pairs that name it) is
+ * not its existence, and the id is a dangling reference.
+ */
+function existence(graph: GraphName, id: Id): never {
+  throw new Refused(`no node ${id} in the graph ${graph}`);
 }
 
 const isLiteral = (v: unknown): v is LiteralValue => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
@@ -123,19 +124,28 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
   };
 
   /**
-   * Enforcement: a write outside the shape of the schema. Gives the field when the write is inside it. Waits on the open point.
-   * A write that names its subject (`addPair`, `build`, `insertItem`) also meets the rule for the value of an embed field: an id of an embedded
-   * node whose owner is the subject and whose field is this one (otherwise `Refused`, a rule of ids), of the embedded kind or a
-   * descendant (otherwise `Undecided`). A reference field takes any string.
+   * Enforcement (design/core.md, "Open points settled"): the engine refuses a write outside the shape of the schema: a field the kind
+   * does not declare (or a derived one), a value of the wrong sort (a literal field holds a string, a number or a boolean, a reference or
+   * embed field holds an id as a string; whether a string is well formed is not asked, a malformed one is a dangling reference). Gives the
+   * field when the write is inside it. A write that names its subject (`addPair`, `build`, `insertItem`) also meets the rule for the
+   * value of an embed field: an id of an embedded node whose owner is the subject and whose field is this one, of the embedded kind or a
+   * descendant. A second value in a `one` or `optional` field is the caller's, `single`.
    */
-  const inShape = (field: FieldDef | undefined, value?: Value, subject?: Id): FieldDef => {
-    if (field === undefined || field.derived) throw new Undecided('Enforcement');
-    if (value !== undefined && (field.storage === 'literal' ? !isLiteral(value) : typeof value !== 'string')) throw new Undecided('Enforcement');
+  const inShape = (kind: string, name: string, value?: Value, subject?: Id): FieldDef => {
+    const field = kinds.get(kind)?.fields.get(name);
+    if (field === undefined) throw new Refused(`${kind} declares no field ${name}`);
+    if (field.derived) throw new Refused(`${name} of ${kind} is derived and is not written`);
+    if (value !== undefined && (field.storage === 'literal' ? !isLiteral(value) : typeof value !== 'string')) throw new Refused(`${JSON.stringify(value)} is not a value of ${name} of ${kind}, a ${field.storage === 'literal' ? 'literal' : 'reference'} field`);
     if (value !== undefined && subject !== undefined && field.storage === 'embed') {
       if (ownerOfId(value) !== subject || fieldOfId(value) !== field.name) throw new Refused(`${JSON.stringify(value)} is not an id of a node embedded by ${subject} in ${field.name}`);
-      if (!isKindOrBelow(kindOfId(value), field.embeds!)) throw new Undecided('Enforcement');
+      if (!isKindOrBelow(kindOfId(value), field.embeds!)) throw new Refused(`${value} is not of the kind ${field.embeds} that ${field.name} embeds, nor below it`);
     }
     return field;
+  };
+
+  /** A second value in a field that holds one: a replacement is a clear and then an add. */
+  const single = (field: FieldDef, subject: Id): never => {
+    throw new Refused(`${field.name} of ${subject} holds one value; clear it before adding another`);
   };
 
   /**
@@ -382,7 +392,7 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
   const tombstone = (graph: GraphName, id: Id, at: string): void => {
     const marker = markerOf();
     const rec = registry.get(graph, id);
-    if (rec === undefined) return existence();
+    if (rec === undefined) return existence(graph, id);
     if (fieldOf(rec, marker) === undefined) throw new Refused(`${rec.kind} has no tombstone marker ${marker}`);
     if (isTombstone(rec, marker)) return; // already a tombstone: the first timestamp stays
     makeTombstone(rec, marker, at);
@@ -397,7 +407,7 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
   const tombstoneSubtree = (graph: GraphName, id: Id, at: string): void => {
     const marker = markerOf();
     const top = registry.get(graph, id);
-    if (top === undefined) return existence();
+    if (top === undefined) return existence(graph, id);
     const containment = schema.roles.containment;
     const members: Rec[] = [];
     const seen = new Set<Rec>([top]);
@@ -480,10 +490,15 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
   /** The host and the field of a splice or of a read of a list: the host has a record, the field is in the shape and ordered. */
   const listOf = (graph: GraphName, host: Id, name: string): { rec: Rec; field: FieldDef } => {
     const rec = registry.get(graph, host);
-    if (rec === undefined) return existence();
-    const field = inShape(fieldOf(rec, name));
+    if (rec === undefined) return existence(graph, host);
+    return { rec, field: orderedField(rec, name) };
+  };
+
+  /** The field of a list: in the shape of the kind of `rec`, and ordered. */
+  const orderedField = (rec: Rec, name: string): FieldDef => {
+    const field = inShape(rec.kind, name);
     if (field.cardinality !== 'ordered') throw new Refused(`${name} is not an ordered field`);
-    return { rec, field };
+    return field;
   };
 
   return {
@@ -491,28 +506,28 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
 
     addPair(graph, subject, name, value) {
       const rec = registry.get(graph, subject);
-      if (rec === undefined) return existence();
-      const field = inShape(fieldOf(rec, name), value, subject);
+      if (rec === undefined) return existence(graph, subject);
+      const field = inShape(rec.kind, name, value, subject);
       notOwned(field, value);
       const have = rec.fields.get(name);
       if (have?.some((v) => v === value)) return; // already present: nothing changes
-      if (have !== undefined && (field.cardinality === 'one' || field.cardinality === 'optional')) throw new Undecided('Enforcement');
+      if (have !== undefined && (field.cardinality === 'one' || field.cardinality === 'optional')) single(field, subject);
       if (field.partitioning) partition(subject, field, value as Id);
       attach(rec, field, value as Value);
     },
 
     removePair(graph, subject, name, value) {
       const rec = registry.get(graph, subject);
-      if (rec === undefined) return existence();
-      const field = inShape(fieldOf(rec, name), value);
+      if (rec === undefined) return existence(graph, subject);
+      const field = inShape(rec.kind, name, value);
       if (field.storage === 'embed' && rec.fields.get(name)?.includes(value)) prepareRemoval();
       removeValue(rec, field, value);
     },
 
     clearField(graph, subject, name) {
       const rec = registry.get(graph, subject);
-      if (rec === undefined) return existence();
-      const field = inShape(fieldOf(rec, name));
+      if (rec === undefined) return existence(graph, subject);
+      const field = inShape(rec.kind, name);
       if (field.storage !== 'embed') {
         release(rec, field);
         return;
@@ -526,7 +541,7 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
 
     removeNode(graph, id) {
       const rec = registry.get(graph, id);
-      if (rec === undefined) return existence();
+      if (rec === undefined) return; // not there: nothing changes, as the removal of a pair that is not there
       prepareRemoval();
       drop(rec);
     },
@@ -537,20 +552,20 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
       const kind = kinds.get(record.kind)!;
       const plan: [FieldDef, Value[]][] = [];
       for (const [name, input] of Object.entries(record.fields)) {
-        const def = kind.fields.get(name);
-        if (def?.derived) continue; // an assertion by the shell, never a pair
+        if (kind.fields.get(name)?.derived) continue; // an assertion by the shell, never a pair
+        inShape(record.kind, name); // a field the kind does not declare is refused even with no value
         const values: Value[] = [];
         const seen = new Set<string>(); // the strings of `values`, so that an array of thousands of items is not scanned for each
         for (const value of Array.isArray(input) ? (input as readonly Value[]) : [input as Value]) {
-          const field = inShape(def, value, record.id);
+          const field = inShape(record.kind, name, value, record.id);
           notOwned(field, value);
           if (typeof value === 'string' ? seen.has(value) : values.some((v) => v === value)) continue;
-          if (values.length > 0 && (field.cardinality === 'one' || field.cardinality === 'optional')) throw new Undecided('Enforcement');
+          if (values.length > 0 && (field.cardinality === 'one' || field.cardinality === 'optional')) single(field, record.id);
           if (field.partitioning) partition(record.id, field, value as Id);
           values.push(value);
           if (typeof value === 'string') seen.add(value);
         }
-        if (values.length > 0) plan.push([def!, values]);
+        if (values.length > 0) plan.push([kind.fields.get(name)!, values]);
       }
       const rec = registry.add(graph, record.id, record.kind);
       place(rec);
@@ -589,19 +604,23 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
     },
 
     items(graph, host, name) {
-      const { rec } = listOf(graph, host, name);
+      const rec = registry.get(graph, host);
+      if (rec === undefined) return []; // a read does not refuse on absence, as `values` does not
+      orderedField(rec, name);
       return [...(rec.fields.get(name) ?? [])] as Id[];
     },
 
     placeOf(graph, host, name, item) {
-      const { rec } = listOf(graph, host, name);
+      const rec = registry.get(graph, host);
+      if (rec === undefined) return undefined;
+      orderedField(rec, name);
       const at = rec.fields.get(name)?.indexOf(item) ?? -1;
       return at < 0 ? undefined : at;
     },
 
     insertItem(graph, host, name, item, at) {
       const { rec, field } = listOf(graph, host, name);
-      inShape(field, item, host);
+      inShape(rec.kind, name, item, host);
       notOwned(field, item);
       const list = rec.fields.get(name) ?? [];
       if (list.includes(item)) throw new Refused(`${item} is already in ${name} of ${host}`);
@@ -677,8 +696,13 @@ function built(schema: Schema, registry: Registry): Pick<Engine, 'createNode' | 
       return [...missing].sort(compareIds);
     },
 
-    exists: existence,
-    size: existence,
+    exists(graph, id) {
+      return registry.get(graph, id) !== undefined;
+    },
+
+    size(graph) {
+      return registry.sizeOf(graph);
+    },
 
     record(graph, id): NodeRecord | undefined {
       const rec = registry.get(graph, id);

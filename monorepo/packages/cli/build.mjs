@@ -2,10 +2,8 @@
 /**
  * Builds the publishable `aperas` bundle (AperasKG/artifacts/design/packaging.md's Distribution
  * section): `esbuild` bundles `src/aperas.ts` (pulling in `@aperas/core` transitively — nothing in
- * `packages/core` is published on its own) into one plain-JS file, `oxigraph` marked external since
- * it ships as a WASM binary a bundler can't usefully inline. The result is a self-contained
- * `dist/` — its own minimal `package.json` (name `aperas`, a `bin` entry, `oxigraph` as a real
- * dependency) — never touching this package's own dev-mode `package.json`/`exports` (still
+ * `packages/core` is published on its own) into one plain-JS file with no external dependency. The result is a self-contained
+ * `dist/` — its own minimal `package.json` (name `aperas`, a `bin` entry, no dependency) — never touching this package's own dev-mode `package.json`/`exports` (still
  * pointing at `.ts` source for the workspace, unaffected by any of this).
  *
  * Also builds `packages/web` (`vite build`) and copies its `dist/` to `dist/web/`, sibling to the
@@ -37,8 +35,6 @@ const distDir = join(cliDir, 'dist');
 const webDir = join(cliDir, '..', 'web');
 
 const cliPkg = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf-8'));
-const corePkg = JSON.parse(readFileSync(join(cliDir, '..', 'core', 'package.json'), 'utf-8'));
-const oxigraphVersion = corePkg.dependencies.oxigraph;
 
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
@@ -50,7 +46,6 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  external: ['oxigraph'],
   banner: { js: '#!/usr/bin/env node' },
   logLevel: 'info',
 });
@@ -78,7 +73,6 @@ const distPkg = {
   license: cliPkg.license || 'Unlicense',
   type: 'module',
   bin: { aperas: './aperas.js' },
-  dependencies: { oxigraph: oxigraphVersion },
 };
 writeFileSync(join(distDir, 'package.json'), JSON.stringify(distPkg, null, 2) + '\n', 'utf-8');
 

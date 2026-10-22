@@ -72,7 +72,7 @@ export interface Opened {
 export function loadRefusal(load: LoadResult): string | undefined {
   const parts: string[] = [];
   if (load.rejected.length > 0) parts.push(`${load.rejected.length} id(s) carried by more than one document, none kept: ${load.rejected.map((r) => `${r.id} (${r.files.join(', ')})`).join('; ')}`);
-  if (load.errors.length > 0) parts.push(`${load.errors.length} document(s) the engine refused: ${load.errors.map((e) => `${e.subject} (${e.class}${e.point !== undefined ? ` on ${e.point}` : ''}: ${e.message})`).join('; ')}`);
+  if (load.errors.length > 0) parts.push(`${load.errors.length} document(s) the engine refused: ${load.errors.map((e) => `${e.subject} (${e.class}: ${e.message})`).join('; ')}`);
   return parts.length > 0 ? `the mirror was not read in full — ${parts.join(' — ')}` : undefined;
 }
 

@@ -4,10 +4,11 @@
 // cases, each given to the engine and the oracle; the random sequences are in `containment.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { noNode, refused, refusedInShape } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
@@ -23,22 +24,22 @@ const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
   assert.deepEqual(read(o), expected, `oracle: ${why}`);
 };
 const sorted = (xs: readonly string[]): string[] => [...xs].sort();
-/** What a call gave: its class and open point if it threw, `ok` if not. The engine and the oracle must give the same. */
+/** What a call gave: its class and the rule that refused it if it threw (told by the message), `ok` if not. The engine and the oracle must give the same. */
+const RULES: [string, RegExp][] = [['no node', /^refused: no node /], ['not a value', /is not a value of/], ['already in', /is already in/], ['no place', /no place/]];
+const ruleOf = (err: Error): string => `${err.name}:${RULES.find(([, re]) => re.test(err.message))?.[0] ?? ''}`;
 const outcome = (run: (x: Engine) => unknown): string => {
   try { run(e); } catch (err) {
-    const a = err as Error & { point?: string };
+    const a = err as Error;
     try { run(o); } catch (err2) {
-      const b = err2 as Error & { point?: string };
-      assert.equal(`${b.name}:${b.point ?? ''}`, `${a.name}:${a.point ?? ''}`, 'the oracle gave another error than the engine');
-      return `${a.name}:${a.point ?? ''}`;
+      const b = err2 as Error;
+      assert.equal(ruleOf(b), ruleOf(a), 'the oracle gave another error than the engine');
+      return ruleOf(a);
     }
     return assert.fail('the engine threw and the oracle did not');
   }
   try { run(o); } catch (err2) { return assert.fail(`the oracle threw ${(err2 as Error).name} and the engine did not`); }
   return 'ok';
 };
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
-const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
 const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
   assert.throws(() => run(e), check, `engine: ${why}`);
   assert.throws(() => run(o), check, `oracle: ${why}`);
@@ -205,21 +206,36 @@ describe('the generic writes on an ordered field', () => {
 });
 
 describe('the checks and the order of the errors', () => {
-  test('a host with no record is Undecided of Existence, for each operation', () => {
+  test('a host with no record is refused as no node, for each write', () => {
     const ghost = mint('Box'); const a = mk('Leaf');
     const ops: [string, (x: Engine) => unknown][] = [
       ['insertItem', (x) => x.insertItem(G, ghost, 'items', a)],
       ['moveItem', (x) => x.moveItem(G, ghost, 'items', a, 0)],
       ['removeItem', (x) => x.removeItem(G, ghost, 'items', a)],
-      ['items', (x) => x.items(G, ghost, 'items')],
-      ['placeOf', (x) => x.placeOf(G, ghost, 'items', a)],
       ['addPair', (x) => x.addPair(G, ghost, 'items', a)],
       ['removePair', (x) => x.removePair(G, ghost, 'items', a)],
       ['clearField', (x) => x.clearField(G, ghost, 'items')],
     ];
-    for (const [name, run] of ops) bothThrow(run as (x: Engine) => void, undecided('Existence'), name);
+    for (const [name, run] of ops) bothThrow(run as (x: Engine) => void, noNode, name);
     same((x) => x.values(G, ghost, 'items'), [], 'values of an absent subject is still empty');
     same((x) => x.first(G, ghost, 'items'), undefined, 'and first');
+  });
+
+  test('a read of a host with no record is empty, as values and first are: items gives [], placeOf gives undefined', () => {
+    const ghost = mint('Box'); const a = mk('Leaf');
+    same((x) => x.items(G, ghost, 'items'), [], 'items');
+    same((x) => x.placeOf(G, ghost, 'items', a), undefined, 'placeOf');
+    same((x) => x.items(G, ghost, 'likes'), [], 'items of a field the kind does not order, on a host with no record');
+    same((x) => x.items(G, ghost, 'nonesuch'), [], 'items of a name no kind declares, on a host with no record');
+    same((x) => x.items('nowhere', ghost, 'items'), [], 'items in a graph that does not exist');
+    same((x) => x.placeOf('nowhere', ghost, 'items', a), undefined, 'placeOf in a graph that does not exist');
+  });
+
+  test('a read still refuses a host that has a record when the field is not an ordered field of its kind', () => {
+    const box = mk('Box'); const a = mk('Leaf');
+    bothThrow((x) => x.items(G, box, 'nonesuch'), refused, 'items of a name the kind does not declare');
+    bothThrow((x) => x.placeOf(G, box, 'nonesuch', a), refused, 'placeOf of a name the kind does not declare');
+    bothThrow((x) => x.items(G, box, 'pinned'), refused, 'items of an unordered field');
   });
 
   test('an unordered field is Refused by items, placeOf and the three splices', () => {
@@ -236,7 +252,7 @@ describe('the checks and the order of the errors', () => {
   test('a literal field that is not ordered, a derived entry and an undeclared field are refused by the shape, not by the order', () => {
     const leaf = mk('Leaf'); const a = mk('Leaf');
     for (const field of ['label', 'up', 'nonsense']) {
-      const expected = field === 'label' ? refused : undecided('Enforcement');
+      const expected = refusedInShape;
       bothThrow((x) => x.items(G, leaf, field), expected, `items of ${field}`);
       bothThrow((x) => x.insertItem(G, leaf, field, a), expected, `insertItem of ${field}`);
       bothThrow((x) => x.moveItem(G, leaf, field, a, 0), expected, `moveItem of ${field}`);
@@ -244,10 +260,10 @@ describe('the checks and the order of the errors', () => {
     }
   });
 
-  test('an item that is not a string is Undecided of Enforcement, after the field is known to be ordered', () => {
+  test('an item that is not a string is refused, after the field is known to be ordered', () => {
     const box = mk('Box'); const leaf = mk('Leaf');
-    bothThrow((x) => x.insertItem(G, box, 'items', 4 as unknown as string), undecided('Enforcement'), 'a number');
-    bothThrow((x) => x.addPair(G, box, 'items', true), undecided('Enforcement'), 'addPair of a boolean');
+    bothThrow((x) => x.insertItem(G, box, 'items', 4 as unknown as string), refused, 'a number');
+    bothThrow((x) => x.addPair(G, box, 'items', true), refused, 'addPair of a boolean');
     bothThrow((x) => x.insertItem(G, leaf, 'likes', 4 as unknown as string), refused, 'an unordered field is Refused before the item is looked at');
     checkList(box, [], 'nothing was written');
   });
@@ -259,11 +275,11 @@ describe('the checks and the order of the errors', () => {
     both((x) => x.insertItem(G, box, 'items', b, 1));
     checkList(box, [a, b], 'the place equal to the length is the end');
     // two checks apply: the item is not a string and the place is out of range; the item is looked at first.
-    assert.equal(outcome((x) => x.insertItem(G, box, 'items', 7 as unknown as string, 99)), 'Undecided:Enforcement');
-    // two checks apply: the item is already in the list and the place is out of range; both are Refused.
-    assert.equal(outcome((x) => x.insertItem(G, box, 'items', a, 99)), 'Refused:');
-    // two checks apply: the host has no record and the field is unordered; Existence is first.
-    assert.equal(outcome((x) => x.insertItem(G, mint('Leaf'), 'likes', a)), 'Undecided:Existence');
+    assert.equal(outcome((x) => x.insertItem(G, box, 'items', 7 as unknown as string, 99)), 'Refused:not a value');
+    // two checks apply: the item is already in the list and the place is out of range; the item is first.
+    assert.equal(outcome((x) => x.insertItem(G, box, 'items', a, 99)), 'Refused:already in');
+    // two checks apply: the host has no record and the field is unordered; the record is first.
+    assert.equal(outcome((x) => x.insertItem(G, mint('Leaf'), 'likes', a)), 'Refused:no node');
   });
 });
 

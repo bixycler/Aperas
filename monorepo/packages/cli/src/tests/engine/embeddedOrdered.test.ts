@@ -6,19 +6,18 @@
 // engine and to the oracle.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { refusedInShape } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
 let n = 0;
 const flake = (): string => (++n).toString().padStart(13, '0');
 const mint = (kind: string): string => `${kind}:${flake()}`;
-const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
-const undecided = (err: unknown): boolean => (err instanceof Undecided && err.point === 'Enforcement') || (err instanceof OracleUndecided && err.point === 'Enforcement');
-const refusedWith = (re: RegExp) => (err: unknown): boolean => refused(err) && re.test((err as Error).message);
+const refusedWith = (re: RegExp) => (err: unknown): boolean => refusedInShape(err) && re.test((err as Error).message);
 
 const SPEC: SchemaSpec = {
   kinds: [
@@ -57,8 +56,8 @@ describe('insertItem into an ordered embed field', () => {
     const { engines, a, b, part } = make();
     for (const x of engines) {
       x.insertItem(G, a, 'parts', part);
-      assert.throws(() => x.insertItem(G, b, 'parts', part), refused, 'a second owner');
-      assert.throws(() => x.insertItem(G, b, 'parts', part, 0), refused, 'a second owner, at a place');
+      assert.throws(() => x.insertItem(G, b, 'parts', part), refusedInShape, 'a second owner');
+      assert.throws(() => x.insertItem(G, b, 'parts', part, 0), refusedInShape, 'a second owner, at a place');
       assert.deepEqual(x.items(G, b, 'parts'), []);
       assert.deepEqual(x.items(G, a, 'parts'), [part]);
       assert.deepEqual(x.subjectsOf(G, 'parts', part), [a]);
@@ -71,7 +70,7 @@ describe('insertItem into an ordered embed field', () => {
       const inSpares = `${a}:spares:Part:${flake()}`; const top = mint('Part');
       x.createNode(G, inSpares, 'Part'); x.createNode(G, top, 'Part');
       for (const id of [inSpares, top, 'not an id at all', `${a}:parts:Part:${flake()}`.replace(a, mint('Pack'))]) {
-        assert.throws(() => x.insertItem(G, a, 'parts', id), refused, id);
+        assert.throws(() => x.insertItem(G, a, 'parts', id), refusedInShape, id);
       }
       x.insertItem(G, a, 'parts', part);
       assert.deepEqual(x.items(G, a, 'parts'), [part]);
@@ -79,18 +78,21 @@ describe('insertItem into an ordered embed field', () => {
     }
   });
 
-  test('is Undecided of Enforcement for an embedded node of a kind other than the field embeds', () => {
+  test('is refusedInShape for an embedded node of a kind other than the field embeds', () => {
     const { engines, a } = make();
     for (const x of engines) {
       const wrong = `${a}:parts:Other:${flake()}`;
       x.createNode(G, wrong, 'Other');
-      assert.throws(() => x.insertItem(G, a, 'parts', wrong), undecided);
+      assert.throws(() => x.insertItem(G, a, 'parts', wrong), refusedInShape);
       assert.deepEqual(x.items(G, a, 'parts'), []);
     }
   });
 
   test('gives the outcome addPair gives, for the same value, each on a fresh store', () => {
-    const outcome = (run: () => void): string => { try { run(); return 'ok'; } catch (err) { return (err as Error).name; } };
+    // 'Refused' is a value that is no id of a node the host embeds in the field; 'Refused (kind)' is an id of one, of a kind other than the field embeds.
+    const outcome = (run: () => void): string => {
+      try { run(); return 'ok'; } catch (err) { return (err as Error).name + (/ embeds/.test((err as Error).message) ? ' (kind)' : ''); }
+    };
     const host = mint('Pack'); const other = mint('Pack');
     const values = [`${host}:parts:Part:${flake()}`, `${host}:parts:Big:${flake()}`, `${other}:parts:Part:${flake()}`, `${host}:spares:Part:${flake()}`,
       `${host}:parts:Other:${flake()}`, mint('Part'), 'not an id'];
@@ -106,12 +108,12 @@ describe('insertItem into an ordered embed field', () => {
       assert.equal(item[0], item[1], `the engine and the oracle, the value ${v}`);
       seen.add(item[0]!);
     }
-    assert.deepEqual([...seen].sort(), ['Refused', 'Undecided', 'ok'], 'the values reach all three outcomes');
+    assert.deepEqual([...seen].sort(), ['Refused', 'Refused (kind)', 'ok'], 'the values reach all three outcomes');
   });
 });
 
 describe('moveItem of an embedded id in the containment field', () => {
-  test('is refused for being an embedded node, not for being absent from the list', () => {
+  test('is refusedInShape for being an embedded node, not for being absent from the list', () => {
     const e = createEngine(TEST_SCHEMA); const o = new Oracle(e.schema);
     const box = mint('Box'); const leaf = mint('Leaf'); const owner = mint('Leaf');
     const embedded = `${owner}:refs:Ref:${flake()}`; const norecord = `${owner}:refs:Ref:${flake()}`;
@@ -121,7 +123,7 @@ describe('moveItem of an embedded id in the containment field', () => {
       for (const id of [embedded, norecord]) {
         assert.throws(() => x.moveItem(G, box, 'items', id, 0), refusedWith(/embedded node/), `moveItem of ${id}`);
       }
-      // An id that is no embedded id and is not in the list is refused for the list.
+      // An id that is no embedded id and is not in the list is refusedInShape for the list.
       assert.throws(() => x.moveItem(G, box, 'items', mint('Leaf'), 0), refusedWith(/is not in items/));
       assert.deepEqual(x.items(G, box, 'items'), [leaf]);
     }

@@ -3,10 +3,11 @@
 // with the reverse side, are in `relations.model.test.ts`. The engine and the oracle are given each case and must agree.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { noNode, refusedInShape } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
@@ -21,9 +22,6 @@ let o: Oracle;
 const mk = (kind: string): string => { const id = mint(kind); e.createNode(G, id, kind); o.createNode(G, id, kind); return id; };
 /** A write run on both implementations. */
 const both = (run: (x: Engine) => void): void => { run(e); run(o); };
-
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
-const refused = (err: unknown): boolean => err instanceof Refused || err instanceof OracleRefused;
 /** The same case thrown by both implementations, checked by the same predicate. */
 const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
   assert.throws(() => run(e), check, `engine: ${why}`);
@@ -67,11 +65,11 @@ describe('a pair of a reference field', () => {
     const ref = embedded(a, 'refs', 'Ref'); const t1 = mk('Leaf'); const t2 = mk('Leaf');
     both((x) => { x.addPair(G, a, 'mate', b); x.addPair(G, a, 'mate', b); });
     same((x) => x.values(G, a, 'mate'), [b], 'the same value again changes nothing');
-    bothThrow((x) => x.addPair(G, a, 'mate', c), undecided('Enforcement'), 'a second value for an optional field');
+    bothThrow((x) => x.addPair(G, a, 'mate', c), refusedInShape, 'a second value for an optional field');
     both((x) => { x.clearField(G, a, 'mate'); x.addPair(G, a, 'mate', c); });
     same((x) => x.values(G, a, 'mate'), [c], 'a write is a clear and then an add');
     both((x) => { x.createNode(G, ref, 'Ref'); x.addPair(G, ref, 'to', t1); });
-    bothThrow((x) => x.addPair(G, ref, 'to', t2), undecided('Enforcement'), 'a second value for a one field');
+    bothThrow((x) => x.addPair(G, ref, 'to', t2), refusedInShape, 'a second value for a one field');
     both((x) => x.clearField(G, ref, 'to'));
     same((x) => x.values(G, ref, 'to'), [], 'a one field may be left with no value');
   });
@@ -91,13 +89,13 @@ describe('a pair of a reference field', () => {
     same((x) => x.values(G, a, 'likes').length, 2, 'two values');
   });
 
-  test('a value that is not a string is Undecided of Enforcement', () => {
+  test('a value that is not a string is refused', () => {
     const a = mk('Leaf');
     for (const bad of [4, true, {}, null]) {
-      bothThrow((x) => x.addPair(G, a, 'likes', bad as unknown as string), undecided('Enforcement'), `${JSON.stringify(bad)} for a reference field`);
-      bothThrow((x) => x.removePair(G, a, 'likes', bad as unknown as string), undecided('Enforcement'), `${JSON.stringify(bad)} removed`);
+      bothThrow((x) => x.addPair(G, a, 'likes', bad as unknown as string), refusedInShape, `${JSON.stringify(bad)} for a reference field`);
+      bothThrow((x) => x.removePair(G, a, 'likes', bad as unknown as string), refusedInShape, `${JSON.stringify(bad)} removed`);
     }
-    bothThrow((x) => x.addPair(G, a, 'refs', 4 as unknown as string), undecided('Enforcement'), 'a number for an embed field');
+    bothThrow((x) => x.addPair(G, a, 'refs', 4 as unknown as string), refusedInShape, 'a number for an embed field');
   });
 });
 
@@ -122,14 +120,14 @@ describe('a pair of an embed field', () => {
       ['a deeper node of the subject', nested],
       ['an id of the subject', a],
     ];
-    for (const [why, value] of cases) bothThrow((x) => x.addPair(G, a, 'refs', value), refused, why);
+    for (const [why, value] of cases) bothThrow((x) => x.addPair(G, a, 'refs', value), refusedInShape, why);
     same((x) => x.values(G, a, 'refs'), [], 'nothing was added');
   });
 
-  test('an embedded id of another kind than the field embeds is Undecided of Enforcement', () => {
+  test('an embedded id of another kind than the field embeds is refused', () => {
     const a = mk('Leaf');
-    bothThrow((x) => x.addPair(G, a, 'refs', embedded(a, 'refs', 'Attr')), undecided('Enforcement'), 'an Attr in refs, which embeds Ref');
-    bothThrow((x) => x.addPair(G, a, 'refs', embedded(a, 'refs', 'Leaf')), undecided('Enforcement'), 'a Leaf in refs');
+    bothThrow((x) => x.addPair(G, a, 'refs', embedded(a, 'refs', 'Attr')), refusedInShape, 'an Attr in refs, which embeds Ref');
+    bothThrow((x) => x.addPair(G, a, 'refs', embedded(a, 'refs', 'Leaf')), refusedInShape, 'a Leaf in refs');
   });
 
   test('the embedded kind or one of its descendants is taken', () => {
@@ -150,8 +148,8 @@ describe('a pair of an embed field', () => {
       x.addPair(G, h, 'parts', id); oracle.addPair(G, h, 'parts', id);
       assert.ok(x.values(G, h, 'parts').includes(id), kind);
     }
-    assert.throws(() => x.addPair(G, h, 'parts', embedded(h, 'parts', 'Other')), undecided('Enforcement'));
-    assert.throws(() => oracle.addPair(G, h, 'parts', embedded(h, 'parts', 'Other')), undecided('Enforcement'));
+    assert.throws(() => x.addPair(G, h, 'parts', embedded(h, 'parts', 'Other')), refusedInShape);
+    assert.throws(() => oracle.addPair(G, h, 'parts', embedded(h, 'parts', 'Other')), refusedInShape);
     assert.equal(x.values(G, h, 'parts').length, 3);
   });
 
@@ -159,7 +157,7 @@ describe('a pair of an embed field', () => {
     const a = mk('Leaf'); const ref = embedded(a, 'refs', 'Ref'); const attr = embedded(ref, 'attrs', 'Attr');
     both((x) => { x.createNode(G, ref, 'Ref'); x.addPair(G, a, 'refs', ref); x.createNode(G, attr, 'Attr'); x.addPair(G, ref, 'attrs', attr); });
     same((x) => x.values(G, ref, 'attrs'), [attr], 'the Attr is held by the Ref');
-    bothThrow((x) => x.addPair(G, a, 'attrs', attr), undecided('Enforcement'), 'the Leaf declares no attrs');
+    bothThrow((x) => x.addPair(G, a, 'attrs', attr), refusedInShape, 'the Leaf declares no attrs');
   });
 });
 
@@ -188,13 +186,13 @@ describe('removePair', () => {
     same((x) => x.values(G, a, 'refs'), [], 'nothing there, nothing removed');
   });
 
-  test('the Existence and Enforcement cases are Undecided of the right point, for each write', () => {
+  test('a subject with no record, and a write outside the shape, are refused for each write, each by its own rule', () => {
     const a = mk('Leaf'); const gone = mint('Leaf');
     for (const [name, run] of [
       ['addPair', (x: Engine) => x.addPair(G, gone, 'likes', a)],
       ['removePair', (x: Engine) => x.removePair(G, gone, 'likes', a)],
       ['clearField', (x: Engine) => x.clearField(G, gone, 'likes')],
-    ] as const) bothThrow(run, undecided('Existence'), `${name} of a subject with no record`);
+    ] as const) bothThrow(run, noNode, `${name} of a subject with no record`);
     for (const [name, run] of [
       ['addPair of an undeclared field', (x: Engine) => x.addPair(G, a, 'nonsense', a)],
       ['removePair of an undeclared field', (x: Engine) => x.removePair(G, a, 'nonsense', a)],
@@ -204,7 +202,7 @@ describe('removePair', () => {
       ['clearField of a derived entry', (x: Engine) => x.clearField(G, a, 'up')],
       ['addPair of a field of another kind', (x: Engine) => x.addPair(G, a, 'pinned', a)],
       ['removePair of a field of another kind', (x: Engine) => x.removePair(G, a, 'pinned', a)],
-    ] as const) bothThrow(run, undecided('Enforcement'), name);
+    ] as const) bothThrow(run, refusedInShape, name);
   });
 });
 
@@ -250,9 +248,9 @@ describe('an ordered field and a derived entry', () => {
     assert.doesNotThrow(() => e.addPair(G, box, 'items', leaf));
     assert.deepEqual(e.values(G, box, 'items'), [leaf]);
     assert.deepEqual(e.values(G, leaf, 'up'), [box], 'the container of a node');
-    assert.throws(() => e.addPair(G, leaf, 'up', box), undecided('Enforcement'), 'a derived entry holds no pair');
-    assert.throws(() => e.removePair(G, leaf, 'up', box), undecided('Enforcement'));
-    assert.throws(() => e.clearField(G, leaf, 'up'), undecided('Enforcement'));
+    assert.throws(() => e.addPair(G, leaf, 'up', box), refusedInShape, 'a derived entry holds no pair');
+    assert.throws(() => e.removePair(G, leaf, 'up', box), refusedInShape);
+    assert.throws(() => e.clearField(G, leaf, 'up'), refusedInShape);
     assert.doesNotThrow(() => e.addPair(G, box, 'pinned', leaf));
   });
 });

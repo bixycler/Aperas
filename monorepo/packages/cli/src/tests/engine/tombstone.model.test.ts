@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { BuildRecord, Engine, NodeRecord, Value } from '@aperas/core/apeironNgn/interface';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { checkTree } from '../support/engineTree.ts';
 import { rng } from '../support/prng.ts';
@@ -57,8 +58,8 @@ type Op =
   | { op: 'idsOfKind'; kind: string }
   | { op: 'record'; id: string };
 
-/** What an operation gave: a value, or the class and the open point of the error it threw. */
-type Outcome = { value: unknown } | { error: string; point?: string };
+/** What an operation gave: a value, or the class of the error it threw, and the rule that refused it when it is the existence of the subject. */
+type Outcome = { value: unknown } | { error: string; rule?: string };
 
 function run(x: Engine, o: Op): Outcome {
   try {
@@ -90,8 +91,8 @@ function run(x: Engine, o: Op): Outcome {
       case 'record': return { value: x.record(G, o.id) };
     }
   } catch (e) {
-    const err = e as Error & { point?: string };
-    return { error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+    const err = e as Error;
+    return { error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
   }
 }
 
@@ -404,7 +405,7 @@ describe('the engine against the oracle: the tombstone and the sweep', () => {
         const sw = op.op === 'sweep' ? expectedSweep(engine, universe) : undefined;
         const r = run(engine, op);
         if ('error' in r) {
-          seen.errors.add(`${r.error}:${r.point ?? ''}`);
+          seen.errors.add(`${r.error}:${r.rule ?? ''}`);
           if (op.op === 'subtree' && r.error === 'Refused') seen.subtreeRefused++;
           continue;
         }
@@ -438,6 +439,6 @@ describe('the engine against the oracle: the tombstone and the sweep', () => {
     assert.ok(seen.sweptWithRefs > 40, `sweeps that removed a tombstone holding references: ${seen.sweptWithRefs}`);
     assert.ok(seen.markedTombstones > 50, `tombstones a sweep kept because the mark reached them: ${seen.markedTombstones}`);
     assert.ok(seen.islands > 10, `sweeps that removed an island of tombstones: ${seen.islands}`);
-    for (const e of ['Refused:', 'Undecided:Enforcement', 'Undecided:Existence']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
+    for (const e of ['Refused:', 'Refused:no node']) assert.ok(seen.errors.has(e), `${e} was never thrown (${[...seen.errors].join(', ')})`);
   });
 });

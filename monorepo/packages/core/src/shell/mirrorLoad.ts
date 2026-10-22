@@ -11,8 +11,8 @@
 //     that names no document that can hold the node leaves it with no container, and the id is returned among the dangling ones. A node
 //     that a container lists and that has no `parent` stays in that container (the list is the source); the first container in file order
 //     keeps it when several list it. The `parent` is never put in `fields`, as the engine skips a derived entry: it is read here only for this rule.
-//   - What the engine refuses or leaves undecided for a document (a key outside the shape, a missing or doubled `one` field) is reported
-//     with the id, the class of the error and the open point, by `problemOf` alone, so that the decision of the gate swaps in there.
+//   - What the engine refuses for a document (a key outside the shape, a value of the wrong sort, a doubled `one` field) makes the document an
+//     error of the load, reported with the id and the class and message of the refusal, by `problemOf` alone.
 //   - Once the graphs are built the load asks the engine for the ids referenced and never defined and returns them. What the shell does
 //     with them is the service's (design/core.md, "The service lifecycle").
 // A file that is absent is not an error (a fresh checkout has no `.state/`). A file that is not a JSON array stops the load: dumping
@@ -37,10 +37,8 @@ export class MirrorFileError extends Error {
 export interface LoadProblem {
   /** The id of the document (or embedded entry), or the path of the file. */
   readonly subject: string;
-  /** The class of the error: `Undecided`, `Refused`, or the name of another error. */
+  /** The class of the error: `Refused`. */
   readonly class: string;
-  /** The open point, for an `Undecided` one. */
-  readonly point?: string;
   readonly message: string;
 }
 
@@ -69,9 +67,8 @@ const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null 
 /** The one place that turns an error of the engine for a document into a problem. Another sort of error is not the document's and is thrown on. */
 export function problemOf(subject: string, error: unknown): LoadProblem {
   if (!(error instanceof Error)) throw error;
-  const point = (error as { point?: unknown }).point;
-  if (error.name !== 'Undecided' && error.name !== 'Refused') throw error;
-  return { subject, class: error.name, ...(typeof point === 'string' ? { point } : {}), message: error.message };
+  if (error.name !== 'Refused') throw error;
+  return { subject, class: error.name, message: error.message };
 }
 
 /**

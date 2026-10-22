@@ -1,19 +1,19 @@
 // The oracle checked by hand (planning/core.md, Batch 3 step 4): nothing else checks it, and every later batch tests
 // the engine against it. A few hand-written cases for the meanings the design states in full: a pair and its
 // reverse, an ordered splice with containment, a tombstone, embedded nodes, a value dropped with its target, several
-// graphs and the build; and the meanings the design leaves open, which throw "undecided: <Open point>".
+// graphs and the build; and the two rules the design settled, existence by record and enforcement of the schema, which refuse.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
 import { APERAS_SCHEMA } from '@aperas/core/shell/aperasSchema';
-import { Oracle, NotBuilt, Refused, Undecided } from '../support/oracle.ts';
+import { Oracle, NotBuilt, Refused } from '../support/oracle.ts';
+import { noNode, refused } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
 let o: Oracle;
 const mk = (kind: string, n: string, graph = G): string => { const id = `${kind}:${n.toUpperCase().replace(/[ILOU]/g, (c) => ({ I: '1', L: '2', O: '3', U: '4' })[c]!).padStart(13, '0')}`; o.createNode(graph, id, kind); return id; };
 const sorted = (xs: readonly unknown[]): unknown[] => [...xs].sort();
-const undecided = (point: string) => (e: unknown): boolean => e instanceof Undecided && e.point === point && e.message === `undecided: ${point}`;
 
 beforeEach(() => { o = new Oracle(createEngine(TEST_SCHEMA).schema); });
 
@@ -191,7 +191,7 @@ describe('the oracle: tombstones of a subtree', () => {
   test('the role comes first, then the record', () => {
     const noRole = new Oracle(createEngine({ kinds: TEST_SCHEMA.kinds }).schema);
     assert.throws(() => noRole.tombstoneSubtree(G, 'Box:0000000000GST', 't'), Refused);
-    assert.throws(() => o.tombstoneSubtree(G, 'Box:0000000000GST', 't'), undecided('Existence'));
+    assert.throws(() => o.tombstoneSubtree(G, 'Box:0000000000GST', 't'), noNode);
   });
 });
 
@@ -358,15 +358,15 @@ describe('the oracle: removePair', () => {
     assert.deepEqual(o.items(G, box, 'items'), [y, x, z]);
   });
 
-  test('a node removed from a field dropped with its target by removePair is no more in it, and the open points still throw', () => {
+  test('a node removed from a field dropped with its target by removePair is no more in it, and the rules still refuse', () => {
     const box = mk('Box', 'B'); const x = mk('Leaf', 'X');
     o.addPair(G, box, 'pinned', x);
     o.removePair(G, box, 'pinned', x);
     assert.deepEqual(o.values(G, box, 'pinned'), []);
-    assert.throws(() => o.removePair(G, 'Box:000000M1SS1NG', 'pinned', x), undecided('Existence'));
-    assert.throws(() => o.removePair(G, box, 'madeUp', 'x'), undecided('Enforcement'));
-    assert.throws(() => o.removePair(G, x, 'up', box), undecided('Enforcement'), 'a derived entry is no pair');
-    assert.throws(() => o.removePair(G, box, 'pinned', 5), undecided('Enforcement'), 'a reference that is not an id');
+    assert.throws(() => o.removePair(G, 'Box:000000M1SS1NG', 'pinned', x), noNode);
+    assert.throws(() => o.removePair(G, box, 'madeUp', 'x'), refused);
+    assert.throws(() => o.removePair(G, x, 'up', box), refused, 'a derived entry is no pair');
+    assert.throws(() => o.removePair(G, box, 'pinned', 5), refused, 'a reference that is not an id');
   });
 });
 
@@ -389,7 +389,7 @@ describe('the oracle: persistence', () => {
   });
 
   test('a build that fails leaves the store as it was', () => {
-    assert.throws(() => o.build(G, { id: 'Leaf:000000000000X', kind: 'Leaf', fields: { label: 'x', nonsense: 1 } }), (e: unknown) => e instanceof Undecided);
+    assert.throws(() => o.build(G, { id: 'Leaf:000000000000X', kind: 'Leaf', fields: { label: 'x', nonsense: 1 } }), refused);
     assert.equal(o.idsOfKind(G, 'Leaf').length, 0);
   });
 });
@@ -419,26 +419,53 @@ describe('the oracle: several graphs', () => {
   });
 });
 
-describe('the oracle: what the design leaves open', () => {
-  test('existence: the read, the size, and a write to a subject that has no node', () => {
+describe('the oracle: existence by record and the enforcement of the schema', () => {
+  test('existence: a node exists by its record; a write to a subject that has no record is refused, and the removal of one changes nothing', () => {
     const a = mk('Leaf', 'A');
-    assert.throws(() => o.exists(G, a), undecided('Existence'));
-    assert.throws(() => o.size(G), undecided('Existence'));
-    assert.throws(() => o.addPair(G, 'Leaf:000000M1SS1NG', 'label', 'x'), undecided('Existence'));
-    assert.throws(() => o.removeNode(G, 'Leaf:000000M1SS1NG'), undecided('Existence'));
-    assert.throws(() => o.tombstone(G, 'Leaf:000000M1SS1NG', 't'), undecided('Existence'));
-    assert.throws(() => o.insertItem(G, 'Box:000000M1SS1NG', 'items', a), undecided('Existence'));
+    assert.equal(o.exists(G, a), true);
+    assert.equal(o.exists(G, 'Leaf:000000M1SS1NG'), false);
+    assert.equal(o.exists('nowhere', a), false, 'a graph that does not hold the record');
+    assert.equal(o.size(G), 1);
+    assert.equal(o.size('nowhere'), 0);
+    assert.throws(() => o.addPair(G, 'Leaf:000000M1SS1NG', 'label', 'x'), noNode);
+    o.removeNode(G, 'Leaf:000000M1SS1NG'); // not there: nothing changes
+    assert.equal(o.size(G), 1);
+    assert.throws(() => o.tombstone(G, 'Leaf:000000M1SS1NG', 't'), noNode);
+    assert.throws(() => o.insertItem(G, 'Box:000000M1SS1NG', 'items', a), noNode);
+  });
+
+  test('a node that pairs name and that has no record does not exist, and size does not count it', () => {
+    const a = mk('Leaf', 'A'); const ghost = 'Leaf:000000000G0ST';
+    o.addPair(G, a, 'likes', ghost);
+    assert.equal(o.exists(G, ghost), false);
+    assert.equal(o.size(G), 1);
+    assert.deepEqual(o.subjectsOf(G, 'likes', ghost), [a], 'the reverse side is there');
+    assert.throws(() => o.addPair(G, ghost, 'label', 'x'), noNode);
+    assert.deepEqual(o.danglingRefs(G), [ghost]);
+    o.createNode(G, ghost, 'Leaf');
+    assert.equal(o.exists(G, ghost), true);
+    assert.equal(o.size(G), 2);
+  });
+
+  test('size follows the creations, the removal of a node, the graphs and a dropped graph', () => {
+    o.createGraph('threads');
+    const a = mk('Leaf', 'A'); mk('Leaf', 'B'); mk('Leaf', 'C', 'threads');
+    assert.deepEqual([o.size(G), o.size('threads')], [2, 1]);
+    o.removeNode(G, a);
+    assert.deepEqual([o.size(G), o.size('threads')], [1, 1]);
+    o.dropGraph('threads');
+    assert.equal(o.size('threads'), 0);
   });
 
   test('enforcement: a write outside the shape of the schema', () => {
     const a = mk('Leaf', 'A'); const b = mk('Leaf', 'B');
-    assert.throws(() => o.addPair(G, a, 'madeUp', 'x'), undecided('Enforcement'), 'a field the kind does not declare');
-    assert.throws(() => o.addPair(G, a, 'name', 'x'), undecided('Enforcement'), 'a field of another kind');
-    assert.throws(() => o.addPair(G, a, 'up', 'Box:000000000000X'), undecided('Enforcement'), 'a derived entry is no pair');
-    assert.throws(() => o.addPair(G, a, 'likes', 5), undecided('Enforcement'), 'a reference that is not an id');
+    assert.throws(() => o.addPair(G, a, 'madeUp', 'x'), refused, 'a field the kind does not declare');
+    assert.throws(() => o.addPair(G, a, 'name', 'x'), refused, 'a field of another kind');
+    assert.throws(() => o.addPair(G, a, 'up', 'Box:000000000000X'), refused, 'a derived entry is no pair');
+    assert.throws(() => o.addPair(G, a, 'likes', 5), refused, 'a reference that is not an id');
     o.addPair(G, a, 'label', 'one');
-    assert.throws(() => o.addPair(G, a, 'label', 'two'), undecided('Enforcement'), 'a second value of a single-valued field');
-    assert.throws(() => o.clearField(G, a, 'madeUp'), undecided('Enforcement'));
+    assert.throws(() => o.addPair(G, a, 'label', 'two'), refused, 'a second value of a single-valued field');
+    assert.throws(() => o.clearField(G, a, 'madeUp'), refused);
     assert.deepEqual(o.values(G, b, 'madeUp'), [], 'a read of a field the kind does not declare is empty');
   });
 

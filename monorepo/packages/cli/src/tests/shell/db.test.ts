@@ -4,10 +4,11 @@
 // maps as they were; a write it takes is told to them, a subtree by the ids collected before the write. The random sequences are in `writeLayer.model.test.ts`.
 import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { Refused } from '@aperas/core/apeironNgn/engine';
 import type { Id } from '@aperas/core/apeironNgn/interface';
 import { allIdsOfKind, backlinksOf, closeDb, defaultSettings, graphOfId, isThreadScoped, liveIdsOfKind, newDb, nodeExists, openDb, type Db } from '@aperas/core/shell/db';
 import { documentsText } from '@aperas/core/shell/mirrorFiles';
+import { noNode } from '../support/refusals.ts';
 import { A_DESIGN, A_THREAD, B_ONE, B_THREAD, B_TOMB, F_DOCS, F_ROOT, F_THREADS, P_BARE, P_HUMAN, THREADS, TREE, V_MAIN, VIEWS, fixtureDocs, idOf, scratchRoot, testMapping, textsOf, writeTexts } from '../support/mirrorFixture.ts';
 
 const AT = '2026-10-20T00:00:00.000Z';
@@ -483,23 +484,25 @@ describe('the write layer', () => {
 describe('a write the engine refuses leaves the maps as they were', () => {
   const snapshot = (db: Db): unknown => ({ size: db.maps.size(), duplicates: db.maps.duplicates(), ids: allIdsOfKind(db, 'ArtifactNode') });
 
-  test('a second value of a one-valued field: Undecided on Enforcement, and the key stays the first', () => {
+  test('a second value of a one-valued field is refused, and the key stays the first', () => {
     const db = newDb();
     const a = withArtifact(db, 1, 'a.md');
     const before = snapshot(db);
-    assert.throws(() => db.write.addPair(TREE, a, 'path', 'b.md'), (e: unknown) => e instanceof Undecided && e.point === 'Enforcement');
+    assert.throws(() => db.write.addPair(TREE, a, 'path', 'b.md'), Refused);
     assert.equal(db.maps.liveAtPath('b.md'), undefined, 'the refused key is not in the map');
     assert.equal(db.maps.liveAtPath('a.md'), a);
     assert.deepEqual(snapshot(db), before);
   });
 
-  test('a tombstone of a node that does not exist: Undecided on Existence, and nothing is told', () => {
+  test('a tombstone of a node that does not exist is refused, the removal of one changes nothing, and nothing is told', () => {
     const db = newDb();
     const a = withArtifact(db, 1, 'a.md');
     const before = snapshot(db);
-    assert.throws(() => db.write.tombstone(TREE, art(9), AT), (e: unknown) => e instanceof Undecided && e.point === 'Existence');
-    assert.throws(() => db.write.tombstoneSubtree(TREE, art(9), AT), (e: unknown) => e instanceof Undecided && e.point === 'Existence');
-    assert.throws(() => db.write.removeNode(TREE, art(9)), (e: unknown) => e instanceof Undecided && e.point === 'Existence');
+    assert.throws(() => db.write.tombstone(TREE, art(9), AT), noNode);
+    assert.throws(() => db.write.tombstoneSubtree(TREE, art(9), AT), noNode);
+    db.changed.clear();
+    db.write.removeNode(TREE, art(9)); // no record: nothing changes
+    assert.equal(db.changed.size, 0, 'and no graph is marked for a flush');
     assert.equal(db.maps.liveAtPath('a.md'), a);
     assert.deepEqual(snapshot(db), before);
   });
@@ -507,8 +510,8 @@ describe('a write the engine refuses leaves the maps as they were', () => {
   test('a tombstone in a graph that does not hold the node: refused as a missing node, and the node stays in its map', () => {
     const db = newDb();
     const a = withArtifact(db, 1, 'a.md');
-    assert.throws(() => db.write.tombstone(THREADS, a, AT), (e: unknown) => e instanceof Undecided);
-    assert.throws(() => db.write.tombstoneSubtree(THREADS, a, AT), (e: unknown) => e instanceof Undecided);
+    assert.throws(() => db.write.tombstone(THREADS, a, AT), noNode);
+    assert.throws(() => db.write.tombstoneSubtree(THREADS, a, AT), noNode);
     assert.equal(db.maps.liveAtPath('a.md'), a);
     assert.equal(db.engine.first(TREE, a, 'tombstonedAt'), undefined);
   });

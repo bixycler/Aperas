@@ -4,10 +4,11 @@
 // `literals.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, NotBuiltError, Undecided, WAITING_ON } from '@aperas/core/apeironNgn/engine';
+import { createEngine } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
-import { Oracle, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle } from '../support/oracle.ts';
+import { noNode, refused } from '../support/refusals.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
 const G = 'default';
@@ -16,10 +17,6 @@ let n = 0;
 const mint = (kind: string): string => `${kind}:${(++n).toString().padStart(13, '0')}`;
 let e: Engine;
 const mk = (kind: string, engine: Engine = e): string => { const id = mint(kind); engine.createNode(G, id, kind); return id; };
-
-/** An error of the engine and the same error of the oracle: the class and the open point, not the message. */
-const undecided = (point: string) => (err: unknown): boolean => err instanceof Undecided && err.point === point;
-const oracleUndecided = (point: string) => (err: unknown): boolean => err instanceof OracleUndecided && err.point === point;
 
 beforeEach(() => { e = createEngine(TEST_SCHEMA); });
 
@@ -145,7 +142,7 @@ describe('cardinalities are declared and never inferred from the data', () => {
     ],
   };
 
-  test('the same data, one value, is a set under one declaration and meets Enforcement under another', () => {
+  test('the same data, one value, is a set under one declaration and is refused as a second value under another', () => {
     const engine = createEngine(CARD);
     const oracle = new Oracle(engine.schema);
     const bag = mk('Bag', engine); const slot = mk('Slot', engine); const must = mk('Must', engine);
@@ -153,8 +150,9 @@ describe('cardinalities are declared and never inferred from the data', () => {
     engine.addPair(G, bag, 'tag', 'y');
     assert.deepEqual(engine.values(G, bag, 'tag'), ['x', 'y']);
     for (const id of [slot, must]) {
-      assert.throws(() => engine.addPair(G, id, 'tag', 'y'), undecided('Enforcement'));
-      assert.throws(() => oracle.addPair(G, id, 'tag', 'y'), oracleUndecided('Enforcement'));
+      assert.throws(() => engine.addPair(G, id, 'tag', 'y'), refused);
+      assert.throws(() => oracle.addPair(G, id, 'tag', 'y'), refused);
+      assert.deepEqual(engine.values(G, id, 'tag'), ['x'], 'a refused second value changes nothing');
       engine.addPair(G, id, 'tag', 'x'); // the value it holds: nothing changes
       assert.deepEqual(engine.values(G, id, 'tag'), ['x']);
       engine.clearField(G, id, 'tag');
@@ -164,43 +162,95 @@ describe('cardinalities are declared and never inferred from the data', () => {
   });
 });
 
-describe('Enforcement and Existence wait on their open points, each in one function', () => {
+describe('Enforcement and Existence: the engine refuses, each rule in one function', () => {
   const o = (): Oracle => new Oracle(createEngine(TEST_SCHEMA).schema);
 
-  test('both implementations throw Undecided for a write outside the shape', () => {
+  test('both implementations refuse a write outside the shape, and change nothing', () => {
     const oracle = o();
     const a = mk('Leaf'); oracle.createNode(G, a, 'Leaf');
     const cases: [string, (x: Engine) => void][] = [
       ['a field the kind does not declare', (x) => x.addPair(G, a, 'name', 'x')],
       ['a field the kind does not declare, cleared', (x) => x.clearField(G, a, 'name')],
+      ['a field the kind does not declare, removed', (x) => x.removePair(G, a, 'name', 'x')],
       ['a derived entry', (x) => x.addPair(G, a, 'up', 'Box:0000000000001')],
       ['a derived entry, cleared', (x) => x.clearField(G, a, 'up')],
       ['an object for a literal field', (x) => x.addPair(G, a, 'label', {} as unknown as string)],
+      ['a null for a literal field', (x) => x.addPair(G, a, 'label', null as unknown as string)],
       ['a number for a reference field', (x) => x.addPair(G, a, 'mate', 4 as unknown as string)],
+      ['a boolean for a reference field', (x) => x.addPair(G, a, 'mate', true as unknown as string)],
       ['a second value for an optional field', (x) => { x.addPair(G, a, 'rank', 1); x.addPair(G, a, 'rank', 2); }],
     ];
     for (const [name, run] of cases) {
-      assert.throws(() => run(e), undecided('Enforcement'), name);
-      assert.throws(() => run(oracle), oracleUndecided('Enforcement'), name);
+      assert.throws(() => run(e), refused, name);
+      assert.throws(() => run(oracle), refused, name);
+      for (const x of [e, oracle]) assert.equal(x.exists(G, a), true, `${name}: the node stays`);
+    }
+    for (const x of [e, oracle]) assert.deepEqual(x.record(G, a)!.fields.map((f) => f.name), ['rank'], 'only the first rank was taken');
+  });
+
+  test('a string in a reference field is an id whatever it looks like, and a string in a literal field is a string', () => {
+    const oracle = o();
+    const a = mk('Leaf'); oracle.createNode(G, a, 'Leaf');
+    for (const x of [e, oracle]) {
+      x.addPair(G, a, 'mate', 'not an id'); // the schema decides: a reference field holds an id, a malformed one dangles
+      x.addPair(G, a, 'label', 'Leaf:0000000000001'); // a literal field holds a string as it is
+      assert.deepEqual(x.values(G, a, 'label'), ['Leaf:0000000000001']);
+      assert.deepEqual(x.danglingRefs(G), ['not an id']);
     }
   });
 
-  test('both implementations throw Undecided for a write to a subject with no node', () => {
+  test('both implementations refuse a write to a subject with no record', () => {
     const oracle = o();
     const gone = mint('Leaf');
-    assert.throws(() => e.addPair(G, gone, 'label', 'x'), undecided('Existence'));
-    assert.throws(() => oracle.addPair(G, gone, 'label', 'x'), oracleUndecided('Existence'));
-    assert.throws(() => e.clearField(G, gone, 'label'), undecided('Existence'));
-    assert.throws(() => oracle.clearField(G, gone, 'label'), oracleUndecided('Existence'));
-    assert.throws(() => e.addPair('elsewhere', gone, 'label', 'x'), undecided('Existence'));
+    assert.throws(() => e.addPair(G, gone, 'label', 'x'), noNode);
+    assert.throws(() => oracle.addPair(G, gone, 'label', 'x'), noNode);
+    assert.throws(() => e.clearField(G, gone, 'label'), noNode);
+    assert.throws(() => oracle.clearField(G, gone, 'label'), noNode);
+    assert.throws(() => e.removePair(G, gone, 'label', 'x'), noNode);
+    assert.throws(() => e.addPair('elsewhere', gone, 'label', 'x'), noNode);
+    for (const x of [e, oracle]) assert.equal(x.size(G), 0);
   });
 
-  test('exists and size stay in the engine and throw Undecided, which is not NotBuiltError', () => {
-    const a = mk('Leaf');
-    for (const run of [() => e.exists(G, a), () => e.size(G)]) {
-      assert.throws(run, (err: unknown) => err instanceof Undecided && err.point === 'Existence' && !(err instanceof NotBuiltError));
+  test('exists is whether a record stands for the id in that graph, and size is the number of records of the graph', () => {
+    const oracle = o();
+    const a = mk('Leaf'); const b = mk('Box'); oracle.createNode(G, a, 'Leaf'); oracle.createNode(G, b, 'Box');
+    for (const x of [e, oracle]) {
+      assert.deepEqual([x.exists(G, a), x.exists(G, b), x.exists(G, mint('Leaf')), x.exists('elsewhere', a), x.size(G), x.size('elsewhere')], [true, true, false, false, 2, 0]);
+      x.removeNode(G, a);
+      assert.deepEqual([x.exists(G, a), x.size(G)], [false, 1]);
     }
-    assert.deepEqual(WAITING_ON, { exists: 'Existence', size: 'Existence' });
+  });
+
+  test('a node that pairs name and that has no record does not exist, whether the reverse is built or not; creating it makes it exist', () => {
+    const oracle = o();
+    const a = mk('Leaf'); oracle.createNode(G, a, 'Leaf');
+    const ghost = mint('Leaf');
+    for (const x of [e, oracle]) {
+      x.addPair(G, a, 'likes', ghost);
+      assert.equal(x.exists(G, ghost), false);
+      assert.deepEqual(x.subjectsOf(G, 'likes', ghost), [a]); // the reverse side is built by this read, and the ghost has a bucket
+      assert.equal(x.exists(G, ghost), false, 'a bucket is not a record');
+      assert.equal(x.size(G), 1);
+      assert.throws(() => x.addPair(G, ghost, 'label', 'x'), noNode);
+      assert.deepEqual(x.danglingRefs(G), [ghost]);
+      x.createNode(G, ghost, 'Leaf');
+      assert.deepEqual([x.exists(G, ghost), x.size(G), x.danglingRefs(G)], [true, 2, []]);
+    }
+  });
+
+  test('the removal of a node that has no record changes nothing, as the removal of a pair that is not there', () => {
+    const oracle = o();
+    const a = mk('Leaf'); oracle.createNode(G, a, 'Leaf');
+    const ghost = mint('Leaf');
+    for (const x of [e, oracle]) {
+      x.addPair(G, a, 'likes', ghost);
+      x.removeNode(G, ghost);
+      x.removeNode(G, mint('Leaf'));
+      x.removeNode('elsewhere', a);
+      assert.deepEqual([x.size(G), x.values(G, a, 'likes'), x.subjectsOf(G, 'likes', ghost)], [1, [ghost], [a]]);
+      x.removePair(G, a, 'likes', mint('Leaf')); // a pair that is not there
+      assert.deepEqual(x.values(G, a, 'likes'), [ghost]);
+    }
   });
 });
 

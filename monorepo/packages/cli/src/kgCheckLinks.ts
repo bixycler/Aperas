@@ -1,6 +1,6 @@
 /**
  * `kg:check-links` — standing link integrity checking sweep (`issues/linking.md` Shared Fix Direction)
- * Compares live block text against stored `.links` in Oxigraph Store.
+ * Compares live block text against stored `.links` in the store.
  */
 
 import { ensureServiceRunning, request } from './service/serviceClient';
@@ -11,7 +11,7 @@ export async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   if (wantsHelp(rawArgs)) {
     printHelp({
-      description: 'Run a drift-style link integrity check comparing live block text against stored .links quads in Oxigraph Store, and listing stored links whose target names no node.',
+      description: 'Run a drift-style link integrity check comparing live block text against stored .links in the store, and listing stored links whose target names no node.',
       usage: 'aperas check-links [--repair|--fix] [--verbose] [--json] [--reload]',
       flags: [
         { name: '--repair, --fix', description: 'Automatically re-resolve and flush missing links for affected artifacts. Never changes a stored link whose target names no node.' },

@@ -3,7 +3,7 @@
 // operation that no batch has built yet throws an error that names its batch.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, NotBuiltError, Undecided, BUILT_BY, BUILT, WAITING_ON } from '@aperas/core/apeironNgn/engine';
+import { createEngine, NotBuiltError, BUILT_BY, BUILT } from '@aperas/core/apeironNgn/engine';
 import { closeSchema, SchemaError, type Schema, type SchemaSpec } from '@aperas/core/apeironNgn/schema';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 
@@ -160,10 +160,6 @@ describe('an operation that no batch has built', () => {
     assert.deepEqual(Object.keys(engine).filter((k) => k !== 'schema').sort(), Object.keys(BUILT_BY).sort());
     for (const name of Object.keys(BUILT_BY) as (keyof typeof BUILT_BY)[]) {
       if (BUILT.has(name)) continue; // built: the engine tests hold it
-      if (WAITING_ON[name] !== undefined) {
-        assert.throws(() => (engine[name] as (...a: unknown[]) => unknown)(), (e: unknown) => e instanceof Undecided && e.point === WAITING_ON[name], name);
-        continue;
-      }
       assert.throws(() => (engine[name] as (...a: unknown[]) => unknown)(), (e: unknown) => e instanceof NotBuiltError && e.batch === BUILT_BY[name], name);
     }
   });

@@ -4,11 +4,11 @@
 // `tombstone.model.test.ts`.
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine, inspectEngine, Refused, Undecided } from '@aperas/core/apeironNgn/engine';
+import { createEngine, inspectEngine, Refused } from '@aperas/core/apeironNgn/engine';
 import type { Engine } from '@aperas/core/apeironNgn/interface';
 import type { SchemaSpec } from '@aperas/core/apeironNgn/schema';
 import { APERAS_SCHEMA } from '@aperas/core/shell/aperasSchema';
-import { Oracle, Refused as OracleRefused, Undecided as OracleUndecided } from '../support/oracle.ts';
+import { Oracle, Refused as OracleRefused } from '../support/oracle.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { checkTree } from '../support/engineTree.ts';
 
@@ -34,7 +34,6 @@ const same = <T>(read: (x: Engine) => T, expected: T, why: string): void => {
   assert.deepEqual(read(o), expected, `oracle: ${why}`);
 };
 const sameSet = (read: (x: Engine) => readonly (string | number | boolean)[], expected: string[], why: string): void => same((x) => sorted(read(x) as string[]), sorted(expected), why);
-const undecided = (point: string) => (err: unknown): boolean => (err instanceof Undecided && err.point === point) || (err instanceof OracleUndecided && err.point === point);
 const bothThrow = (run: (x: Engine) => void, check: (err: unknown) => boolean, why: string): void => {
   assert.throws(() => run(e), check, `engine: ${why}`);
   assert.throws(() => run(o), check, `oracle: ${why}`);
@@ -77,7 +76,7 @@ describe('sweep', () => {
     sameSet((s) => s.values(G, watcher, 'mate'), [b], 'and the mate');
     sameSet((s) => s.subjectsOf(G, 'likes', a), [watcher], 'with its bucket');
     assert.deepEqual(sorted(inspectEngine(e).waitingIds()), sorted([a, b]), 'which waits in the waiting map, read as no existence');
-    bothThrow((s) => s.exists(G, a), undecided('Existence'), 'exists stays undecided');
+    same((s) => s.exists(G, a), false, 'the swept node does not exist, and the bucket that names it does not make it');
   });
 
   test('the mark goes through a tombstone: a chain from a live root to a tombstone to a tombstone keeps both', () => {
@@ -145,7 +144,7 @@ describe('sweep', () => {
     sameSet((s) => s.subjectsOf(G, 'likes', t), [watcher], 'the bucket of the pair that names it');
     assert.deepEqual(inspectEngine(e).waitingIds(), [t], 'is in the waiting map');
     assert.deepEqual(after[0], after[1], 'and the oracle agrees');
-    bothThrow((s) => s.size(G), undecided('Existence'), 'size stays undecided');
+    same((s) => s.size(G), 4, 'size counts the four records that remain, and not the swept one that a pair still names');
     checkTree(e, [box, live, watcher, keep, t], 'after');
   });
 

@@ -89,6 +89,13 @@ export class Registry {
     return this.master.size;
   }
 
+  /** The number of records in a graph, in every kind; a graph that does not exist holds none. */
+  sizeOf(graph: GraphName): number {
+    let n = 0;
+    for (const collection of this.collections.get(graph)?.values() ?? []) n += collection.size;
+    return n;
+  }
+
   /** Whether any graph holds the id: ids are unique across all graphs. */
   taken(id: Id): boolean {
     return this.master.has(id);

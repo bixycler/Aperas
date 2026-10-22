@@ -19,6 +19,7 @@ import { dumpMirror } from '@aperas/core/shell/mirrorDump';
 import { loadMirror } from '@aperas/core/shell/mirrorLoad';
 import { createMirrorGraphs } from '@aperas/core/shell/mirrorFiles';
 import { Oracle } from '../support/oracle.ts';
+import { noNode } from '../support/refusals.ts';
 import { rng } from '../support/prng.ts';
 import { THREADS, TREE, VIEWS, idOf, newEngine, scratchRoot, testMapping } from '../support/mirrorFixture.ts';
 
@@ -52,7 +53,7 @@ type Op =
   | { op: 'createGraph' | 'dropGraph'; graph: string }
   | { op: 'reload' };
 
-type Outcome = { ok: true; value?: unknown } | { ok: false; error: string; point?: string };
+type Outcome = { ok: true; value?: unknown } | { ok: false; error: string; rule?: string };
 
 /** One write on a store, the outcome of it, and nothing else. */
 function apply(x: Engine, o: Op): Outcome {
@@ -74,8 +75,8 @@ function apply(x: Engine, o: Op): Outcome {
     }
     return { ok: true };
   } catch (e) {
-    const err = e as Error & { point?: string };
-    return { ok: false, error: err.name, ...(err.point !== undefined ? { point: err.point } : {}) };
+    const err = e as Error;
+    return { ok: false, error: err.name, ...(noNode(err) ? { rule: 'no node' } : {}) };
   }
 }
 
@@ -206,7 +207,7 @@ function plan(seed: number): { next: (made: ReadonlySet<string>, probe: Oracle) 
       if (t < 30) return { op: 'build', graph: where(id, probe), id, kind, fields: fieldsFor(id) };
       if (t < 36) return { op: 'create', graph: where(id, probe), id, kind };
       if (t < 48) {
-        // A second value for a one-valued field is not taken (`Undecided` on Enforcement): most writes go to a field that is empty.
+        // A second value for a one-valued field is not taken (`Refused`): most writes go to a field that is empty.
         const at = probe.graphOf(id);
         const field = g.chance(0.85) ? KEY_FIELD[kind]! : g.pick(['title', 'name', 'handle', 'path']);
         if (at !== undefined && probe.first(at, id, field) !== undefined && g.chance(0.85)) return { op: 'clear', graph: at, id, field };

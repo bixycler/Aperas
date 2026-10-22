@@ -5,6 +5,7 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { createNode, tombstoneVacuousContainers, wrap, type BlockNode } from '@aperas/core/shell/node';
+import { runInsert } from '../../kgInsert';
 import { runRemove } from '../../kgRemove';
 import { runShow } from '../../kgShow';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
@@ -74,6 +75,21 @@ describe('containers a removal empties', () => {
     attach(host, solo);
     runRemove(fx.store, { path: soloChild.id });
     assert.deepEqual([dead(soloChild.id), dead(soloWrapper.id), dead(solo.id)], [true, true, true], 'the rule goes up while the container above is vacuous');
+  });
+
+  test('a move is not a removal: the last item moved out of a list leaves the list live and empty, and the boot rule finds it', () => {
+    const list = block('list', undefined, host);
+    const only = block('listItem', 'only', list.id);
+    const target = block('paragraph', 'elsewhere', host);
+    attach(list, only);
+    attach(host, list, target);
+    runInsert(fx.store, { path: only.id, after: target.id });
+    assert.deepEqual(kids(list.id), [], 'the item left the list');
+    assert.deepEqual([dead(only.id), dead(list.id)], [false, false], 'nothing is tombstoned by a move: the rule of the container is a removal\'s');
+    assert.equal((wrap(fx.store, only.id) as unknown as BlockNode).parent?.id, host, 'the item is live under its new parent');
+    assert.equal(tombstoneVacuousContainers(fx.store).tombstoned, 1, 'the boot rule tombstones the list with no live child');
+    assert.deepEqual([dead(list.id), dead(only.id)], [true, false]);
+    assert.equal(kids(host).includes(list.id), false, 'and it left its container');
   });
 
   test('the boot rule finds what is left vacuous from outside: a list with no child, and a wrapper with none', () => {

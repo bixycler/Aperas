@@ -6,15 +6,21 @@
 import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, type TreeNode } from '@aperas/core/shell/node';
+import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runPath(store: Db, idArg: string): string {
   const id = resolveDeepPath(store, idArg);
   if (!id) throw new Error(`'${idArg}' isn't a tracked artifact/folder path, deep path, bare node code, or full node id.`);
-  const path = (wrap(store, id) as unknown as TreeNode).toPath();
+  const node = wrap(store, id) as unknown as TreeNode;
+  // A `Link`, a `Profile`, a `TreeView` or a prop is not in the tree: it has no path to give, and says so in a refusal of its own.
+  if (typeof node.toPath !== 'function') {
+    throw new Error(`'${id}' is a ${nodeKindFromId(id)}, which has no path: only a tracked artifact, folder or block does.`);
+  }
+  const path = node.toPath();
   if (path === null) {
-    throw new Error(`'${id}' has no walkable parent chain — a Link (no structural parent), or a BlockNode ingested before the 'parent' field existed (needs re-ingestion).`);
+    throw new Error(`'${id}' has no walkable parent chain — a BlockNode ingested before the 'parent' field existed (needs re-ingestion), or a tombstone.`);
   }
   return path;
 }

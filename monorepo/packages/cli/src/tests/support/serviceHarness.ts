@@ -79,13 +79,13 @@ export function assertIsolated(iso: ServiceIsolation): void {
 }
 
 /** Starts the service the way `aperas service start` does; refuses to run if anything is listening or locked in the scratch run directory already. Returns the pid of the service. */
-export async function startService(iso: ServiceIsolation): Promise<number> {
+export async function startService(iso: ServiceIsolation, options: { startAnyway?: boolean } = {}): Promise<number> {
   assertIsolated(iso);
   if (readLock() !== null) throw new Error(`A lock already exists in the scratch run directory ${iso.runDir}`);
   if (await ping()) throw new Error(`Something already answers on the scratch socket ${getSocketPath()}`);
   const log = console.log;
   console.log = () => {}; // `runStart` prints one status line
-  try { await runStart(); } finally { console.log = log; }
+  try { await runStart(options); } finally { console.log = log; }
   const lock = readLock();
   if (!lock || lock.status !== 'ready') throw new Error(`The service did not leave a ready lock: ${JSON.stringify(lock)}`);
   if (lock.socketPath !== getSocketPath() || lock.apeironRoot !== iso.fx.apeironRoot || lock.artifactsRoot !== iso.fx.artifactsRoot || lock.httpPort !== iso.port) {
@@ -93,6 +93,15 @@ export async function startService(iso: ServiceIsolation): Promise<number> {
     throw new Error(`The service bound to something other than the scratch: ${JSON.stringify(lock)}`);
   }
   return lock.pid;
+}
+
+/**
+ * Writes the table of settings of the graphs (`aperas.config.json` in the scratch directory, which the service finds above the mirror): the flush interval of each graph, in
+ * milliseconds. The service reads it at its start; a case sets an interval of a few hundred milliseconds so that a timer is reached by the setting and not by waiting for the default.
+ */
+export function writeGraphIntervals(fx: FixtureStore, intervals: Record<string, number>): void {
+  const graphs = Object.fromEntries(Object.entries(intervals).map(([graph, flushIntervalMs]) => [graph, { flushIntervalMs }]));
+  writeFileSync(join(fx.root, 'aperas.config.json'), JSON.stringify({ graphs }, null, 2), 'utf-8');
 }
 
 /** The pid the scratch lock names, after checking that the lock is the scratch one. */

@@ -17,7 +17,6 @@ import { allIdsOfKind, newDb, type Db } from '@aperas/core/shell/db';
 import { trackArtifact, ingestArtifact, resolveBlockLinks, findRefusedLinks } from '@aperas/core/shell/artifacts';
 import { checkArtifactLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, ensureDefaultView, collectOldWikilinksByBlock, type BlockNode, type ApeironNode } from '@aperas/core/shell/node';
 import { runInsert } from './kgInsert';
 import { runUpdate } from './kgUpdate';
@@ -36,8 +35,8 @@ export function checkLinkRefusals(store: Db, DEMO_DIR: string): string {
   for (const path of [linkTargetPath, linkRefsPath]) trackArtifact(store, path);
   ingestFolderTree(store);
   for (const path of [linkTargetPath, linkRefsPath]) ingestArtifact(store, path);
-  const linkTargetCitedId: string = walkBlocks(wrap(store, findByExactPath(store, linkTargetPath)!)).find((b) => b.id.startsWith('BlockNode:')).id;
-  const citingItem = walkBlocks(wrap(store, findByExactPath(store, linkRefsPath)!)).find((b) => typeof b.text === 'string' && b.text.includes('A citing item'));
+  const linkTargetCitedId: string = walkBlocks(wrap(store, store.maps.liveAtPath(linkTargetPath)!)).find((b) => b.id.startsWith('BlockNode:')).id;
+  const citingItem = walkBlocks(wrap(store, store.maps.liveAtPath(linkRefsPath)!)).find((b) => typeof b.text === 'string' && b.text.includes('A citing item'));
   if (!citingItem) throw new Error('Expected to find the list item the refusals are tried against.');
   const ghostId = 'BlockNode:ZZZZZZZZZZZZZ'; // a valid-looking id that no node has
   const goodHref = `./link_target.md#id/${linkTargetCitedId}`;
@@ -120,7 +119,7 @@ export function checkLinkRefusals(store: Db, DEMO_DIR: string): string {
 
   // Stored bad targets are reported with block, kind, link text and target. A stored Link is not refused
   // again for a block that already has it, and re-resolving that block (what --repair does) leaves it as is.
-  const skipArtifactId = findByExactPath(store, linkSkipPath)!;
+  const skipArtifactId = store.maps.liveAtPath(linkSkipPath)!;
   const badBlock = wrap(store, walkBlocks(wrap(store, skipArtifactId)).find((b) => typeof b.text === 'string' && b.text.includes('[bad]')).id) as unknown as BlockNode;
   const badText = badBlock.text as string;
   const doubledTarget = `${linkTargetCitedId}#id/${linkTargetCitedId}`;
@@ -163,7 +162,7 @@ export function checkSingleAnchorRendering(store: Db, DEMO_DIR: string, linkTarg
   writeFileSync(join(getArtifactsDir(), linkRenderPath), `# Link Render\n\n- Cites [one](./link_target.md#id/${linkTargetCitedId}) and [two](./link_target.md) and [three](./link_target.md#link-target/section-a) here.\n`, 'utf-8');
   trackArtifact(store, linkRenderPath);
   ingestArtifact(store, linkRenderPath);
-  const renderedItem = walkBlocks(wrap(store, findByExactPath(store, linkRenderPath)!)).find((b) => typeof b.text === 'string' && b.text.includes('[one]'));
+  const renderedItem = walkBlocks(wrap(store, store.maps.liveAtPath(linkRenderPath)!)).find((b) => typeof b.text === 'string' && b.text.includes('[one]'));
   if (!renderedItem) throw new Error('Expected to find the list item citing the target.');
   const renderingView = ensureDefaultView(store);
   renderingView.unfold(renderedItem.id);

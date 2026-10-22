@@ -29,7 +29,7 @@ function describeBinding(apeironRoot: string, artifactsRoot: string): string {
  *  service bound to them, and waits for it to answer — shared by `start` (nothing was running) and
  *  `restart` (something was, but just got stopped) since both end the same way: one fresh service,
  *  freshly bound. */
-async function bindAndSpawn(): Promise<{ apeironRoot: string; artifactsRoot: string }> {
+async function bindAndSpawn(startAnyway: boolean): Promise<{ apeironRoot: string; artifactsRoot: string }> {
   const cwd = process.cwd();
   const apeironRoot = resolveEffectiveApeironRoot(cwd);
   const artifactsRoot = resolveEffectiveArtifactsRoot(cwd);
@@ -38,14 +38,14 @@ async function bindAndSpawn(): Promise<{ apeironRoot: string; artifactsRoot: str
   if (claimLock(apeironRoot, artifactsRoot, httpPort) !== 'claimed') {
     throw new Error('Another `aperas service start`/`restart` appears to be in progress — try again shortly.');
   }
-  spawnService(apeironRoot, artifactsRoot, httpPort, graphName);
+  spawnService(apeironRoot, artifactsRoot, httpPort, graphName, startAnyway);
   await waitForReady();
   return { apeironRoot, artifactsRoot };
 }
 
 /** Exported for `kgServe.ts` ("aperas serve"): its own "ensure a service is running, bound to the
  *  current graph, start one if not" need is exactly this function's existing behavior. */
-export async function runStart(): Promise<void> {
+export async function runStart(options: { startAnyway?: boolean } = {}): Promise<void> {
   if (await ping()) {
     const lock = readLock();
     console.log(`[aperas service] Already running (pid ${lock?.pid ?? '?'}), bound to ${lock ? describeBinding(lock.apeironRoot, lock.artifactsRoot) : '?'}.`);
@@ -53,7 +53,7 @@ export async function runStart(): Promise<void> {
   }
   const lock = readLock();
   if (lock) clearLock(); // not actually answering — a stale leftover from a crash, not a live claim
-  const { apeironRoot, artifactsRoot } = await bindAndSpawn();
+  const { apeironRoot, artifactsRoot } = await bindAndSpawn(options.startAnyway === true);
   console.log(`[aperas service] Started — bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
 }
 
@@ -83,10 +83,10 @@ async function runStop(): Promise<void> {
   console.log(stopped ? '[aperas service] Stopped.' : '[aperas service] No running service found.');
 }
 
-async function runRestart(): Promise<void> {
+async function runRestart(startAnyway: boolean): Promise<void> {
   const stopped = await stopIfRunning();
   if (!stopped) console.log('[aperas service] No running service found — starting fresh instead of restarting.');
-  const { apeironRoot, artifactsRoot } = await bindAndSpawn();
+  const { apeironRoot, artifactsRoot } = await bindAndSpawn(startAnyway);
   console.log(`[aperas service] Restarted — now running the current on-disk code, bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
 }
 
@@ -95,21 +95,24 @@ export async function main(): Promise<void> {
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Direct control over the shared ApeironNgn service process.',
-      usage: 'aperas service {start|stop|restart}',
+      usage: 'aperas service {start|stop|restart} [--start-anyway]',
       args: [
         { name: 'start', description: "Start the service if none is already running, binding it to the graph resolved from the current directory (aperas.config.json discovery, or the dev fallback) for its whole lifetime. A no-op (with a status line naming the bound graph) if one's already running." },
         { name: 'stop', description: "Gracefully stop the running service (flushes if dirty, same as SIGTERM/Ctrl-C) — the explicit counterpart to finding its pid and killing it by hand. A no-op if none is running." },
         { name: 'restart', description: "Stop whatever's running (same as `stop`) and start a fresh one, re-resolving and rebinding the graph from the current directory — the only way both a source-code change and a graph switch take effect." },
       ],
-      flags: [],
+      flags: [
+        { name: '--start-anyway', description: "`start` and `restart` only. Start even when the load of the mirror did not read it in full (an id carried by more than one document, or a document the engine refused): the service works on the unaffected parts, and copies the documents it skipped to a side file next to their file (`<file>.rejected-<stamp>.json`) before anything can flush over them. Without it the service refuses to start and its log names the files and ids." },
+      ],
     });
     return;
   }
   const [subcommand] = rawArgs;
-  if (subcommand === 'start') return runStart();
+  const startAnyway = rawArgs.includes('--start-anyway');
+  if (subcommand === 'start') return runStart({ startAnyway });
   if (subcommand === 'stop') return runStop();
-  if (subcommand === 'restart') return runRestart();
-  console.error('Usage: aperas service {start|stop|restart}');
+  if (subcommand === 'restart') return runRestart(startAnyway);
+  console.error('Usage: aperas service {start|stop|restart} [--start-anyway]');
   process.exit(1);
 }
 

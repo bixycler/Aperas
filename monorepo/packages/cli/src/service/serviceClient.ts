@@ -1,6 +1,6 @@
 /**
  * ApeironNgn shared service client (Aperas-apeironngn-design.md §4 rollout step 5) — every
- * `kg:xxx` script uses this instead of calling `rehydrateStore`/`dehydrateToJsonLd` itself.
+ * `kg:xxx` script uses this instead of loading and dumping the mirror itself.
  * `ensureServiceRunning` errors with instructions rather than auto-starting one (AperasKG/
  * artifacts/discussion/packaging.md's "Settled: no concurrency..." note: an implicit auto-spawn
  * meant whichever command happened to run first silently decided which graph the service bound to
@@ -12,11 +12,11 @@
 
 import { spawn } from 'node:child_process';
 import { connect } from 'node:net';
-import { existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getSocketPath } from './serviceLock';
-import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
+import { getSocketPath, getRunDir, readLock } from './serviceLock';
+import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, START_ANYWAY_ENV, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { computeCodeFingerprint } from './codeVersion';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -89,10 +89,28 @@ export async function ping(): Promise<boolean> {
   }
 }
 
+/** The reason a starting service gave for refusing to start: the last line of its log that says `REFUSING TO START`, written at or after `since`. */
+function refusalSince(since: number): string | undefined {
+  try {
+    const lines = readFileSync(join(getRunDir(), 'service.log'), 'utf-8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const at = lines[i]!.indexOf(' ');
+      if (at > 0 && Date.parse(lines[i]!.slice(0, at)) >= since && lines[i]!.includes('REFUSING TO START')) return lines[i]!.slice(lines[i]!.indexOf('REFUSING TO START'));
+    }
+  } catch { /* no log: no reason to give */ }
+  return undefined;
+}
+
+/** Waits for the service to answer. A service that refuses to start clears the lock the caller claimed and exits: the wait ends at once and says why from the log. */
 export async function waitForReady(): Promise<void> {
-  const deadline = Date.now() + READY_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (await ping()) return;
+    if (readLock() === null) {
+      const why = refusalSince(startedAt - 1000);
+      throw new Error(why ? `ApeironNgn service ${why}` : 'ApeironNgn service ended without becoming ready (see service.log in the run directory)');
+    }
     await sleep(READY_POLL_MS);
   }
   throw new Error('ApeironNgn service did not become ready in time');
@@ -113,14 +131,16 @@ export async function waitForReady(): Promise<void> {
  *    bundle itself — it's the only entrypoint that exists once built) with plain `node` and the
  *    hidden `--__service` flag `aperas.ts`'s own `main()` checks for first, before normal verb
  *    dispatch. */
-export function spawnService(apeironRoot: string, artifactsRoot: string, httpPort: number, graphName?: string): void {
+export function spawnService(apeironRoot: string, artifactsRoot: string, httpPort: number, graphName?: string, startAnyway = false): void {
   const env = {
     ...process.env,
     APERAS_APEIRON_ROOT: apeironRoot,
     APERAS_ARTIFACTS_ROOT: artifactsRoot,
     APERAS_HTTP_PORT: String(httpPort),
     ...(graphName ? { APERAS_GRAPH_NAME: graphName } : {}),
+    ...(startAnyway ? { [START_ANYWAY_ENV]: '1' } : {}),
   };
+  if (!startAnyway) delete env[START_ANYWAY_ENV]; // a service started without the option does not inherit it from the caller's environment
   const serviceEntry = resolve(__dirname, 'service.ts');
   // service -> src -> cli -> packages -> monorepo root, where `tsx` (a root devDependency,
   // hoisted by the workspace) actually lives.

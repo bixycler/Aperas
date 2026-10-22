@@ -10,7 +10,7 @@
 
 import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { wrap, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { wrap, linksInOrder, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
 import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { nodeExists } from '@aperas/core/shell/db';
 import { displayLabel } from '@aperas/core/shell/tree';
@@ -107,7 +107,7 @@ function previewChildren(store: Db, node: TreeNode, showTombstoned: boolean): Un
       if (!nodeExists(store, childId)) return { id: childId, label: '?', text: '<not found>' };
       return { id: childId, label: displayLabel(childId, child), text: `${previewText(child, { full: true })}${tombstoneTag(child as unknown as { tombstonedAt?: string })}${foldTag(child)}` };
     });
-  const links = ((node.links as unknown as Link[] | undefined) ?? [])
+  const links = linksInOrder(node as unknown as { links?: ApeironNode[] })
     .filter((link) => showTombstoned || !isTombstoned((link.target as unknown as { tombstonedAt?: string } | undefined)))
     .map((link) => {
       const target = link.target as unknown as TreeNode | undefined;

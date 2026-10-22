@@ -11,8 +11,11 @@ import { runShow } from '../../kgShow';
 import { runTree } from '../../kgTree';
 import { runIngest } from '../../kgIngest';
 import { runReverseTrack } from '../../kgTrack';
+import { dumpMirror } from '@aperas/core/shell/mirrorDump';
+import { wrap, type BlockNode } from '@aperas/core/shell/node';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { buildCorpus, idOf, parseTree, projectToDisk, writeArtifact, type Corpus } from '../support/commandsCorpus.ts';
+import { tombstonesInLists } from '../support/mirrorLists.ts';
 
 const refuses = (fn: () => unknown, message: RegExp): void => assert.throws(fn, (e: unknown) => e instanceof Error && message.test(e.message), `expected a refusal matching ${message}`);
 const NOT_TRACKED = /isn't a tracked artifact\/folder path, deep path, bare node code, or full node id/;
@@ -76,10 +79,28 @@ describe('remove', () => {
       assert.ok(isLive(c.beta) && isLive(c.itemTwo) && isLive(c.dup));
     });
 
+    test('a removed block has no container and no place: toPath() is null for it and for the block under it, and the container it left has no trace of it', () => {
+      for (const id of [c.alpha, c.alphaSec]) {
+        assert.ok(isDead(id), id);
+        assert.equal((wrap(fx.store, id) as unknown as BlockNode).toPath(), null, `${id} has no path`);
+        assert.equal((wrap(fx.store, id) as unknown as BlockNode).parent, undefined, `${id} has no parent`);
+      }
+      assert.equal((wrap(fx.store, c.alphaArt) as unknown as BlockNode).treeChildren.some((k) => k.id === c.alpha), false, 'it left the list of its container');
+      assert.equal(typeof (wrap(fx.store, c.alphaArt) as unknown as BlockNode).toPath(), 'string', 'a live node of the same document still has one');
+    });
+
     test('removing a node that is already removed is not refused, and it stays dead', () => {
       assert.deepEqual(runRemove(fx.store, { path: c.alpha }), { id: c.alpha });
       assert.ok(isDead(c.alpha) && isDead(c.alphaSec));
       assert.ok(isLive(c.alphaArt));
+    });
+
+    test('the mirror a flush writes holds the tombstones of the block, and none of them is in a `children` list of a live container', () => {
+      dumpMirror(fx.store.engine, fx.root, fx.store.mapping);
+      const { tombstones, inLists, listed } = tombstonesInLists(fx.apeironRoot);
+      for (const id of [c.alpha, c.alphaSec, c.betaOther, c.betaSec, c.itemOne]) assert.ok(tombstones.includes(id), `${id} is in the file, a tombstone`);
+      assert.ok(listed > 5, 'the lists of the live nodes are in the files');
+      assert.deepEqual(inLists, [], 'no tombstone is named by a list');
     });
   });
 

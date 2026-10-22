@@ -12,15 +12,14 @@
  *
  * A README's own content children get the same reconciliation an `ArtifactNode` already gets
  * (`node.ts`'s `ingestFromDisk`, via `reconcile.ts`'s `reconcileTree`) — matching by content
- * against `existingByPath`'s own `readmeChildren` (when present) and carrying forward a matched
+ * against the existing FolderNode's own `readmeChildren` (when present) and carrying forward a matched
  * block's old id, rather than the pre-Task-3 behavior of re-minting every README content block's
  * id on every single ingestion. That churn was invisible before nothing in the rendered output
  * depended on those ids; `astParser.ts`/`project.ts`'s id-anchor (AperasKG/artifacts/planning/
  * linking.md's Task 3) made it visible (`verify.ts`'s FolderNode README stability test caught it).
  * `reconcileTree` itself needs no `Store` (pure), so it runs right here; only *applying* the
  * tombstones it returns for genuinely-removed old content needs one, so those bubble up through
- * `pendingTombstones` (an output array, pushed to like `folderIdByPath`/`existingByPath`/
- * `artifactIdByPath` below) for the `Store`-aware caller (`shell/folders.ts`) to apply.
+ * `pendingTombstones` (an output array) for the `Store`-aware caller (`shell/folders.ts`) to apply.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -41,12 +40,21 @@ export interface ParsedFolderNode {
   props?: PropEntry[];
 }
 
+/** What `buildFolderTree` asks of the graph by a path: the shell answers each from the one map of live nodes by path
+ *  (`shell/lookups.ts`'s `liveAtPath`), so none of them is a copy made before the walk. */
+export interface FolderReaders {
+  /** The bare snowflake of the live FolderNode at `path`, whose id a rebuilt folder keeps. */
+  folderKeyAt(path: string): string | undefined;
+  /** The bare snowflake of the live ArtifactNode at `path`, by which the folder refers to it. */
+  artifactKeyAt(path: string): string | undefined;
+  /** What of the live FolderNode at `path` a rebuild carries forward: its `props` and its README content in reconcile shape. */
+  existingAt(path: string): { props?: PropEntry[]; readmeChildren?: ParsedBlockNode[] } | undefined;
+}
+
 export function buildFolderTree(
   absoluteDir: string,
   artifactsDir: string,
-  folderIdByPath: Map<string, string>,
-  artifactIdByPath: Map<string, string>,
-  existingByPath: Map<string, any>,
+  readers: FolderReaders,
   pendingTombstones: any[] = [],
   pendingDescriptionLinks: PendingLinkCodes[] = []
 ): ParsedFolderNode {
@@ -54,7 +62,7 @@ export function buildFolderTree(
   const isRoot = relPath === '';
   const path = isRoot ? '.' : relPath;
   const title = isRoot ? 'Artifacts' : relPath.split('/').pop()!;
-  const folderId = folderIdByPath.get(path) ?? generateNodeId();
+  const folderId = readers.folderKeyAt(path) ?? generateNodeId();
 
   const entries = readdirSync(absoluteDir).sort();
 
@@ -69,7 +77,7 @@ export function buildFolderTree(
     const stat = statSync(fullPath);
 
     if (stat.isDirectory()) {
-      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingTombstones, pendingDescriptionLinks));
+      structuralChildren.push(buildFolderTree(fullPath, artifactsDir, readers, pendingTombstones, pendingDescriptionLinks));
       continue;
     }
     if (!entry.endsWith('.md')) continue;
@@ -90,9 +98,10 @@ export function buildFolderTree(
       // carries a matched block's old id forward onto the fresh parse, and reports genuinely
       // removed old content as tombstones (collected into `pendingTombstones` for the `Store`-aware
       // caller to apply — this function itself has no `Store`). A folder with no README yet has no
-      // `existingByPath` entry at all — first-time ingest, nothing to reconcile against, same as
+      // existing FolderNode at all — first-time ingest, nothing to reconcile against, same as
       // `ArtifactNode.ingestFromDisk`'s own `hadContent` gate.
-      const existingReadmeChildren = existingByPath.get(path)?.readmeChildren as ParsedBlockNode[] | undefined;
+      const existing = readers.existingAt(path);
+      const existingReadmeChildren = existing?.readmeChildren;
       if (existingReadmeChildren) {
         const oldRoot = { type: 'root', title: 'Document Root', blockId: '', children: existingReadmeChildren };
         const { finalTree, tombstones } = reconcileTree(oldRoot, parsedRoot);
@@ -112,7 +121,7 @@ export function buildFolderTree(
       // folder's own bare snowflake.
       const frontmatterFields = parseFrontmatterFields(frontmatter);
       readmeProps = Object.keys(frontmatterFields).length > 0
-        ? Object.entries(frontmatterFields).map(([key, value]) => carryForwardProp(existingByPath.get(path)?.props, key, value))
+        ? Object.entries(frontmatterFields).map(([key, value]) => carryForwardProp(existing?.props, key, value))
         : undefined;
       const descriptionLinkCodes = collectLinkCodesFromText(frontmatterFields.description ?? '');
       if (descriptionLinkCodes.length > 0) pendingDescriptionLinks.push({ blockId: folderId, codes: descriptionLinkCodes });
@@ -127,7 +136,7 @@ export function buildFolderTree(
       // id rather than by path — path is no longer the key, so `ArtifactNode:${path}` would
       // be a broken reference. A file not yet tracked (no artifactId assigned) is skipped
       // rather than referenced incorrectly; kg:track runs before kg:ingest in the normal flow.
-      const artifactId = artifactIdByPath.get(artifactPath);
+      const artifactId = readers.artifactKeyAt(artifactPath);
       if (artifactId) {
         structuralChildren.push(`ArtifactNode:${artifactId}`);
       } else {

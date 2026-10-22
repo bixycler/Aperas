@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { getArtifactsDir } from '@aperas/core/artifacts';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode } from '@aperas/core/shell/node';
 import type { FixtureStore } from './fixture.ts';
 import { sampleMarkdown } from './sampleMarkdown.ts';
@@ -37,7 +36,7 @@ export function ingestLinkedDemo(fx: FixtureStore): LinkedDemo {
     ingestArtifact(fx.store, path);
   };
   ingest(sampleMarkdown);
-  const demoId = findByExactPath(fx.store, path);
+  const demoId = fx.store.maps.liveAtPath(path);
   if (!demoId) throw new Error('No ArtifactNode found for the demo artifact after ingestion.');
   const artifact = wrap(fx.store, demoId) as unknown as ArtifactNode;
   const rootId = artifact.id;

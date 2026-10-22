@@ -23,8 +23,6 @@ const WAIVED: Record<string, string> = {};
  * The last case of the file checks that each name is still in the source, so a waiver cannot outlive its code.
  */
 const WAIVED_BRANCHES: Record<string, { marker: string; reason: string }> = {
-  flushTimer: { marker: 'FLUSH_INTERVAL_MS = 10_000', reason: 'the timed flush of the content mirror runs every 10 s; it calls the `flushIfDirty` that every `flush: true` and the flush arm reach, and a case would wait past the 8 s the group is held to' },
-  stateFlushTimer: { marker: 'STATE_FLUSH_INTERVAL_MS = 3_000', reason: 'the timed flush of the state mirror runs every 3 s; it calls the `flushStateIfDirty` that the flush arm and every `flush: true` of a view op reach, and a case would wait for a tick it could not be sure of' },
   idleTimeout: { marker: 'IDLE_TIMEOUT_MS = 30 * 60_000', reason: 'the exit after 30 idle minutes calls the `shutdown` that the stop by SIGTERM reaches (lifecycle.test.ts); only the wait is different, and it is thirty minutes' },
   withLinkCheckThrows: { marker: 'after = checkArtifactLinkIntegrity(store, artifactId);', reason: 'the check of the artifact after a write is wrapped in a `try` that returns the plain result if the check throws; the check does not throw on a folder, on an artifact just removed, or on an id with no node (each was run), so no request reaches the `catch`; it is a guard against a store the write left broken, and it has no case' },
 };
@@ -67,9 +65,10 @@ describe('service: every op of handle()', () => {
     });
 
     test('reload reads the mirror again and sweeps nothing from a clean one', async () => {
-      const r = await call<{ recordCount: number; documentCount: number; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: false });
+      const r = await call<{ recordCount: number; documentCount: number; prunedTombstones: number; tombstonedContainers: number; freedGraphs: number }>({ op: 'reload', discard: false });
       assert.ok(r.recordCount > 20 && r.documentCount > 10, JSON.stringify(r));
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [0, 0, 0]);
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers], [0, 0]);
+      assert.equal(r.freedGraphs, 3, 'the three graphs of the old store are freed');
     });
   });
 
@@ -87,10 +86,10 @@ describe('service: every op of handle()', () => {
 
     test('backlinks lists the blocks that cite a node, with their text when asked', async () => {
       const withText = await call<Array<{ ownerId: string; text?: string }>>({ op: 'backlinks', pathArg: c.betaSec, includeText: true, reload: false });
-      assert.deepEqual(withText.map((e) => e.ownerId).sort(), [c.alpha, c.gamma].sort());
+      assert.deepEqual(withText.map((e) => e.ownerId), [c.alpha, c.gamma], 'by the id of the link, which starts with its owner\'s');
       assert.ok(withText.every((e) => typeof e.text === 'string' && e.text.includes(c.betaSec.split(':')[1])));
       const bare = await call<Array<{ ownerId: string; text?: string }>>({ op: 'backlinks', pathArg: c.betaSec, includeText: false, reload: false });
-      assert.deepEqual(bare.map((e) => e.ownerId).sort(), [c.alpha, c.gamma].sort());
+      assert.deepEqual(bare.map((e) => e.ownerId), [c.alpha, c.gamma]);
       assert.ok(bare.every((e) => e.text === undefined));
     });
 
@@ -122,7 +121,8 @@ describe('service: every op of handle()', () => {
 
     test('trackReverse reports the artifacts never projected, and writes nothing', async () => {
       const r = await call<{ neverProjected: Array<{ path: string }>; changed: unknown[]; staleOnDisk: unknown[] }>({ op: 'trackReverse', reload: false });
-      assert.deepEqual(r.neverProjected.map((e) => e.path).sort(), ['.', 'cmd_demo', 'cmd_demo/alpha.md', 'cmd_demo/beta.md', 'cmd_demo/dup.md', 'cmd_demo/gamma.md']);
+      // By the id of the node, the artifacts before the folders; the corpus builds beta, dup, alpha and gamma in that order.
+      assert.deepEqual(r.neverProjected.map((e) => e.path), ['cmd_demo/beta.md', 'cmd_demo/dup.md', 'cmd_demo/alpha.md', 'cmd_demo/gamma.md', '.', 'cmd_demo']);
       assert.deepEqual([r.changed, r.staleOnDisk], [[], []]);
     });
 

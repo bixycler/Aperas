@@ -4,8 +4,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createEngine } from '@aperas/core/apeironNgn/engine';
-import { compareByKey, compareIds, MIXED_KEYS_POINT } from '@aperas/core/apeironNgn/order';
-import { Undecided, Refused } from '@aperas/core/apeironNgn/errors';
+import { compareByKey, compareIds } from '@aperas/core/apeironNgn/order';
+import { Refused } from '@aperas/core/apeironNgn/errors';
 import { Oracle } from '../support/oracle.ts';
 import { TEST_SCHEMA } from '../support/engineSchema.ts';
 import { rng } from '../support/prng.ts';
@@ -58,13 +58,12 @@ describe('compareByKey: the key is the caller\'s, a tie is broken by id', () => 
     assert.deepEqual(['c', 'a', 'b'].sort(compareByKey(() => undefined)), ['a', 'b', 'c']);
   });
 
-  test('a pair in which exactly one key is absent is Undecided, whichever side it is on', () => {
-    const k: Record<string, number | undefined> = { a: 1, b: undefined };
+  test('an id with no key sorts after those with one, several without one by compareIds, whichever side it is on', () => {
+    const k: Record<string, number | undefined> = { a: 1, b: undefined, c: 0, d: undefined, e: 2 };
     const cmp = compareByKey((id) => k[id]);
-    const mixed = (e: unknown): boolean => e instanceof Undecided && e.point === MIXED_KEYS_POINT && e.point === 'The order of links without a position';
-    assert.throws(() => cmp('a', 'b'), mixed);
-    assert.throws(() => cmp('b', 'a'), mixed);
-    assert.throws(() => ['b', 'a'].sort(cmp), mixed);
+    assert.ok(cmp('a', 'b') < 0 && cmp('b', 'a') > 0);
+    assert.deepEqual(['b', 'a', 'd', 'e', 'c'].sort(cmp), ['c', 'a', 'e', 'b', 'd']);
+    assert.deepEqual(['d', 'e', 'b', 'c', 'a'].sort(cmp), ['c', 'a', 'e', 'b', 'd'], 'whatever order the list starts in');
   });
 
   test('a number and a string as keys of one sort are refused', () => {

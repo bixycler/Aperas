@@ -34,7 +34,6 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import type { Db } from '@aperas/core/shell/db';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { wrap, hasHolderDescendant, deriveAbstractFromLiveChildren, type ArtifactNode, type FolderNode, type TreeNode } from '@aperas/core/shell/node';
 import { getArtifactsDir, computeFileHash } from '@aperas/core/artifacts';
@@ -43,7 +42,7 @@ import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
 
 export function runProject(store: Db, path: string, dryRun: boolean, force: boolean = false) {
-  const id = findByExactPath(store, path);
+  const id = store.maps.liveAtPath(path);
   const kind = id ? nodeKindFromId(id) : null;
   if (kind !== 'ArtifactNode' && kind !== 'FolderNode') {
     throw new Error(`No ingested ArtifactNode or FolderNode found for '${path}'.`);

@@ -9,7 +9,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { nodeExists, allIdsOfKind, type Db } from './db';
+import { nodeExists, liveDocumentIdsOfKind, type Db } from './db';
 import { wrap, createNode, tombstoneLiveSubtree } from './node';
 import type { ArtifactNode, BlockNode, TreeNode, Link, ApeironNode, IngestResult } from './node';
 import { nodeKindFromId } from './nodeIds';
@@ -62,7 +62,7 @@ function resolveBarePathCode(store: Db, code: string, currentArtifactPath: strin
   if (currentArtifactPath === null) return null;
   const targetPath = relativeToCanonicalArtifactPath(currentArtifactPath, code);
   if (targetPath === null) return null;
-  return findLiveByKindAndPath(store, 'ArtifactNode', targetPath) ?? findLiveByKindAndPath(store, 'FolderNode', targetPath);
+  return store.maps.liveAtPath(targetPath, { kind: 'ArtifactNode' }) ?? store.maps.liveAtPath(targetPath, { kind: 'FolderNode' }) ?? null;
 }
 
 /** The per-code resolution dispatch shared by `resolveBlockLinks`'s own pass and
@@ -179,28 +179,6 @@ function resolveFragmentCode(store: Db, code: string, currentArtifactPath: strin
   return candidateId && candidateCarriesAnchor(store, candidateId, fragment) ? candidateId : null;
 }
 
-/** A live (non-tombstoned) node of `kind` at `path` — `path` is unique per kind by construction
- *  (a filesystem path is either a file or a directory, never both), but a tombstoned entry keeps
- *  its old `path` value forever, so a plain `path`-literal lookup alone (`tree.ts`'s
- *  `findByExactPath`) isn't enough once a path has been reused after a rename/removal. */
-function findLiveByKindAndPath(store: Db, kind: string, path: string): string | null {
-  return store.maps.liveAtPath(path, { kind }) ?? null;
-}
-
-export function findLiveArtifactByPath(store: Db, path: string): string | null {
-  return findLiveByKindAndPath(store, 'ArtifactNode', path);
-}
-
-/** Live nodes of `kind` that have a document: a real `ArtifactNode` always has a `path`. An id that is only
- *  named by a parent's `children` is a subject with containment triples and no document (see the same
- *  helper in `folders.ts`); without the `path` check a full `track` listed it for removal as `null`. */
-function allLiveIdsOfKind(store: Db, kind: string): string[] {
-  return allIdsOfKind(store, kind).filter((id) => {
-    const node = wrap(store, id) as unknown as ArtifactNode;
-    return !node.tombstonedAt && node.path !== undefined;
-  });
-}
-
 export interface TrackResult {
   tracked: boolean;
 }
@@ -210,7 +188,7 @@ export interface TrackResult {
  *  that there's no separate `artifactId` to mint (a brand-new node's `fileHash` just reads
  *  `undefined`, so it's unconditionally "changed"). */
 export function trackArtifact(store: Db, artifactPath: string): TrackResult {
-  const existingId = findLiveArtifactByPath(store, artifactPath);
+  const existingId = store.maps.liveAtPath(artifactPath, { kind: 'ArtifactNode' });
   const node = (existingId ? wrap(store, existingId) : createNode(store, `ArtifactNode:${generateNodeId()}`, { path: artifactPath })) as unknown as ArtifactNode;
   return node.trackFromDisk(artifactPath);
 }
@@ -233,10 +211,9 @@ export function trackAllArtifacts(store: Db, force: boolean = false): { results:
   const files = listArtifactFiles();
   const diskSet = new Set(files);
 
-  const liveIds = allLiveIdsOfKind(store, 'ArtifactNode');
-  const existingByPath = new Map(liveIds.map((id) => [(wrap(store, id) as unknown as ArtifactNode).path as string, id]));
+  const liveIds = liveDocumentIdsOfKind(store, 'ArtifactNode');
 
-  const diskOnlyPaths = files.filter((f) => !existingByPath.has(f));
+  const diskOnlyPaths = files.filter((f) => store.maps.liveAtPath(f, { kind: 'ArtifactNode' }) === undefined);
   // Aperas-crud-design.md §6: same fix as ingestFolderTree's own dbOnlyPaths — a holder-flagged
   // ArtifactNode not found on disk is never evidence of removal, so it's excluded here before it
   // can ever reach `removedCandidates` below and get tombstoned by this sweep.
@@ -311,13 +288,13 @@ export function trackAllArtifacts(store: Db, force: boolean = false): { results:
  *  the full sweep's own decision to make, once that path is safe to run again. */
 export function trackArtifactsScoped(store: Db, paths: string[]): { results: TrackResult[]; sweep: ArtifactSweepStats } {
   const artifactsDir = getArtifactsDir();
-  const newPaths = paths.filter((p) => !findLiveArtifactByPath(store, p));
+  const newPaths = paths.filter((p) => store.maps.liveAtPath(p, { kind: 'ArtifactNode' }) === undefined);
 
   const addedCandidates = newPaths.map((path) => {
     const content = readFileSync(join(artifactsDir, path), 'utf-8');
     return { key: extractAbstract(parseMarkdownTree(content).root), item: path };
   });
-  const removedCandidates = allLiveIdsOfKind(store, 'ArtifactNode')
+  const removedCandidates = liveDocumentIdsOfKind(store, 'ArtifactNode')
     .filter((id) => {
       const node = wrap(store, id) as unknown as ArtifactNode;
       return !node.holder && !existsSync(join(artifactsDir, node.path as string));
@@ -364,15 +341,18 @@ export interface LinkResolutionStats {
   changed: number;
 }
 
-/** Whether two position lists are the same occurrence-for-occurrence, not just the same set —
- *  purely a "does the stored `props` need rewriting at all" check, *not* an identity-match
- *  condition (`resolveBlockLinks` matches wikilink `Link` identity on `target` alone; see its own
- *  doc comment for why). Order-sensitive rather than set-equality on purpose: a target mentioned
- *  twice, with its two occurrences having swapped order between ingestions, is still a real change
- *  to what the `Link`'s `position` props should say, even though the target — the identity key —
- *  hasn't moved. */
+/** Whether two position lists hold the same occurrences, whatever order they were read in — purely a
+ *  "does the stored `props` need rewriting at all" check, *not* an identity-match condition
+ *  (`resolveBlockLinks` matches wikilink `Link` identity on `target` alone; see its own doc comment
+ *  for why). The stored list comes back in the engine's order for a set of `props`, which promises
+ *  none, and the fresh list is in text order, so the two are compared sorted: otherwise a `Link`
+ *  whose positions did not change would have its `StringProp`s rewritten, with new ids, on every
+ *  ingest (planning/core.md, "Which order differences are accepted"). */
 function positionsEqual(a: number[], b: number[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+  const sorted = (list: number[]): number[] => [...list].sort((x, y) => x - y);
+  const left = sorted(a);
+  const right = sorted(b);
+  return left.length === right.length && left.every((v, i) => v === right[i]);
 }
 
 /**
@@ -662,7 +642,7 @@ export function resolveBlockLinks(
 export function retryDanglingRefs(store: Db, force: boolean = false): { reingested: string[]; failed: IngestFailure[] } {
   const reingested: string[] = [];
   const failed: IngestFailure[] = [];
-  for (const id of allLiveIdsOfKind(store, 'ArtifactNode')) {
+  for (const id of liveDocumentIdsOfKind(store, 'ArtifactNode')) {
     const artifact = wrap(store, id) as unknown as ArtifactNode;
     const danglingCodes = getProps(artifact as unknown as any, DANGLING_REF_PROP);
     if (danglingCodes.length === 0) continue;
@@ -700,7 +680,7 @@ export function retryDanglingRefs(store: Db, force: boolean = false): { reingest
  *  `bypassUnchangedCheck`: passed straight through to `ingestFromDisk` — see its own doc comment
  *  (`node.ts`); `retryDanglingRefs` below is the one caller that ever passes `true`. */
 export function ingestArtifact(store: Db, artifactPath: string, force: boolean = false, bypassUnchangedCheck: boolean = false): (IngestResult & { linkResolution: LinkResolutionStats; pendingConfirmation?: Array<{ blockId: string; type?: string; title?: string }> }) | null {
-  const existingId = findLiveArtifactByPath(store, artifactPath);
+  const existingId = store.maps.liveAtPath(artifactPath, { kind: 'ArtifactNode' });
   if (!existingId) {
     throw new Error(`Artifact '${artifactPath}' is not tracked yet — run track first.`);
   }
@@ -753,7 +733,7 @@ export function ingestAllArtifacts(store: Db, force: boolean = false): { ingeste
   const untracked: string[] = [];
   const failed: IngestFailure[] = [];
   for (const file of files) {
-    if (!findLiveArtifactByPath(store, file)) {
+    if (store.maps.liveAtPath(file, { kind: 'ArtifactNode' }) === undefined) {
       untracked.push(file);
       continue;
     }

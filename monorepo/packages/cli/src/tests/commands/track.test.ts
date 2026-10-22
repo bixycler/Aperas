@@ -1,7 +1,7 @@
 // `runTrack` and `runReverseTrack` before the writes move to the engine (planning/core.md, Batch 11, step 10): what a track does with a file that is new, edited,
 // unchanged, renamed or gone, for the whole corpus and for the paths given (a file, a directory, a README), and the three lists of `track --reverse`
 // (never projected, changed since the last projection, removed in the graph and still on disk). A removal a full sweep would make is held back and listed
-// until it is forced. A list is compared as a set: its order is the order of an unordered read. The cases share one store and one scratch folder and run in
+// until it is forced. The three lists come by id of the node (the artifacts, then the folders). The cases share one store and one scratch folder and run in
 // order. The store is reached through `fx.store`, `wrap` and the `runX` functions only.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -146,7 +146,7 @@ describe('track', () => {
 
     test('the artifacts with content that were never projected are listed, and a node removed in the graph and still on disk is listed apart', () => {
       const r = listed();
-      const artifacts = keyed(r.neverProjected).filter((k) => k.startsWith('ArtifactNode:'));
+      const artifacts = r.neverProjected.filter((e) => e.kind === 'ArtifactNode').map((e) => `${e.kind}:${e.path}`);
       assert.deepEqual(artifacts, ['ArtifactNode:trk_demo/a.md', 'ArtifactNode:trk_demo/b2.md', 'ArtifactNode:trk_demo/c2.md'], 'e.md is tracked and not ingested, so it has no content to project');
       assert.ok(keyed(r.neverProjected).includes('FolderNode:trk_demo'));
       assert.deepEqual(r.changed, []);
@@ -188,9 +188,9 @@ describe('track', () => {
       const hash = stored(idOf(fx, 'trk_demo/b2.md')).fileHash;
       const first = listed();
       const second = listed();
-      assert.deepEqual(keyed(first.neverProjected), keyed(second.neverProjected));
-      assert.deepEqual(keyed(first.changed), keyed(second.changed));
-      assert.deepEqual(sorted(first.staleOnDisk), sorted(second.staleOnDisk));
+      assert.deepEqual(first.neverProjected, second.neverProjected);
+      assert.deepEqual(first.changed, second.changed);
+      assert.deepEqual(first.staleOnDisk, second.staleOnDisk);
       assert.equal(stored(idOf(fx, 'trk_demo/b2.md')).fileHash, hash);
     });
   });

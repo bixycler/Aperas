@@ -1,8 +1,8 @@
 // The view commands before the reads move to the engine (planning/core.md, Batch 11, step 10): the profile and view lifecycle (`runProfile*`), and the
 // commands that change a view (`runUnfold` with one, `runFold`, `runZoom`), on a small corpus. Create, list and remove a profile and a view, a view's
 // owner, the `default` view and profile a first use makes, the cascade of removing a profile, a refused duplicate, a fold that cascades over what is
-// reached from the node and nothing else, and a zoom that moves the one root a view has. Where the order of an unordered read shows (the profiles, the
-// views and the `unfolds` of a view) a case compares sets, never today's order, so the file passes on either engine. The cases share one corpus and run in
+// reached from the node and nothing else, and a zoom that moves the one root a view has. The profiles and the views are listed by id and the
+// unfolded ids of a view by id too, and the cases compare that order exactly. The cases share one corpus and run in
 // order. The store is reached through `fx.store`, `wrap` and the `runX` functions only.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -86,7 +86,7 @@ describe('profile and view commands', () => {
       runUnfold(fx.store, c.alphaArt, resolveTreeView(fx.store, 'mine'));
       assert.deepEqual(unfoldsOf('mine'), [c.alphaArt], 'unfolding it again adds nothing');
       runUnfold(fx.store, c.alphaLinkToBeta, resolveTreeView(fx.store, 'mine'));
-      assert.deepEqual(sorted(unfoldsOf('mine')), sorted([c.alphaArt, c.alphaLinkToBeta]));
+      assert.deepEqual(unfoldsOf('mine'), sorted([c.alphaArt, c.alphaLinkToBeta]), 'listed by id');
       assert.equal(views()[0].unfoldCount, 2);
     });
 
@@ -94,7 +94,7 @@ describe('profile and view commands', () => {
       const view = () => resolveTreeView(fx.store, 'mine');
       runUnfold(fx.store, c.alpha, view());
       runUnfold(fx.store, c.betaArt, view());
-      assert.deepEqual(sorted(unfoldsOf('mine')), sorted([c.alphaArt, c.alphaLinkToBeta, c.alpha, c.betaArt]));
+      assert.deepEqual(unfoldsOf('mine'), sorted([c.alphaArt, c.alphaLinkToBeta, c.alpha, c.betaArt]), 'listed by id');
       const r = runFold(fx.store, 'cmd_demo/alpha.md', view());
       assert.deepEqual(r, { id: c.alphaArt });
       assert.deepEqual(unfoldsOf('mine'), [c.betaArt], 'the heading and the link under the artifact went; the target of the link, reached by another path, stayed');
@@ -172,7 +172,9 @@ describe('profile and view commands', () => {
       const r = runProfileRemove(fx.store, 'will');
       assert.deepEqual(r, { removed: true, viewsRemoved: 2 });
       assert.equal(profiles().some((p) => p.handle === 'will'), false);
-      assert.deepEqual(sorted(views().map((v) => v.name)), ['bares', 'default']);
+      const left = views();
+      assert.deepEqual(left.map((v) => v.id), sorted(left.map((v) => v.id)), 'the views are listed by id');
+      assert.deepEqual(sorted(left.map((v) => v.name)), ['bares', 'default']);
       refuses(() => runProfileListView(fx.store, 'mine'), /TreeView 'mine' not found/);
       assert.deepEqual(runProfileRemove(fx.store, 'will'), { removed: false, viewsRemoved: 0 });
     });

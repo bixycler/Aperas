@@ -26,7 +26,7 @@
 import type { Db } from '@aperas/core/shell/db';
 import { expandArtifactPaths } from '@aperas/core/artifacts';
 import { runTrack, type TrackResult } from './kgTrack';
-import { ingestAllArtifacts, ingestArtifacts, findLiveArtifactByPath, trackArtifact, retryDanglingRefs } from '@aperas/core/shell/artifacts';
+import { ingestAllArtifacts, ingestArtifacts, trackArtifact, retryDanglingRefs } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
 import { confirmRemoval } from './removalPrompt';
 import { ensureServiceRunning, request } from './service/serviceClient';
@@ -45,7 +45,7 @@ export function runIngest(store: Db, paths: string[] = [], track: boolean = fals
   // wikilinks (resolved during the content-ingestion step further down) to see a consistent tree.
   if (paths.length > 0) {
     for (const path of expandArtifactPaths(paths)) {
-      if (!findLiveArtifactByPath(store, path)) trackArtifact(store, path);
+      if (store.maps.liveAtPath(path, { kind: 'ArtifactNode' }) === undefined) trackArtifact(store, path);
     }
   }
 

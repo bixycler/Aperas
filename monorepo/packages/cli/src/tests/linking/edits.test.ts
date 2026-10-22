@@ -9,7 +9,6 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/shell/node';
 import { runUpdate } from '../../kgUpdate';
 import { runRetype } from '../../kgRetype';
@@ -26,7 +25,7 @@ describe('linking: edits next to a resolved link', () => {
     trackArtifact(fx.store, path);
     ingestFolderTree(fx.store);
     ingestArtifact(fx.store, path);
-    const id = findByExactPath(fx.store, path);
+    const id = fx.store.maps.liveAtPath(path);
     assert.ok(id, `'${path}' is tracked after ingestion`);
     return wrap(fx.store, id!) as unknown as ArtifactNode;
   };

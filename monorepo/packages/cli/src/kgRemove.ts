@@ -1,11 +1,9 @@
 /**
  * `kg:remove` — recursive tombstone of an arbitrary node, on demand (Aperas-crud-design.md §10),
- * via the shared ApeironNgn service. Wraps the existing `tombstoneLiveSubtree` (node.ts), which
- * today only ever runs as a side effect of a whole tracked artifact disappearing from disk
- * (`artifacts.ts`'s artifact-tombstone path) — this exposes the same recursive soft-tombstone
- * directly. Explicitly **not** a hard delete: `hardDeleteNode` (the actual quad-erasing GC
- * primitive used for orphaned embedded subdocuments) stays internal-only, never exposed to users; a
- * tombstoned node's quads remain, inert, exactly like any other reconciliation removal.
+ * via the shared ApeironNgn service. It is the engine's tombstone of a subtree (`tombstoneLiveSubtree`, node.ts), through the write layer: every member
+ * leaves its container and releases its children, links and props. A container that the removal leaves with nothing live (a `list`, or a `listItem` with
+ * no text) is tombstoned in the same write, and so on upward (`tombstoneEmptiedContainers`). Explicitly **not** a hard delete: `hardDeleteNode`
+ * (the GC primitive that erases a record) stays internal-only, never exposed to users; the record of a tombstone stays until a sweep prunes it.
  */
 
 import type { Db } from '@aperas/core/shell/db';

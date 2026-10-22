@@ -9,7 +9,6 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/shell/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity } from '@aperas/core/shell/linkIntegrity';
 import { graphOfId } from '@aperas/core/shell/db';
@@ -56,7 +55,7 @@ must never reprocess a block the discrepancy report didn't name.
     trackArtifact(fx.store, path);
     ingestFolderTree(fx.store);
     ingestArtifact(fx.store, path);
-    const artifactId = findByExactPath(fx.store, path)!;
+    const artifactId = fx.store.maps.liveAtPath(path)!;
     assert.ok(artifactId, `'${path}' is tracked after ingestion`);
     const artifact = wrap(fx.store, artifactId) as unknown as ArtifactNode;
     const target = findHeadingByTitle(artifact, 'Target');

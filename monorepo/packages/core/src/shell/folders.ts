@@ -1,31 +1,20 @@
 /**
  * ApeironNgn implementation of `kg:ingest`'s FolderNode half (Aperas-apeironngn-design.md §4
  * rollout). Reuses `folders.ts`'s own `buildFolderTree`/`collectFolderPaths`/`countFolders`
- * directly, unmodified — they're already pure (no TerminusDB calls; every existing-state lookup
- * comes in as a plain `Map` argument), so only the outer orchestration (populating those maps from
- * a `Store` instead of `client.getDocument`) is here. §4 rollout step 3 folded the actual tree
+ * directly — they're pure (every existing-state lookup comes in as the `FolderReaders` argument), so only
+ * the outer orchestration (answering those readers from the shell's one map by path, `store.maps`) is here. §4 rollout step 3 folded the actual tree
  * write onto `FolderNode.hydrateFromParsed` (`node.ts`).
  */
 
-import { allIdsOfKind, type Db } from './db';
+import { liveDocumentIdsOfKind, type Db } from './db';
 import { wrap, wrapOrCreate, applyTombstone, tombstoneNode, collectLinkTargetsByBlock, collectOldWikilinksByBlock } from './node';
 import type { FolderNode, BlockNode } from './node';
 import { nodeKindFromId } from './nodeIds';
-import { buildFolderTree, collectFolderPaths, countFolders, type ParsedFolderNode } from '../folders';
+import { buildFolderTree, collectFolderPaths, countFolders, type FolderReaders, type ParsedFolderNode } from '../folders';
 import { getArtifactsDir, type PendingLinkCodes } from '../artifacts';
 import { resolveBlockLinks } from './artifacts';
 import { matchLeftoverByAbstract } from '../reconcile';
-
-/** Live nodes of `kind` that have a document: a real `FolderNode`/`ArtifactNode` always has a `path`. An id
- *  that is only named by a parent's `children` (the shape a copy of the mirror without `.state/` loads as)
- *  is a subject in the store with containment triples and no document; it has no `path`, and counting it
- *  live put a `null` into `pendingRemovals`. */
-function allLiveIdsOfKind(store: Db, kind: string): string[] {
-  return allIdsOfKind(store, kind).filter((id) => {
-    const node = wrap(store, id) as unknown as FolderNode;
-    return !node.tombstonedAt && node.path !== undefined;
-  });
-}
+import type { PropEntry } from '../props';
 
 export interface FolderRecord {
   folderId: string;
@@ -37,13 +26,10 @@ export interface FolderRecord {
 /** Looks up a live FolderNode by path — the from-`Store` counterpart to `folders.ts`'s
  *  `getFolderRecord`. */
 export function getFolderRecord(store: Db, folderPath: string): FolderRecord | null {
-  for (const id of allLiveIdsOfKind(store, 'FolderNode')) {
-    const node = wrap(store, id) as unknown as FolderNode;
-    if (node.path === folderPath) {
-      return { folderId: node.key, path: node.path as string, title: node.title as string, ...(node.text !== undefined ? { text: node.text as string } : {}) };
-    }
-  }
-  return null;
+  const id = store.maps.liveAtPath(folderPath, { kind: 'FolderNode' });
+  if (id === undefined) return null;
+  const node = wrap(store, id) as unknown as FolderNode;
+  return { folderId: node.key, path: node.path as string, title: node.title as string, ...(node.text !== undefined ? { text: node.text as string } : {}) };
 }
 
 export interface FolderSweepStats {
@@ -54,35 +40,35 @@ export interface FolderSweepStats {
 /** Builds and writes the entire FolderNode tree rooted at `AperasKG/artifacts/` — see
  *  `ingestFolderTree`'s own doc comment in `folders.ts` for the rename-detection rationale,
  *  unchanged here. A matched rename reuses the existing `folderId` (via `buildFolderTree`'s own
- *  `existingByPath`/`folderIdByPath` maps, same as the original); a tombstone sets one field
+ *  `FolderReaders`, answered from the one map by path, same rename rule as the original); a tombstone sets one field
  *  directly rather than replacing the whole document. */
 export function ingestFolderTree(store: Db, force: boolean = false): { folderCount: number; sweep: FolderSweepStats; pendingRemovals: string[] } {
   const artifactsDir = getArtifactsDir();
 
-  const liveFolderIds = allLiveIdsOfKind(store, 'FolderNode');
-  const existingByPath = new Map(liveFolderIds.map((id) => {
-    const node = wrap(store, id) as unknown as FolderNode;
-    // `readmeChildren`: this folder's own current BlockNode-kind children (its README's content —
-    // the only kind of child a FolderNode ever has besides nested FolderNode/ArtifactNode
-    // structural references), in the same reconcile-shape `ArtifactNode.ingestFromDisk` already
-    // uses, so `folders.ts`'s `buildFolderTree` can reconcile a fresh parse against it instead of
-    // re-minting every README content block's id on every ingestion (AperasKG/artifacts/planning/
-    // linking.md's Task 3 made that churn visible via the id-anchor it now embeds).
-    const readmeChildren = node.treeChildren
-      .filter((c) => nodeKindFromId(c.id) === 'BlockNode')
-      .map((c) => (c as unknown as BlockNode).toReconcileShape());
-    return [node.path as string, { props: node.props, readmeChildren }];
-  }));
-  const folderIdByPath = new Map(liveFolderIds.map((id) => {
-    const node = wrap(store, id) as unknown as FolderNode;
-    return [node.path as string, node.key];
-  }));
-
-  const liveArtifactIds = allLiveIdsOfKind(store, 'ArtifactNode');
-  const artifactIdByPath = new Map(liveArtifactIds.map((id) => {
-    const node = wrap(store, id) as unknown as FolderNode; // only .path/.key are read below, common to every TreeNode
-    return [node.path as string, node.key];
-  }));
+  const liveFolderIds = liveDocumentIdsOfKind(store, 'FolderNode');
+  const folderAt = (path: string): string | undefined => store.maps.liveAtPath(path, { kind: 'FolderNode' });
+  const keyOf = (id: string | undefined): string | undefined => (id === undefined ? undefined : id.slice(id.indexOf(':') + 1));
+  const readers: FolderReaders = {
+    folderKeyAt: (path) => keyOf(folderAt(path)),
+    artifactKeyAt: (path) => keyOf(store.maps.liveAtPath(path, { kind: 'ArtifactNode' })),
+    existingAt(path) {
+      const id = folderAt(path);
+      if (id === undefined) return undefined;
+      const node = wrap(store, id) as unknown as FolderNode;
+      // `readmeChildren`: this folder's own current BlockNode-kind children (its README's content —
+      // the only kind of child a FolderNode ever has besides nested FolderNode/ArtifactNode
+      // structural references), in the same reconcile-shape `ArtifactNode.ingestFromDisk` already
+      // uses, so `folders.ts`'s `buildFolderTree` can reconcile a fresh parse against it instead of
+      // re-minting every README content block's id on every ingestion (AperasKG/artifacts/planning/
+      // linking.md's Task 3 made that churn visible via the id-anchor it now embeds).
+      const readmeChildren = node.treeChildren
+        .filter((c) => nodeKindFromId(c.id) === 'BlockNode')
+        .map((c) => (c as unknown as BlockNode).toReconcileShape());
+      return { props: node.props as unknown as PropEntry[] | undefined, readmeChildren };
+    },
+  };
+  // The paths of the live folders, each once: a path held by two live nodes is one entry, the holder the map answers.
+  const livePaths = [...new Set(liveFolderIds.map((id) => (wrap(store, id) as unknown as FolderNode).path as string))];
 
   // Snapshot of every live folder's *own* current wikilinks (its `description`'s, from a prior
   // ingest), taken before the tree write below touches anything — same "capture before mutation"
@@ -101,7 +87,7 @@ export function ingestFolderTree(store: Db, force: boolean = false): { folderCou
 
   const pendingReadmeTombstones: any[] = [];
   const pendingDescriptionLinks: PendingLinkCodes[] = [];
-  const tree = buildFolderTree(artifactsDir, artifactsDir, folderIdByPath, artifactIdByPath, existingByPath, pendingReadmeTombstones, pendingDescriptionLinks);
+  const tree = buildFolderTree(artifactsDir, artifactsDir, readers, pendingReadmeTombstones, pendingDescriptionLinks);
   // Applied unconditionally, not `force`-gated like the folder/artifact removal sweep below: a
   // README content block genuinely missing from the fresh parse was already becoming permanently
   // orphaned (unreferenced, ungoverned) garbage before this reconciliation existed at all — writing
@@ -113,23 +99,18 @@ export function ingestFolderTree(store: Db, force: boolean = false): { folderCou
   const newByPath = new Map<string, ParsedFolderNode>();
   collectFolderPaths(tree, newByPath);
 
-  const diskOnlyPaths = [...newByPath.keys()].filter((p) => !existingByPath.has(p));
+  const diskOnlyPaths = [...newByPath.keys()].filter((p) => folderAt(p) === undefined);
   // Aperas-crud-design.md §6: a holder-flagged FolderNode not appearing in the fresh disk walk is
   // never evidence of removal — it was never going to be produced by one in the first place — so
   // it's excluded here before it can ever reach `removedCandidates` below and get tombstoned by
   // this sweep, independent of whatever `FolderNode.hydrateFromParsed`'s own preservation loop
   // does for a *parent's reference* to it.
-  const dbOnlyPaths = [...existingByPath.keys()].filter((p) => {
-    if (newByPath.has(p)) return false;
-    const id = `FolderNode:${folderIdByPath.get(p)}`;
-    return !(wrap(store, id) as unknown as FolderNode).holder;
-  });
-  const dbOnlyIds = new Map(dbOnlyPaths.map((p) => [p, folderIdByPath.get(p)!]));
+  const dbOnlyIds = livePaths
+    .filter((p) => !newByPath.has(p))
+    .map((p) => folderAt(p)!)
+    .filter((id) => !(wrap(store, id) as unknown as FolderNode).holder);
 
-  const removedCandidates = dbOnlyPaths.map((p) => {
-    const id = `FolderNode:${dbOnlyIds.get(p)}`;
-    return { key: ((wrap(store, id) as unknown as FolderNode).text as string) ?? '', item: id };
-  });
+  const removedCandidates = dbOnlyIds.map((id) => ({ key: ((wrap(store, id) as unknown as FolderNode).text as string) ?? '', item: id }));
   const addedCandidates = diskOnlyPaths.map((p) => ({ key: newByPath.get(p)!.text ?? '', item: newByPath.get(p)! }));
   // Explicit <any>: the two sides carry genuinely different item shapes (an existing node's bare
   // id vs. a freshly-built ParsedFolderNode) — same asymmetry the original TerminusDB-backed

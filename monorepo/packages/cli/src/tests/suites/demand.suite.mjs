@@ -13,4 +13,5 @@ export default defineSuite(import.meta.url, [
   '../corpus/roundtrip.test.ts',
   '../corpus/mirror.test.ts',
   '../corpus/lookups.test.ts',
+  '../corpus/sweeps.test.ts',
 ]);

@@ -31,10 +31,11 @@
 import { readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { closeSchema, type FieldDef } from '@aperas/core/apeironNgn/schema';
+import { compareByKey, compareIds } from '@aperas/core/apeironNgn/order';
 import { generateNodeId } from '../snowflake';
 import { nodeKindFromId } from './nodeIds';
 import { APERAS_SCHEMA } from './aperasSchema';
-import { allIdsOfKind, backlinksOf, graphOfId, nodeExists, type Db } from './db';
+import { allIdsOfKind, backlinksOf, graphOfId, liveIdsOfKind, nodeExists, type Db } from './db';
 import type { NewNode } from './graphOfPath';
 import { displayLabel, type TreeOptions } from './tree';
 import { slugify } from '../nodeRef';
@@ -887,15 +888,14 @@ function parsedBlockNames(node: ParsedBlockNode, path: string): string[] {
 }
 
 /** Every name every still-live `BlockNode` in the store currently answers to, indexed for
- *  `rejectSlugPathCollisions` below — a fresh full scan (`allIdsOfKind` has no cheaper index to
- *  offer), acceptable since every caller of this is an occasional CLI-driven write, never a hot
+ *  `rejectSlugPathCollisions` below — a fresh full scan over `liveIdsOfKind` (the engine keeps no
+ *  cheaper index of live ids), acceptable since every caller of this is an occasional CLI-driven write, never a hot
  *  path. First writer wins per name; a real duplicate among *already-live* blocks would itself be
  *  a bug this check exists to prevent from happening in the first place. */
 function buildLiveSlugPathIndex(store: Db): Map<string, string> {
   const liveIndex = new Map<string, string>();
-  for (const id of allIdsOfKind(store, 'BlockNode')) {
+  for (const id of liveIdsOfKind(store, 'BlockNode')) {
     const node = wrap(store, id) as unknown as BlockNode;
-    if (node.tombstonedAt) continue;
     for (const name of liveBlockNames(node)) {
       if (!liveIndex.has(name)) liveIndex.set(name, id);
     }
@@ -1023,7 +1023,7 @@ export function collectOldWikilinksByBlock(
  *  parameter (the `danglingRef`-prop bookkeeping it does on that node). `artifacts.ts`'s own
  *  `artifactPathOfBlock` does the identical walk but returns the artifact's `path` — this returns
  *  the id instead, since `kgUpdate.ts`/`kgInsert.ts` (unlike `ingestArtifact`, which already has
- *  its artifact's id in hand from `findLiveArtifactByPath`) only start with an arbitrary
+ *  its artifact's id in hand from the path map's `liveAtPath`) only start with an arbitrary
  *  Block/ArtifactNode target and need to find their way up to it. */
 export function findEnclosingArtifactId(node: TreeNode): string | null {
   let current: TreeNode | undefined = node;
@@ -1143,6 +1143,22 @@ export class Link extends ApeironInstance {
   declare props?: ApeironNode[];
 }
 
+/** The links of a block in the order a reader shows them (design/core.md, "Where an order shows" and "The order of links without a position"): by `position`,
+ *  then by id, a link with no `position` after those with one, several without one by id. A link made of several occurrences of its target carries several
+ *  `position` props, and its place is the first of them, taken as a number (`'9'` before `'10'`); a `position` that is not a number counts as none. The
+ *  engine lists the links of a block in no promised order, so every reader that shows them goes through here. */
+export function linksInOrder(node: { links?: ApeironNode[] }): Link[] {
+  const links = (node.links as unknown as Link[] | undefined) ?? [];
+  if (links.length < 2) return links;
+  const first = new Map<string, number | undefined>();
+  for (const link of links) {
+    const positions = getProps(link as unknown as HasProps, 'position').map(Number).filter((n) => Number.isFinite(n));
+    first.set(link.id, positions.length > 0 ? Math.min(...positions) : undefined);
+  }
+  const compare = compareByKey((id) => first.get(id));
+  return [...links].sort((a, b) => compare(a.id, b.id));
+}
+
 /** Leaf subdoc — data only (`key`/`value`), never a `this` for any migrated function. */
 export class StringProp extends ApeironInstance {
   declare key?: string;
@@ -1179,8 +1195,8 @@ export class TreeView extends ApeironInstance {
    *  Write-time existence check (issues/treeview.md's "stale `TreeView.unfolds` references have no
    *  general cleanup") — a no-op, not a throw, matching `unfold`'s own idempotent-no-op-on-repeat
    *  posture: a ref already dead *at unfold time* is refused up front, the cheap complementary half
-   *  of the fix. It doesn't catch a ref that goes stale *afterward*, through an unrelated edit or GC
-   *  pass elsewhere — `pruneStaleUnfolds` (below) is the sweep that actually closes that half. */
+   *  of the fix. A ref that goes stale *afterward* is dropped by the engine with its target (the role
+   *  `dropWithTarget`), whichever graph the node is removed from. */
   unfold(ref: string): void {
     if (!nodeExists(this.store, ref)) return;
     const current = (this.unfolds as unknown as ApeironNode[] | undefined) ?? [];
@@ -1262,12 +1278,9 @@ defineAccessors(TreeView, 'TreeView');
 Object.defineProperty(ArtifactNode.prototype, 'type', { configurable: true, enumerable: true, get: () => undefined, set: () => {} });
 
 /** `(tombstoned)` marker for a node's rendered title line — every render site below shares it.
- *  Tombstoning (`applyTombstone`/`tombstoneLiveSubtree`, §5) clears a dead node's own `children`/
- *  `links`/`props` but never sweeps *other* documents' references to it, and actively re-sets
- *  `title` to its last-known value rather than clearing it — so a tombstoned node reached through a
- *  stale `children` pointer, or through a still-live `Link.target` elsewhere, used to render
- *  identically to a live one, with no signal anything had died (confirmed by tracing every render
- *  path — Aperas-apeironngn-design.md §5). */
+ *  A tombstone leaves the list of its container and releases its own `children`, `links` and `props` (the engine's tombstone, design/core.md, "Tombstones"),
+ *  but the references that name it stay: a `Link.target` elsewhere still reaches it, and it keeps its last-known `title`, so a tombstoned node reached through
+ *  such a link would render identically to a live one without this tag. */
 function tombstoneTag(node: { tombstonedAt?: string }): string {
   return node.tombstonedAt ? '  (tombstoned)' : '';
 }
@@ -1386,8 +1399,10 @@ interface ConeInfo {
  *  registering every one of *its* structural homes before considering any of *its* links; "a
  *  container's claim beats its own nested cone's" falls out of a container's `discoverCone` call
  *  always completing (and thus registering its claims) before it ever recurses into a cone nested
- *  inside it; and "otherwise, whichever's discovered first, by luck" (§10) falls out of there being
- *  exactly one shared map for the whole recursive discovery, not one map per cone. */
+ *  inside it; and "otherwise, whichever's discovered first" (§10) falls out of there being exactly
+ *  one shared map for the whole recursive discovery, not one map per cone — and, the unfolded ids
+ *  being visited in code-point order of their ids (`buildRenderTree`), no longer by luck: the first
+ *  in that order claims the target, whatever order the store lists them in. */
 interface ZoomState {
   canonical: Map<string, CanonicalPosition>;
   attemptCount: Map<string, number>;
@@ -1680,7 +1695,7 @@ function buildNodeItem(
   const childrenToShow = isGenuinelyUnfolded
     ? node.treeChildren
     : node.treeChildren.filter((c) => cone.neededChildren.get(id)?.has(c.id));
-  const linksToShow = isGenuinelyUnfolded ? ((node.links as ApeironNode[] | undefined) ?? []) : [];
+  const linksToShow = isGenuinelyUnfolded ? linksInOrder(node as unknown as { links?: ApeironNode[] }) : [];
 
   let displayLabelStr = '';
   let title = '';
@@ -1816,7 +1831,7 @@ function buildLinkItem(
       const item = buildNodeItem(store, child.id, targetCone, depth + 1, opts, zs, starred, true);
       if (item) children.push(item);
     }
-    for (const l of (targetNode.links as ApeironNode[] | undefined) ?? []) {
+    for (const l of linksInOrder(targetNode as unknown as { links?: ApeironNode[] })) {
       const item = buildLinkItem(store, l.id, targetCone, depth + 1, opts, zs, starred);
       if (item) children.push(item);
     }
@@ -1910,7 +1925,9 @@ function toText(items: RenderItem[], lines: string[]): void {
  *  is tombstone-hidden (`buildNodeItem`'s own `null` case) — the old `renderTreeWithView` handled
  *  this the same way, `emitNode` simply pushing nothing. */
 export function buildRenderTree(store: Db, rootId: string, view: TreeView, opts: TreeOptions = {}): RenderNodeItem | null {
-  const unfoldsWrapped = (view.unfolds as unknown as ApeironNode[] | undefined) ?? [];
+  // The unfolded ids of a view are a set, read in id order (design/core.md, "Where an order shows"): the discovery below claims a node reached through several
+  // unfolded links for the first of them in that order ("The canonical place in the render"), so the rendered tree depends on no order of the engine's.
+  const unfoldsWrapped = [...((view.unfolds as unknown as ApeironNode[] | undefined) ?? [])].sort((a, b) => compareIds(a.id, b.id));
   const allUnfoldedIds: string[] = [];
   const allLinkEntries: UnfoldedLinkEntry[] = [];
   for (const n of unfoldsWrapped) {
@@ -1985,30 +2002,6 @@ export function removeTreeViewByName(store: Db, name: string): { removed: boolea
   return { removed: true };
 }
 
-/** Audit/prune sweep for every `TreeView`'s `unfolds` set (issues/treeview.md — the fix that
- *  actually closes the gap `unfold`'s own write-time check above only half-covers): a ref can go
- *  stale *after* being unfolded, through an unrelated edit or GC pass elsewhere (unlike
- *  `removeDanglingUnfolds`, which only ever fires reactively at the exact moment a specific id is
- *  hard-deleted) — nothing else ever revisits an *existing* entry against what's currently live.
- *  Meant to run as an explicit sweep alongside `pruneUnreachableTombstones`/
- *  `tombstoneVacuousContainers` at the same call sites, not after every mutation — same cost model,
- *  same reasoning (cheap only in bulk). A stale entry here means the id has *no* record at all
- *  (`nodeExists`), not merely tombstoned — a tombstoned target stays a legitimate `unfolds` entry,
- *  revealed via `--tombstoned` the same as any other tombstoned node. */
-export function pruneStaleUnfolds(store: Db): { pruned: number } {
-  let pruned = 0;
-  for (const viewId of allIdsOfKind(store, 'TreeView')) {
-    const view = wrap(store, viewId) as unknown as TreeView;
-    const current = (view.unfolds as unknown as ApeironNode[] | undefined) ?? [];
-    const live = current.filter((n) => nodeExists(store, n.id));
-    if (live.length !== current.length) {
-      pruned += current.length - live.length;
-      view.unfolds = live;
-    }
-  }
-  return { pruned };
-}
-
 /** Finds the `TreeView` named `"default"` (Aperas-treeview-design.md §10), creating it — and a
  *  `Profile` with `handle: "default"` to own it — on first use. The one deliberate exception to
  *  `createTreeView`'s "owner must already exist" rule. */
@@ -2067,57 +2060,21 @@ export function backlinks(store: Db, id: string, field: string): ApeironNode[] {
   return backlinksOf(store, id, field).map((subjectId) => wrap(store, subjectId));
 }
 
-/** Mark-and-sweep GC for tombstoned top-level documents (`BlockNode`/`ArtifactNode`/`FolderNode`)
- *  that have become fully unreferenced (Aperas-apeironngn-design.md §5) — resolving the "hard half"
- *  of the Link-tombstone open question one level up, at the top-level-node scope. An earlier design
- *  considered here checked each tombstoned candidate for *any* incoming reference, dead or alive,
- *  and was rejected for the same reason refcounting can't collect a cycle: a cluster of mutually-
- *  referencing tombstoned nodes would each show a nonzero referrer count forever, from each other,
- *  even with nothing live pointing in from outside. Real mark-and-sweep instead: the mark phase
- *  starts from every *live* (`!tombstonedAt`) `ArtifactNode`/`FolderNode` — the only genuine roots,
- *  since a live `BlockNode` is always reachable transitively through its owning artifact — and walks
- *  `treeChildren` (structural descent, kind-agnostic) plus each visited node's own `Link.target`s
- *  (the one non-structural edge a tombstoned node can still be kept alive by, e.g. a still-live
- *  wikilink `Link` elsewhere). Anything tombstoned that's never marked — including a whole disconnected
- *  dead cluster — is genuinely unreachable and gets `hardDeleteNode`d, which also drops its own
- *  `unfolds` entries (the engine drops an entry of a field dropped with its target).
+/** The sweep of the service (design/core.md, "The sweep"; planning/core.md, Batch 11 step 7): the engine's `sweep` of each graph of the db, in the order of the
+ *  mapping, each through the write layer so that the maps are told. A tombstone is deleted outright once no node reachable from a live `ArtifactNode` or
+ *  `FolderNode` of its own graph reaches it; the mark and the sweep read one graph at a time. Removing a node drops it from the `unfolds` of the views of every
+ *  graph (the engine's role `dropWithTarget`), so no separate sweep of the views is made. Gives the number of ids removed and the count for each graph.
  *
- *  Mutates the *live* graph directly (not just filtering what a subsequent dump writes), so
- *  the dump of the content files and the dump of the `.state/` files
- *  see a consistent post-prune state without either needing its own special-casing. Meant to run as an explicit sweep (`service.ts`'s
- *  `reloadStore`/`clobberFlush`, both of which always flush *both* mirrors together) rather than
- *  after every mutation — cheap only in bulk, unlike `hardDeleteNode`'s own per-write embed
- *  cleanup. */
-export function pruneUnreachableTombstones(store: Db): { pruned: number } {
-  const live = new Set<string>();
-
-  const mark = (node: TreeNode): void => {
-    if (live.has(node.id)) return;
-    live.add(node.id);
-    for (const child of node.treeChildren) mark(child);
-    for (const link of (node.links as unknown as Link[] | undefined) ?? []) {
-      if (link.target) mark(link.target);
-    }
-  };
-
-  for (const kind of ['ArtifactNode', 'FolderNode'] as const) {
-    for (const id of allIdsOfKind(store, kind)) {
-      const node = wrap(store, id) as unknown as TreeNode;
-      if (!node.tombstonedAt) mark(node);
-    }
-  }
-
+ *  Meant to run as an explicit sweep (the service's boot, reload, `flush --clobber` and stop), not after every mutation: it walks every graph. */
+export function sweepTombstones(store: Db): { pruned: number; byGraph: Record<string, number> } {
+  const byGraph: Record<string, number> = {};
   let pruned = 0;
-  for (const kind of ['BlockNode', 'ArtifactNode', 'FolderNode'] as const) {
-    for (const id of allIdsOfKind(store, kind)) {
-      if (live.has(id)) continue;
-      const node = wrap(store, id) as unknown as TreeNode;
-      if (!node.tombstonedAt) continue; // never tombstoned — not a GC candidate regardless of reachability
-      hardDeleteNode(store, id);
-      pruned++;
-    }
+  for (const graph of store.graphs) {
+    const removed = store.write.sweep(graph).length;
+    byGraph[graph] = removed;
+    pruned += removed;
   }
-  return { pruned };
+  return { pruned, byGraph };
 }
 
 /** Whether a block is a container that holds nothing live: a `list`, or a `listItem` with no text of its own, with no child. A tombstone leaves the list of its
@@ -2147,7 +2104,7 @@ export function tombstoneEmptiedContainers(store: Db, containerId: string | unde
   return done;
 }
 
-/** Companion sweep for `pruneUnreachableTombstones`, run just before it at each of the same
+/** Companion rule of `sweepTombstones`, run just before it at each of the same
  *  explicit-sweep call sites: a `list`/childless-wrapper `listItem` that holds nothing live is
  *  tombstoned — the boot-time rule over a container with no live child (a removal tombstones the
  *  container it empties in the same write, `tombstoneEmptiedContainers`; this catches what an edit
@@ -2173,8 +2130,7 @@ export function tombstoneVacuousContainers(store: Db, now: string = new Date().t
 }
 
 /** `kg:profile remove` (Aperas-treeview-design.md §11) — cascade-deletes every `TreeView` a
- *  `Profile` owns before removing the `Profile` itself, via the same private `hardDeleteNode`
- *  primitive `pruneUnreachableTombstones` (above) already uses. A `Profile` gone with its
+ *  `Profile` owns before removing the `Profile` itself, via the shell's `hardDeleteNode`. A `Profile` gone with its
  *  `TreeView`s left dangling (a `profile` reference pointing at nothing) would be a worse state
  *  than either "keep both" or "remove both" — there's no third option worth preserving. */
 export function removeProfile(store: Db, handle: string): { removed: boolean; viewsRemoved: number } {

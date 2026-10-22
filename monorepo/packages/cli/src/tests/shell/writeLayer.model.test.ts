@@ -11,6 +11,12 @@
 //     duplicates, the sizes), whether the write was taken or refused;
 //   - the reads of the handle equal what the oracle gives: `allIdsOfKind` and `liveIdsOfKind` (by a scan of every graph), `nodeExists`, `graphOfId` and
 //     `isThreadScoped` for every id of the universe, ghosts among them, and `backlinksOf` of a few ids for each reference field (all of them at the end).
+//   - a node that the operation made a tombstone (a tombstone or the tombstone of a subtree) is in no `children` list of the handle, of whichever graph
+//     (design/core.md, "Tombstones"); a later insert can put it back in a list, the engine does not refuse that, so the claim is for the moment of the operation.
+//   - the graphs the operation touched (`db.changed`, which the service flushes by) include every graph whose files the dump would write differently after it, and a
+//     refused operation touches none (design: a graph is flushed when it was written; the dump of a graph reads the other graphs for the `parent` of a node whose container is there).
+// A second part drives the shell's removal (`runRemove`) over random trees of lists and items against a model of a few lines: the subtree goes, a container
+// that the removal leaves with nothing live goes with it in the same write, and so on upward; no tombstone is in a list, and no live container is vacuous.
 // A failing run names its seed and the operation, and the seed replays it.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,11 +24,18 @@ import type { Id } from '@aperas/core/apeironNgn/interface';
 import { allIdsOfKind, backlinksOf, graphOfId, isThreadScoped, liveIdsOfKind, newDb, nodeExists, type Db } from '@aperas/core/shell/db';
 import { graphOfNewNode, type NewNode } from '@aperas/core/shell/graphOfPath';
 import type { Duplicate } from '@aperas/core/shell/lookups';
+import { generateNodeId } from '@aperas/core/snowflake';
+import { createNode, sweepTombstones, wrap, type BlockNode } from '@aperas/core/shell/node';
+import { dumpText } from '@aperas/core/shell/mirrorDump';
+import { KINDS_OF_GRAPH } from '@aperas/core/shell/mirrorFiles';
+import { runRemove } from '../../kgRemove';
 import { Oracle } from '../support/oracle.ts';
 import { rng } from '../support/prng.ts';
 import { THREADS, TREE, VIEWS, idOf, newEngine } from '../support/mirrorFixture.ts';
 
 const SEEDS = Array.from({ length: 20 }, (_, i) => 2001 + i);
+/** What the shell's sweep removed in the sequences of all the seeds, so that a sweep that finds nothing anywhere is noticed. */
+const sweptTotal = { ids: 0 };
 const LENGTH = 200;
 const MARKER = 'tombstonedAt';
 const HANDLES = ['h0', 'h1', 'h2', 'shared'];
@@ -96,6 +109,9 @@ function applyOracle(x: Oracle, o: Op): Outcome {
     return failed(e);
   }
 }
+
+/** The text the dump would write for all the files of a graph, the other graphs read for the derived entries. */
+const dumpOfGraph = (db: Db, graph: string): string => KINDS_OF_GRAPH[graph]!.map((kind) => dumpText(db.engine, graph, kind, GRAPHS)).join('\n');
 
 const byId = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -246,13 +262,24 @@ describe('the write layer and the reads of the handle against the oracle (20 see
       oracle.dropGraph('default');
       const { next, universe, ghosts } = plan(seed);
       const pick = rng(seed + 7000);
-      const seen = { accepted: 0, refused: 0, duplicates: 0, tombstones: 0, swept: 0, threads: 0, links: 0 };
+      const seen = { accepted: 0, refused: 0, duplicates: 0, tombstones: 0, swept: 0, threads: 0, links: 0, dumpsChanged: 0, graphsTouched: 0, sweepsOfTheShell: 0, sweptByTheShell: 0 };
       for (let i = 0; i < LENGTH; i++) {
         const o = next(oracle);
         const where = `seed ${seed}, operation ${i} ${JSON.stringify(o)}`;
+        const ids0 = [...universe(), ...ghosts];
+        const wasLive = ids0.filter((id) => graphOfId(db, id) !== undefined && db.engine.first(graphOfId(db, id)!, id, MARKER) === undefined);
+        const dumpsBefore = GRAPHS.map((graph) => dumpOfGraph(db, graph));
+        db.changed.clear();
         const a = applyReal(db, o);
         const b = applyOracle(oracle, o);
         assert.deepEqual(a, b, `${where}: the handle and the oracle answer alike`);
+        GRAPHS.forEach((graph, at) => {
+          if (dumpOfGraph(db, graph) === dumpsBefore[at]) return;
+          seen.dumpsChanged += 1;
+          assert.ok(db.changed.has(graph), `${where}: the files of ${graph} would be written differently and the graph was not touched (${[...db.changed].join(', ')})`);
+        });
+        if (!a.ok) assert.equal(db.changed.size, 0, `${where}: a refused write touched ${[...db.changed].join(', ')}`);
+        seen.graphsTouched += db.changed.size;
         if (a.ok) {
           seen.accepted += 1;
           if (o.op === 'tombstone' || o.op === 'subtree') seen.tombstones += 1;
@@ -260,6 +287,21 @@ describe('the write layer and the reads of the handle against the oracle (20 see
           if (o.op === 'create' && a.value === THREADS) seen.threads += 1;
           if (o.op === 'create' && o.node.kind === 'Link') seen.links += 1;
         } else seen.refused += 1;
+        for (const id of wasLive) {
+          if (db.engine.first(graphOfId(db, id)!, id, MARKER) !== undefined) assert.deepEqual(backlinksOf(db, id, 'children'), [], `${where}: ${id} became a tombstone and is still in a list`);
+        }
+        if (i % 40 === 39) {
+          // The shell's sweep of the service: the engine's sweep of each graph in the order of the mapping, through the write layer, so that the maps are told.
+          db.changed.clear();
+          const expected = Object.fromEntries(GRAPHS.map((graph) => [graph, oracle.sweep(graph).length]));
+          const swept = sweepTombstones(db);
+          assert.deepEqual(swept.byGraph, expected, `${where}: the sweeps of the graphs, graph by graph`);
+          assert.equal(swept.pruned, Object.values(expected).reduce((n, k) => n + k, 0), `${where}: the sweeps add up`);
+          assert.deepEqual([...db.changed].sort(), swept.pruned > 0 ? [...GRAPHS].sort() : [], `${where}: a sweep that removed something touched every graph, one that removed nothing touched none`);
+          seen.sweepsOfTheShell += 1;
+          seen.sweptByTheShell += swept.pruned;
+          sweptTotal.ids += swept.pruned;
+        }
         const s = scan(oracle);
         agreeMaps(db, s, where);
         const ids = [...universe(), ...ghosts];
@@ -273,6 +315,128 @@ describe('the write layer and the reads of the handle against the oracle (20 see
       assert.ok(seen.refused > 0, `and meets refusals (${note})`);
       assert.ok(seen.duplicates > 0, `and holds duplicates (${note})`);
       assert.ok(seen.threads > 0 && seen.links > 0 && seen.tombstones > 0, `and creates in the threads graph, makes links and tombstones (${note})`);
+      assert.ok(seen.sweepsOfTheShell === 5, `and the shell's sweep runs five times (${note})`);
+      assert.ok(seen.dumpsChanged > LENGTH / 2 && seen.graphsTouched >= seen.dumpsChanged, `and changes the files of the graphs, each of which was touched (${note})`);
     });
   }
+  test('the shell\'s sweep removed tombstones in the sequences of the seeds together', () => {
+    assert.ok(sweptTotal.ids > 0, `the sweeps of the shell removed ${sweptTotal.ids} ids`);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The shell's removal against a model: `runRemove` tombstones the subtree of a block, and a `list`, or a `listItem` with no text of its own, that is left with
+// no live child goes with it in the same write, and so on upward. The trees are built with no vacuous container, and the model is the rule and nothing else.
+
+type Shape = { id: string; type: 'heading' | 'paragraph' | 'list' | 'listItem'; text?: string; kids: Shape[] };
+
+function growTree(seed: number, db: Db): { root: Shape; all: Shape[] } {
+  const g = rng(seed);
+  const all: Shape[] = [];
+  const make = (type: Shape['type'], text: string | undefined, under: string): Shape => {
+    const shape: Shape = { id: `BlockNode:${generateNodeId()}`, type, ...(text !== undefined ? { text } : {}), kids: [] };
+    const node = createNode(db, shape.id, { under }) as unknown as BlockNode;
+    node.type = type;
+    node.title = type;
+    if (text !== undefined) node.text = text;
+    all.push(shape);
+    return shape;
+  };
+  const grow = (host: Shape, depth: number): void => {
+    const several = (min: number, max: number, one: () => Shape): void => { for (let i = min + g.int(max - min + 1); i > 0; i--) host.kids.push(one()); };
+    if (host.type === 'heading') {
+      several(depth > 2 ? 0 : 1, depth > 2 ? 1 : 3, () => {
+        const t = g.pick(depth > 2 ? ['paragraph', 'paragraph', 'list'] as const : ['paragraph', 'list', 'list', 'heading'] as const);
+        const kid = make(t, t === 'paragraph' ? 'prose' : undefined, host.id);
+        grow(kid, depth + 1);
+        return kid;
+      });
+    } else if (host.type === 'list') {
+      several(1, depth > 2 ? 1 : 3, () => {
+        const kid = make('listItem', g.chance(0.6) || depth > 2 ? 'item' : undefined, host.id);
+        grow(kid, depth + 1);
+        return kid;
+      });
+    } else if (host.type === 'listItem') {
+      if (host.text === undefined) {
+        // a wrapper holds something: a list, or items directly
+        if (g.chance(0.5)) { const list = make('list', undefined, host.id); host.kids.push(list); grow(list, depth + 1); } else {
+          several(1, 2, () => { const kid = make('listItem', 'inner', host.id); grow(kid, depth + 1); return kid; });
+        }
+      } else if (depth <= 2 && g.chance(0.4)) { const list = make('list', undefined, host.id); host.kids.push(list); grow(list, depth + 1); }
+    }
+  };
+  const artifact: Shape = { id: `ArtifactNode:${generateNodeId()}`, type: 'heading', kids: [] };
+  createNode(db, artifact.id, { path: `model/${seed}.md` });
+  for (let i = 1 + g.int(3); i > 0; i--) {
+    const t = g.pick(['heading', 'list', 'list', 'paragraph'] as const);
+    const kid = make(t, t === 'paragraph' ? 'prose' : undefined, artifact.id);
+    grow(kid, 1);
+    artifact.kids.push(kid);
+  }
+  // the lists are written once the nodes are made, each node's own list in order
+  for (const shape of [artifact, ...all]) {
+    if (shape.kids.length === 0) continue;
+    (wrap(db, shape.id) as unknown as BlockNode).children = shape.kids.map((k) => wrap(db, k.id)) as unknown as BlockNode['children'];
+  }
+  return { root: artifact, all };
+}
+
+const isContainer = (s: Shape): boolean => s.type === 'list' || (s.type === 'listItem' && s.text === undefined);
+
+describe('the removal of the shell against a model of the rule (20 seeds)', () => {
+  const total = { removals: 0, emptied: 0, chains: 0 };
+  for (const seed of Array.from({ length: 20 }, (_, i) => 3001 + i)) {
+    test(`seed ${seed}`, () => {
+      const db = newDb();
+      const { root, all } = growTree(seed, db);
+      const parentOf = new Map<Shape, Shape>();
+      for (const s of [root, ...all]) for (const k of s.kids) parentOf.set(k, s);
+      const dead = new Set<Shape>();
+      const pick = rng(seed + 9000);
+      const live = (s: Shape): Shape[] => s.kids.filter((k) => !dead.has(k));
+      const subtree = (s: Shape): Shape[] => [s, ...s.kids.flatMap(subtree)];
+      let removals = 0;
+
+      const check = (where: string): void => {
+        for (const s of all) {
+          assert.equal(wrap(db, s.id).tombstonedAt !== undefined, dead.has(s), `${where}: ${s.id} (${s.type}) ${dead.has(s) ? 'is' : 'is not'} a tombstone in the model`);
+        }
+        for (const s of [root, ...all]) {
+          const graph = graphOfId(db, s.id)!;
+          const list = db.engine.items(graph, s.id, 'children');
+          assert.deepEqual(list, dead.has(s) ? [] : live(s).map((k) => k.id), `${where}: the list of ${s.id}`);
+          for (const item of list) assert.equal(db.engine.first(graphOfId(db, item)!, item, MARKER), undefined, `${where}: ${s.id} lists ${item}, a tombstone`);
+          if (!dead.has(s) && s !== root && isContainer(s)) assert.ok(list.length > 0, `${where}: the live container ${s.id} (${s.type}) is vacuous`);
+        }
+      };
+
+      check('before any removal');
+      while (live(root).length > 0 && removals < 40) {
+        const pool = all.filter((s) => !dead.has(s));
+        const leaves = pool.filter((s) => live(s).length === 0);
+        const target = pick.pick(pick.chance(0.75) && leaves.length > 0 ? leaves : pool);
+        const where = `seed ${seed}, removal ${removals} of ${target.id} (${target.type})`;
+        runRemove(db, { path: target.id });
+        // the model: the subtree goes; then the container above goes while it is a container with nothing live
+        for (const s of subtree(target)) dead.add(s);
+        let above = parentOf.get(target);
+        let up = 0;
+        while (above !== undefined && above !== root && isContainer(above) && live(above).length === 0) {
+          dead.add(above);
+          up += 1;
+          above = parentOf.get(above);
+        }
+        total.emptied += up;
+        if (up > 1) total.chains += 1;
+        check(where);
+        removals += 1;
+      }
+      total.removals += removals;
+    });
+  }
+
+  test('the seeds together removed blocks, emptied containers, and went up through more than one', () => {
+    assert.ok(total.removals > 100 && total.emptied > 20 && total.chains > 3, JSON.stringify(total));
+  });
 });

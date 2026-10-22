@@ -5,6 +5,8 @@
 //     parent or by a pair, does not exist.
 //   - `allIdsOfKind` and `liveIdsOfKind`: the ids of a kind over all the graphs of the mapping, sorted by id (the engine lists a graph in insertion order and
 //     keeps no set of live ids); the live ones are those without the tombstone marker.
+//   - `liveDocumentIdsOfKind`: the live ids of a kind whose document has a record and a title, sorted by id; the list a sweep of artifacts or of folders
+//     walks (a node named only by the `children` of its parent has no record and is in no list of the engine, so it is not in this one either).
 //   - `backlinksOf`: the subjects whose field holds a node, from every graph, sorted by id (the engine's `subjectsOf` names one graph).
 //   - `isThreadScoped`: whether the node is in the threads graph, which a node is given at creation by its path (`graphOfPath.ts`).
 // The shell runs on it (Batch 11, the flip). Settings, warnings and the problems of the load are returned and not printed: what the service does with
@@ -32,6 +34,8 @@ export interface Db {
   readonly graphs: readonly GraphName[];
   /** The writes of the engine that the shell makes, each telling the maps. */
   readonly write: WriteLayer;
+  /** The graphs written through `write` since the caller last took one out: the service flushes a graph that is here and takes it out when its files are written. A load changes none. */
+  readonly changed: Set<GraphName>;
 }
 
 /** The settings of a mirror at `root` with today's layout: the main graph at `root`, the other two under its `.state/`, and today's intervals. */
@@ -46,8 +50,11 @@ export function defaultSettings(root: string): GraphSettings[] {
 
 function handle(engine: Engine, settings: readonly GraphSettings[]): Db {
   const mapping = mirrorMapping(settings);
-  const maps = createLookups(engine, graphsOf(mapping));
-  return { engine, maps, mapping, settings, graphs: graphsOf(mapping), write: createWriteLayer(engine, maps) };
+  const graphs = graphsOf(mapping);
+  const maps = createLookups(engine, graphs);
+  const changed = new Set<GraphName>();
+  const touch = (graph: GraphName | undefined): void => { if (graph === undefined) for (const g of graphs) changed.add(g); else changed.add(graph); };
+  return { engine, maps, mapping, settings, graphs, write: createWriteLayer(engine, maps, touch), changed };
 }
 
 /** What `openDb` gives besides the handle. */
@@ -81,6 +88,52 @@ export function openDb(root: string, settings: readonly GraphSettings[] = defaul
   const load = loadMirror(db.engine, root, db.mapping);
   const duplicates = db.maps.rebuild();
   return { db, load, warnings: [...load.warnings, ...duplicates.map(warningOfDuplicate)], duplicates };
+}
+
+/**
+ * Frees a handle that is replaced (the service's reload builds a new one and lets go of the old): drops its graphs through the engine, so that the records of the old
+ * graphs are released and no read of the old handle can answer from them. The engine drops a graph only if no pair from the graphs that remain points into it, so the graphs
+ * go in an order that satisfies that: each round drops the graphs that can go, starting with the views and the later graphs of the mapping, until a round drops none. The
+ * one pair against the order of the graphs, a container of an earlier graph that lists a node of a later one (the root folder lists the `.threads` folder), can make two graphs
+ * wait for each other; then the item is taken out of the list and the round is made again. A graph the engine still refuses is kept. Gives the graphs dropped, in the order they were
+ * dropped. The handle is not to be used after.
+ */
+export function closeDb(db: Db): GraphName[] {
+  const { engine } = db;
+  const containment = engine.schema.roles.containment;
+  const dropped: GraphName[] = [];
+  const remaining = (): GraphName[] => [...db.graphs].reverse().filter((g) => !dropped.includes(g));
+  const dropRound = (): boolean => {
+    let progress = false;
+    for (const graph of remaining()) {
+      try { engine.dropGraph(graph); } catch { continue; }
+      dropped.push(graph);
+      progress = true;
+    }
+    return progress;
+  };
+  /** Takes out of the lists of every remaining graph the items that are nodes of another remaining graph. */
+  const detachCrossLists = (): void => {
+    if (containment === undefined) return;
+    const left = remaining();
+    for (const host of left) {
+      for (const kind of engine.schema.kinds) {
+        if (!kind.fields.some((f) => f.name === containment && !f.derived)) continue;
+        for (const id of engine.idsOfKind(host, kind.name)) {
+          for (const item of engine.items(host, id, containment)) {
+            const at = engine.graphOf(item);
+            if (at !== undefined && at !== host && left.includes(at)) engine.removeItem(host, id, containment, item);
+          }
+        }
+      }
+    }
+  };
+  while (remaining().length > 0) {
+    if (dropRound()) continue;
+    detachCrossLists();
+    if (!dropRound()) break;
+  }
+  return dropped;
 }
 
 /** An empty handle for tests: the three graphs made, the mapping with relative directories (`Apeiron/`, `Apeiron/.state/`) for any root a test dumps to. */
@@ -117,6 +170,23 @@ export function liveIdsOfKind(db: Db, kind: string): Id[] {
   return db.graphs
     .flatMap((graph) => db.engine.idsOfKind(graph, kind).filter((id) => marker === undefined || db.engine.first(graph, id, marker) === undefined))
     .sort(compareIds);
+}
+
+/** The ids of a kind whose document stands (a record) and has a title, that are not tombstones, sorted by id: the nodes a sweep of artifacts or folders may list.
+ *  A real artifact or folder always has a title (the name of its file or directory); a node with a record and no title is one a write is still building. */
+export function liveDocumentIdsOfKind(db: Db, kind: string): Id[] {
+  const marker = db.engine.schema.roles.tombstone;
+  const live: Id[] = [];
+  for (const graph of db.graphs) {
+    for (const id of db.engine.idsOfKind(graph, kind)) {
+      const record = db.engine.record(graph, id);
+      if (record === undefined) continue;
+      if (marker !== undefined && record.fields.some((f) => f.name === marker && f.values.length > 0)) continue;
+      if (!record.fields.some((f) => f.name === 'title' && f.values.length > 0)) continue;
+      live.push(id);
+    }
+  }
+  return live.sort(compareIds);
 }
 
 /** The subjects, in every graph, whose reference or embed field `field` holds `id`, sorted by id. */

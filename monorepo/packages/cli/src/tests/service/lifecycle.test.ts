@@ -1,11 +1,10 @@
-// The life of the service before the service moves to the engine (planning/core.md, Batch 11, step 10 for step 8): the start on a mirror with something to
-// sweep, the sweeps (a vacuous container, an unreachable tombstone, a stale unfold) at boot, reload, clobber and shutdown, the standing link warning at boot
+// The life of the service (planning/core.md, Batch 11, step 10 for step 8, and piece 10): the start on a mirror with something to
+// sweep, the sweeps (a vacuous container, an unreachable tombstone: the engine's sweep of each graph) at boot, reload, clobber and shutdown, the standing link warning at boot
 // and reload, the divergence guard (a flush refused when a file of the mirror changed outside, `flush --clobber` and `reload --discard` as the two ways out),
 // the thread size cap, and the stop. The service is real, started from source in a scratch directory (`support/serviceHarness.ts`); the runtime directory, the port
 // and both roots are asserted to be scratch ones before anything starts, and the last case finds no process left. The cases share the service and run in order;
-// the shutdowns and the second boot come last. The timers (a flush every 10 s, the state flush every 3 s, the idle exit after 30 minutes) are not reached
-// here: the file runs in a few seconds, and `ops.test.ts` names them as waived. A stale unfold that a sweep clears after the boot is a file of the state mirror
-// written from outside and read by a reload first (a sweep runs on the memory, before the read).
+// the shutdowns and the second boot come last. The timers of the graphs are in `flush.test.ts`, which sets their intervals through the table of settings; the idle exit after
+// 30 minutes is not reached here, and `ops.test.ts` names it as waived. An unfold of an id no node has is no sweep's: it is logged as an id referenced and never defined.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -21,11 +20,10 @@ import { runStart } from '../../kgService';
 import { request, ping } from '../../service/serviceClient';
 import { CONFLICT_RESOLUTION_HINT, type ServiceRequest } from '../../service/serviceProtocol';
 import { readLock } from '../../service/serviceLock';
-import { wrap, createNode, tombstoneNode, tombstoneVacuousContainers, pruneUnreachableTombstones, pruneStaleUnfolds, resolveTreeView, type BlockNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { wrap, createNode, tombstoneNode, tombstoneVacuousContainers, sweepTombstones, resolveTreeView, type BlockNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
 import { graphOfId, newDb, openDb, type Db } from '@aperas/core/shell/db';
 import { dumpMirror as dumpEngineMirror } from '@aperas/core/shell/mirrorDump';
 import { generateNodeId } from '@aperas/core/snowflake';
-import { findByExactPath } from '@aperas/core/shell/tree';
 
 const THREAD_CAP = 3;
 /**
@@ -42,7 +40,7 @@ interface Seed {
   orphan: string;
   /** A list whose only item is tombstoned: the boot tombstones the list. */
   vacuous: string;
-  /** An id a view unfolds that has no node: the boot clears the unfold. */
+  /** An id a view unfolds that has no node: no sweep clears it, the load reports it as referenced and never defined. */
   ghost: string;
   /** One artifact and one list with a live item per sweep that runs after the boot: remove both and the sweep has something to count. */
   fodder: Fodder[];
@@ -50,7 +48,7 @@ interface Seed {
   thread: string;
   /** The `BlockNode.jsonld` of the mirror as it is after the boot sweeps with the dropped link restored: what a repair of the mirror outside would leave. */
   goodBytes: string;
-  /** The `.state/TreeView.jsonld` of the mirror before the boot sweeps: the view unfolds the ghost. Written over the file, it gives a reload a stale unfold to read. */
+  /** The `.state/TreeView.jsonld` of the mirror before the boot sweeps: the view unfolds the ghost. */
   staleState: string;
 }
 
@@ -83,7 +81,7 @@ function buildSeed(fx: FixtureStore): Seed {
   }
   writeArtifact(fx, '.threads/t.md', '# T\n\n- a\n- b\n- c\n');
   runIngest(fx.store, ['.threads/t.md'], true, false);
-  const thread = findByExactPath(fx.store, '.threads/t.md');
+  const thread = fx.store.maps.liveAtPath('.threads/t.md');
   if (!thread) throw new Error('The thread artifact was not ingested.');
 
   const vacuous = addList(fx.store, c.alpha, 'gone', true).list;
@@ -105,7 +103,7 @@ function buildSeed(fx: FixtureStore): Seed {
 
   // What the mirror looks like after the boot sweeps, with the link intact: the variants (link intact) loaded and swept in process.
   const g = openDb(join(variants, 'Apeiron')).db;
-  tombstoneVacuousContainers(g); pruneUnreachableTombstones(g); pruneStaleUnfolds(g);
+  tombstoneVacuousContainers(g); sweepTombstones(g);
   const clean = join(fx.root, 'clean');
   dumpEngineMirror(g.engine, clean, newDb().mapping);
   return {
@@ -123,6 +121,7 @@ describe('service lifecycle', () => {
   const stateFile = (kind: string): string => readFileSync(join(fx.apeironRoot, '.state', `${kind}.jsonld`), 'utf-8');
   const writeStateFile = (kind: string, text: string): void => writeFileSync(join(fx.apeironRoot, '.state', `${kind}.jsonld`), text, 'utf-8');
   const hasGcLine = (counts: string): boolean => serviceLog(iso).some((l) => l.includes(`Startup GC: cleaned ${counts}.`));
+  const danglingLine = (id: string): boolean => serviceLog(iso).some((l) => /WARNING: \d+ id\(s\) referenced and never defined/.test(l) && l.includes(id));
   const fail = async (r: ServiceRequest): Promise<string> => {
     const res = await rawRequest(r);
     assert.equal(res.ok, false, `expected the request to be refused: ${JSON.stringify(res)}`);
@@ -175,14 +174,15 @@ describe('service lifecycle', () => {
       assert.equal(await ping(), true);
     });
 
-    test('the boot sweeps the three kinds, counts them in the log, and flushes at once', () => {
-      assert.ok(serviceLog(iso).some((l) => /Rehydrated \d+ record\(s\) from /.test(l) && l.includes(fx.apeironRoot)), serviceLog(iso).join('\n'));
+    test('the boot sweeps the two rules, counts them in the log, flushes at once, and reports the id a view unfolds that no node has', () => {
+      assert.ok(serviceLog(iso).some((l) => /Loaded \d+ record\(s\) from /.test(l) && l.includes(fx.apeironRoot)), serviceLog(iso).join('\n'));
       // the orphan, the removed item of the vacuous list, and the list itself: tombstoned by the vacuous rule, it left its container and is unreachable in the same boot
-      assert.ok(hasGcLine('3 unreachable tombstone(s), 1 vacuous container(s), 1 stale unfold(s)'), serviceLog(iso).join('\n'));
+      assert.ok(hasGcLine('3 unreachable tombstone(s), 1 vacuous container(s)'), serviceLog(iso).join('\n'));
       const blocks = readMirrorFile(iso, 'BlockNode');
       assert.ok(!blocks.includes(seed.orphan), 'the unreachable tombstone is pruned from the file');
       assert.ok(!blocks.includes(seed.vacuous), 'the vacuous list was tombstoned, and being in no list it is pruned from the file in the same boot');
-      assert.ok(!stateFile('TreeView').includes(seed.ghost), 'the stale unfold is cleared from the state file');
+      assert.ok(stateFile('TreeView').includes(seed.ghost), 'no sweep clears an unfold whose target never existed');
+      assert.ok(danglingLine(seed.ghost), `the load reports the id as referenced and never defined: ${serviceLog(iso).join('\n')}`);
       brokenBytes = blocks;
     });
 
@@ -295,8 +295,8 @@ describe('service lifecycle', () => {
       external = readMirrorFile(iso, 'BlockNode') + '\n';
       writeMirrorFile(iso, 'BlockNode', external);
       await fail({ op: 'flush', clobber: false });
-      const r = await req<{ prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: true });
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [0, 0, 0], 'a discard sweeps nothing');
+      const r = await req<{ prunedTombstones: number; tombstonedContainers: number }>({ op: 'reload', discard: true });
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers], [0, 0], 'a discard sweeps nothing');
       const lines = await req<string[]>({ op: 'tree', pathArg: 'cmd_demo/dup.md', noHolders: false, showTombstoned: false, reload: false });
       assert.ok(lines.some((l) => l.includes('## Pending One')), 'what the file held is the state now');
       assert.ok(!lines.some((l) => l.includes('## Pending Three')), 'the pending change is gone');
@@ -327,9 +327,9 @@ describe('service lifecycle', () => {
   describe('the sweeps after the boot', () => {
     test('flush --clobber sweeps first, counts what it swept, and writes the result', async () => {
       await removeFodder(seed.fodder[0]);
-      const r = await req<{ clobbered: boolean; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'flush', clobber: true });
+      const r = await req<{ clobbered: boolean; prunedTombstones: number; tombstonedContainers: number }>({ op: 'flush', clobber: true });
       assert.equal(r.clobbered, true);
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [FODDER_PRUNED, 0, 0], 'the removal tombstoned the list it emptied, so the sweep finds no vacuous container');
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers], [FODDER_PRUNED, 0], 'the removal tombstoned the list it emptied, so the sweep finds no vacuous container');
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes('Fodder 1.'), 'the heading is gone from the mirror, not only tombstoned');
       const artifact = (JSON.parse(readMirrorFile(iso, 'ArtifactNode')) as Array<{ path?: string; tombstonedAt?: string }>).find((d) => d.path === seed.fodder[0].artifactPath);
       assert.equal(artifact, undefined, 'the artifact left its folder with the removal, and is pruned with the rest');
@@ -338,8 +338,9 @@ describe('service lifecycle', () => {
 
     test('reload sweeps first, counts what it swept, flushes it, and reads the result back', async () => {
       await removeFodder(seed.fodder[1]);
-      const r = await req<{ prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: false });
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [FODDER_PRUNED, 0, 0]);
+      const r = await req<{ prunedTombstones: number; tombstonedContainers: number; freedGraphs: number }>({ op: 'reload', discard: false });
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers], [FODDER_PRUNED, 0]);
+      assert.equal(r.freedGraphs, 3, 'the reload frees the three graphs of the store it replaces');
       assert.ok(serviceLog(iso).some((l) => l.includes('Reloaded') && l.includes(`GC: ${FODDER_PRUNED} unreachable tombstone(s) pruned.`)), serviceLog(iso).join('\n'));
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes('Fodder 2.'));
       assert.match(await fail({ op: 'tree', pathArg: seed.fodder[1].artifactPath, noHolders: false, showTombstoned: true, reload: false }), /isn't a tracked artifact\/folder path/, 'the artifact is gone with its tombstone');
@@ -354,24 +355,16 @@ describe('service lifecycle', () => {
       await req({ op: 'flush', clobber: true }); // the way out
     });
 
-    test('a stale unfold that arrives with the mirror is cleared and counted by the next reload (the one that reads it sweeps the memory it replaces)', async () => {
+    test('an unfold of an id no node has, arriving with the mirror, is reported by the reload that reads it, and no sweep clears it', async () => {
       await req({ op: 'flush', clobber: false });
       writeStateFile('TreeView', seed.staleState);
-      const first = await req<{ prunedUnfolds: number }>({ op: 'reload', discard: false });
-      assert.equal(first.prunedUnfolds, 0);
-      assert.ok(stateFile('TreeView').includes(seed.ghost), 'the reload that read it left the file as it was');
-      const second = await req<{ prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'reload', discard: false });
-      assert.deepEqual([second.prunedTombstones, second.tombstonedContainers, second.prunedUnfolds], [0, 0, 1]);
-      assert.ok(serviceLog(iso).some((l) => l.includes('Reloaded') && l.includes('GC: 1 stale unfold(s) cleared.')), serviceLog(iso).join('\n'));
-      assert.ok(!stateFile('TreeView').includes(seed.ghost), 'and the state file is written without it');
-    });
-
-    test('flush --clobber clears and counts a stale unfold the same way', async () => {
-      writeStateFile('TreeView', seed.staleState);
-      await req({ op: 'reload', discard: false });
-      const r = await req<{ prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number }>({ op: 'flush', clobber: true });
-      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers, r.prunedUnfolds], [0, 0, 1]);
-      assert.ok(!stateFile('TreeView').includes(seed.ghost));
+      const before = serviceLog(iso).filter((l) => l.includes('referenced and never defined')).length;
+      const r = await req<{ prunedTombstones: number; tombstonedContainers: number }>({ op: 'reload', discard: false });
+      assert.deepEqual([r.prunedTombstones, r.tombstonedContainers], [0, 0]);
+      assert.equal(serviceLog(iso).filter((l) => l.includes('referenced and never defined')).length, before + 1, 'one more warning, for the reload');
+      const again = await req<{ prunedTombstones: number; tombstonedContainers: number }>({ op: 'flush', clobber: true });
+      assert.deepEqual([again.prunedTombstones, again.tombstonedContainers], [0, 0]);
+      assert.ok(stateFile('TreeView').includes(seed.ghost), 'and the state file keeps it');
     });
   });
 
@@ -390,11 +383,9 @@ describe('service lifecycle', () => {
 
   describe('the stop and the second boot', () => {
     test('a stop sweeps and flushes what is pending, then the process is gone and the lock with it', async () => {
-      // The blocks removed in the thread above are tombstones in no list, which a sweep prunes, and a prune marks the state mirror pending: swept and flushed first, so that the file written
-      // from outside below is not met by a pending flush.
+      // The blocks removed in the thread above are tombstones in no list, which a sweep prunes, and a prune marks every graph pending: swept and flushed first, so that the stop is what
+      // sweeps the last fodder.
       await req({ op: 'flush', clobber: true });
-      writeStateFile('TreeView', seed.staleState);
-      await req({ op: 'reload', discard: false }); // the service now holds a stale unfold; the fodder is removed after, so the stop is what sweeps both
       await removeFodder(seed.fodder[3]);
       const before = serviceLog(iso).length;
       assert.equal(await stopService(iso), true);
@@ -404,14 +395,13 @@ describe('service lifecycle', () => {
       assert.ok(!serviceLog(iso).slice(before).some((l) => /Shutdown WARNING|tombstone GC failed/.test(l)), serviceLog(iso).slice(before).join('\n'));
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes('Fodder 4.'), 'the heading of the last fodder artifact was pruned at the stop and the mirror written without it');
       assert.ok(!readMirrorFile(iso, 'BlockNode').includes(seed.fodder[3].list), 'and its list, which the removal of its item tombstoned, was pruned with the rest');
-      assert.ok(!stateFile('TreeView').includes(seed.ghost), 'and the stale unfold the service held is cleared from the state file at the stop');
     });
 
     test('the next boot finds a clean mirror and has nothing to sweep', async () => {
       const gcLines = serviceLog(iso).filter((l) => l.includes('Startup GC')).length;
       await startService(iso);
       assert.equal(serviceLog(iso).filter((l) => l.includes('Startup GC')).length, gcLines, 'no new Startup GC line');
-      assert.equal(serviceLog(iso).filter((l) => l.includes('Rehydrated')).length, 2);
+      assert.equal(serviceLog(iso).filter((l) => /\] Loaded \d+ record/.test(l)).length, 2);
     });
 
     test('a stop with a pending change and a mirror changed outside refuses the flush in the log, keeps the file as it is, and still ends the process', async () => {
@@ -420,7 +410,7 @@ describe('service lifecycle', () => {
       writeMirrorFile(iso, 'BlockNode', external);
       const before = serviceLog(iso).length;
       await stopService(iso);
-      assert.ok(serviceLog(iso).slice(before).some((l) => l.includes('Shutdown WARNING: content mirror flush refused') && l.includes('BlockNode.jsonld changed on disk')), serviceLog(iso).slice(before).join('\n'));
+      assert.ok(serviceLog(iso).slice(before).some((l) => l.includes('Shutdown WARNING: tree mirror flush refused') && l.includes('BlockNode.jsonld changed on disk')), serviceLog(iso).slice(before).join('\n'));
       assert.equal(readMirrorFile(iso, 'BlockNode'), external);
       assert.equal(readLock(), null);
     });

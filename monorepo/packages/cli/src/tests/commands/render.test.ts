@@ -1,9 +1,9 @@
 // The render commands before the reads move to the engine (planning/core.md, Batch 11, step 10): `runTree`, `runShow` and `runUnfold` on a small corpus
 // of four artifacts. Plain and with a view, `maxDepth`, `noHolders`, the structured `render-tree` format, the links of a block, a node reached through
-// two unfolded links (one canonical place and a pointer elsewhere), and what a tombstoned node does to each command. Where the order of an unordered read
-// shows (the siblings of a folder, the links of a block, the children of an unfolded node) a case compares sets or the invariant, never today's order, so
-// the file passes on either engine. The cases share one corpus and run in order; the last block removes a node. The store is reached through `fx.store`,
-// `wrap` and the `runX` functions only.
+// two unfolded links (one canonical place and a pointer elsewhere), and what a tombstoned node does to each command. The links of a block come by the order of
+// their `position` and the canonical place of a node reached through two links is the first of them in id order (`order.test.ts` has the cases that tell these
+// from the order the store lists them in); the cases here compare the order exactly. The cases share one corpus and run in order; the last block removes a
+// node. The store is reached through `fx.store`, `wrap` and the `runX` functions only.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveTreeView } from '@aperas/core/shell/node';
@@ -99,7 +99,7 @@ describe('render commands', () => {
       runUnfold(fx.store, c.alphaLinkToSec, view);
       const out = parseTree(lines(runTree(fx.store, { pathArg: 'cmd_demo/alpha.md', viewRef: 'default', ...plain })));
       const links = out.filter((e) => e.label === 'Link');
-      assert.deepEqual(sorted(links.map((e) => e.id)), sorted([c.alphaLinkToBeta, c.alphaLinkToSec]), 'two links, one for each wikilink of the paragraph');
+      assert.deepEqual(links.map((e) => e.id), [c.alphaLinkToBeta, c.alphaLinkToSec], 'two links, one for each wikilink of the paragraph, in the order of the text');
       const target = (id: string): string => /→ (\S+)/.exec(links.find((e) => e.id === id)!.rest)![1];
       assert.equal(target(c.alphaLinkToBeta), c.betaArt);
       assert.equal(target(c.alphaLinkToSec), c.betaSec);
@@ -113,10 +113,11 @@ describe('render commands', () => {
       runUnfold(fx.store, c.gammaLinkToSec, view); // alphaLinkToSec is unfolded by the case above: two links reach Beta Section
       const out = parseTree(lines(runTree(fx.store, { pathArg: 'cmd_demo', viewRef: 'default', ...plain })));
       const reaching = out.filter((e) => e.label === 'Link' && e.rest.includes(`→ ${c.betaSec}`));
-      assert.deepEqual(sorted(reaching.map((e) => e.id)), sorted([c.alphaLinkToSec, c.gammaLinkToSec]), 'both links are rendered');
+      assert.deepEqual(reaching.map((e) => e.id), [c.alphaLinkToSec, c.gammaLinkToSec], 'both links are rendered, in the order of the tree');
       const canonical = reaching.filter((e) => e.rest.endsWith('[*]'));
       const pointers = reaching.filter((e) => e.rest.includes('[*see '));
       assert.equal(canonical.length, 1, `exactly one canonical place: ${reaching.map((e) => e.line).join(' / ')}`);
+      assert.equal(canonical[0].id, [c.alphaLinkToSec, c.gammaLinkToSec].sort()[0], 'it is the first of the two links in id order');
       assert.equal(pointers.length, 1, 'and one pointer');
       assert.ok(pointers[0].rest.includes(`[*see ${canonical[0].id} (link)]`), `the pointer names the canonical link: ${pointers[0].line}`);
       assert.ok(canonical[0].rest.includes('║  Beta section text.'), 'the canonical place shows the target\'s text');
@@ -136,7 +137,7 @@ describe('render commands', () => {
       const byId = new Map(all.filter((n) => n.kind === 'node').map((n) => [n.id, n]));
       assert.ok(byId.has(c.alpha) && byId.has(c.alphaSec) && byId.has(c.gamma), 'the unfolded headings are in the structure');
       const linkNodes = all.filter((n) => n.kind === 'link');
-      assert.deepEqual(sorted(linkNodes.map((n) => n.id)), sorted([...linkIdsOf(fx, c.alpha), ...linkIdsOf(fx, c.gamma)]), 'every link of an unfolded block is in the structure, the one to the holder too');
+      assert.deepEqual(linkNodes.map((n) => n.id), [c.alphaLinkToBeta, c.alphaLinkToSec, c.gammaLinkToSec, linkIdsOf(fx, c.gamma).find((l) => l !== c.gammaLinkToSec)], 'every link of an unfolded block is in the structure, in the order of the text, the one to the holder too');
       assert.equal(linkNodes.find((n) => n.id === c.alphaLinkToBeta)!.targetId, c.betaArt);
     });
 
@@ -158,7 +159,8 @@ describe('render commands', () => {
       assert.equal(rec.parent, c.alphaArt);
       assert.deepEqual(rec.children, [c.alphaSec]);
       const links = rec.links as Array<{ '@id': string; '@type': string; target: string }>;
-      assert.deepEqual(sorted(links.map((l) => l.target)), sorted([c.betaArt, c.betaSec]));
+      assert.deepEqual(links.map((l) => l.target), [c.betaArt, c.betaSec], 'the links of a record come by id');
+      assert.deepEqual(links.map((l) => l['@id']), [c.alphaLinkToBeta, c.alphaLinkToSec].sort());
       assert.ok(links.every((l) => l['@type'] === 'Link'));
     });
 
@@ -195,7 +197,7 @@ describe('render commands', () => {
       assert.equal(r.path, 'cmd_demo/alpha.md/--alpha');
       assert.ok(r.title.startsWith('# Alpha  ║  To [beta]'), r.title);
       const kids = r.children as Array<{ id: string; label: string; text: string }>;
-      assert.deepEqual(sorted(kids.map((k) => k.id)), sorted([c.alphaSec, c.alphaLinkToBeta, c.alphaLinkToSec]), 'the child and the two links');
+      assert.deepEqual(kids.map((k) => k.id), [c.alphaSec, c.alphaLinkToBeta, c.alphaLinkToSec], 'the child, then the two links in the order of the text');
       assert.equal(kids.find((k) => k.id === c.alphaSec)!.label, 'heading');
       assert.equal(kids.find((k) => k.id === c.alphaLinkToBeta)!.label, 'Link');
       assert.ok(kids.find((k) => k.id === c.alphaLinkToBeta)!.text.startsWith(`→ ${c.betaArt}`));
@@ -218,7 +220,7 @@ describe('render commands', () => {
       runUnfold(fx.store, c.betaArt, null);
       runUnfold(fx.store, c.itemOne, null);
       const after = ((resolveTreeView(fx.store, 'default').unfolds as unknown as Array<{ id: string }> | undefined) ?? []).map((n) => n.id);
-      assert.deepEqual(sorted(after), sorted(before));
+      assert.deepEqual(after, before);
     });
 
     test('refused: a path that resolves to nothing, and an id that no node has', () => {

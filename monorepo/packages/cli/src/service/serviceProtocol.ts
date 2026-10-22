@@ -4,7 +4,7 @@
  * `\n`, so splitting received bytes on `\n` is safe framing with no parser beyond a string split.
  */
 
-/** How to resolve a flush conflict (`ServiceResponse`'s `conflict` field, `flushIfDirty`'s own doc
+/** How to resolve a flush conflict (`ServiceResponse`'s `conflict` field, `flushGraph`'s own doc
  *  comment in `service.ts`) — one shared string, not duplicated as literal text in the two places
  *  that need it: `service.ts` appends it to the error thrown by whichever request directly hits the
  *  conflict for the first time (that response never carries `conflict` — it's `ok: false`, so
@@ -17,21 +17,25 @@ export const CONFLICT_RESOLUTION_HINT =
   "npm run aperas -- reload --discard (keep disk's current content, drop the pending local changes) — note the " +
   "'--' before the verb, required by npm itself.";
 
+/** The environment variable that tells a service being started to accept a load that did not read the mirror in full (`aperas service start --start-anyway`). */
+export const START_ANYWAY_ENV = 'APERAS_START_ANYWAY';
+
 export type ServiceRequest =
   | { op: 'ping' }
   // The revived TDB-era `kg:import`'s equivalent: discards the in-memory `Store` and rehydrates a
   // fresh one from `AperasKG/Apeiron/` (content mirror + `.state/`) — the only way to pick up a
   // change landing on disk after the service started (e.g. a `git pull` merging someone else's
   // commit), since nothing else ever re-reads the mirror once the service is running. Flushes
-  // both dirty flags first if set, so no unflushed in-memory work is silently discarded — unless
+  // every graph that was written first, so no unflushed in-memory work is silently discarded — unless
   // that flush is itself refused by a divergence (see `flush`/`clobber` below): `discard: true`
   // resolves that conflict by dropping the pending local mutation instead of trying to preserve
   // it, taking whatever's on disk as-is. The deliberate, explicit way to pick "keep the external
   // change" (`kg:reload --discard`) — never implied by an op's own bare `reload: true`, which
   // always takes the safe, preserving path.
-  | { op: 'reload'; discard: boolean }
+  // `startAnyway: true` accepts a load that did not read the mirror in full (the service copies the documents it skipped to a side file first); without it such a load refuses the reload.
+  | { op: 'reload'; discard: boolean; startAnyway?: boolean }
   // The other side of `discard`: resolves the same conflict in favor of the *local* mutation,
-  // writing current memory over disk unconditionally when `clobber: true` — no dirty check, no
+  // writing current memory over disk unconditionally when `clobber: true` — no check of whether a graph was written, no
   // divergence check. Its own op rather than a flag on some unrelated mutating op's `flush`, since
   // this isn't tied to any particular mutation: it's "push out whatever's pending right now, no
   // matter what's on disk." Without `clobber`, behaves like the guarded flush every other op's
@@ -49,7 +53,7 @@ export type ServiceRequest =
   // external change landed (e.g. someone else's `git pull`). Equivalent to a `{ op: 'reload' }`
   // call immediately followed by this one, just one round trip instead of two — and safe to combine
   // with a mutation in the same request (`reload` then the op then `flush`, all one round trip),
-  // since `reloadStore()` itself flushes any dirty work first rather than discarding it. Offered on
+  // since `reloadStore()` itself flushes any written graph first rather than discarding it. Offered on
   // every op that reads the store's current content.
   | { op: 'track'; paths: string[]; flush: boolean; reload: boolean; force: boolean }
   // `kg:track --reverse` (Aperas-crud-design.md §15) — read-only drift report, no mutation at all:
@@ -61,10 +65,9 @@ export type ServiceRequest =
   | { op: 'ingest'; paths: string[]; flush: boolean; reload: boolean; track: boolean; force: boolean }
   // `viewRef` (Aperas-treeview-design.md §5/§8) — a `TreeView` id, or a `TreeNode`/`Link` ref for
   // `unfold`/`fold`'s own `ref`. Omitted `viewRef` resolves to the `"default"`-named view
-  // (`node.ts`'s `ensureDefaultView`). A mutating `unfold`/`fold` marks the service's `stateDirty`
-  // flag, flushed on its own interval — not `dirty`, the content-mirror flag `track`/`ingest`/etc.
-  // use — since it only ever touches `TreeView.unfolds`, never `BlockNode`/`ArtifactNode`/
-  // `FolderNode`.
+  // (`node.ts`'s `ensureDefaultView`). A mutating `unfold`/`fold` writes the views graph, flushed at
+  // its own interval — not the main graph `track`/`ingest`/etc. write — since it only ever touches
+  // `TreeView.unfolds`, never `BlockNode`/`ArtifactNode`/`FolderNode`.
   // `peek: true` — no `--view` at all on the CLI invocation (distinct from `--view` supplied with
   // no name following it, which still keeps the bootstrap-and-mutate default-view behavior below):
   // read-only preview, touching no `TreeView` state at all, matching `kg:tree`'s own no-`--view`
@@ -129,10 +132,10 @@ export type ServiceRequest =
   | { op: 'checkLinks'; repair: boolean; reload: boolean; flush: boolean };
 
 // An unresolved divergence (see `flush`/`clobber` above) doesn't just fail the request that hit
-// it — it's recorded (`contentConflict`/`stateConflict` in `service.ts`) and attached to *every*
+// it — it's recorded (`conflicts` in `service.ts`, one for each graph) and attached to *every*
 // subsequent response, regardless of that request's own `op`, until `kg:reload --discard` or
-// `kg:flush --clobber` resolves it. Otherwise a conflict the 10s/3s timer alone hits (never an
-// explicit `flush`/`reload`) would sit `dirty` forever with nothing ever surfacing it — no CLI
+// `kg:flush --clobber` resolves it. Otherwise a conflict the timer of a graph alone hits (never an
+// explicit `flush`/`reload`) would sit unflushed forever with nothing ever surfacing it — no CLI
 // command would have any reason to notice. `serviceClient.ts#request` prints this on the client
 // side (this process's own stdio, not the service's `stdio: 'ignore'`'d one) on every call.
 // `linkWarning` rides the same "attached to every response regardless of op" channel, for the same

@@ -271,3 +271,38 @@ function resolveContainment(engine: Engine, containment: string, derived: string
     warnings.push(`${s.id} names ${to} as its ${derived}, which does not list it: ${s.id} is appended at the end of its ${containment}`);
   }
 }
+
+/** The raw documents of one file of the mirror that a load did not build. */
+export interface SkippedDocuments {
+  /** The path of the file, resolved from the root. */
+  readonly file: string;
+  /** The documents as the file holds them, in file order. */
+  readonly documents: readonly unknown[];
+}
+
+/**
+ * The documents of the files of a mapping that a load did not build, as the files hold them: those that carry an id the load rejected (the id at the top or embedded), those that
+ * carry an id of a document the engine refused (the subject of an error), and, for an error whose subject is the file, the entries that are no document (no `@id` and `@type` as
+ * strings). A flush after such a load writes each file whole and removes them, so the service copies them to a side file first (design/packaging.md, the rule for a load that
+ * rejects a document). Only the files that hold one are given; a file that is absent or unreadable holds none.
+ */
+export function skippedDocuments(root: string, mapping: MirrorMapping, load: Pick<LoadResult, 'rejected' | 'errors'>): SkippedDocuments[] {
+  const wanted = new Set<string>([...load.rejected.map((r) => r.id), ...load.errors.map((e) => e.subject)]);
+  const found: SkippedDocuments[] = [];
+  for (const { file } of mapping) {
+    const path = resolve(root, file);
+    if (!existsSync(path)) continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch { continue; }
+    if (!Array.isArray(parsed)) continue;
+    const malformed = wanted.has(path);
+    const documents = parsed.filter((doc) => {
+      if (!isObject(doc) || typeof doc['@id'] !== 'string' || typeof doc['@type'] !== 'string') return malformed;
+      const ids: string[] = [];
+      idsIn(doc, ids);
+      return ids.some((id) => wanted.has(id));
+    });
+    if (documents.length > 0) found.push({ file: path, documents });
+  }
+  return found;
+}

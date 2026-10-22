@@ -4,7 +4,7 @@
 // tombstone, and run in order.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { wrap, createNode, pruneUnreachableTombstones, type BlockNode, type Link, type ApeironNode } from '@aperas/core/shell/node';
+import { wrap, createNode, sweepTombstones, type BlockNode, type Link, type ApeironNode } from '@aperas/core/shell/node';
 import { nodeExists } from '@aperas/core/shell/db';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
@@ -55,7 +55,7 @@ describe('tombstone garbage collection', () => {
     blockOf(keptDeadId).tombstonedAt = now;
     keptDeadLinkId = linkTo(demo.linkBlockId, keptDeadId);
 
-    const { pruned } = pruneUnreachableTombstones(fx.store);
+    const { pruned } = sweepTombstones(fx.store);
     assert.equal(nodeExists(fx.store, deadAId), false, `the dead cluster member ${deadAId} is pruned`);
     assert.equal(nodeExists(fx.store, deadBId), false, `the dead cluster member ${deadBId} is pruned`);
     assert.ok(nodeExists(fx.store, keptDeadId), `'${keptDeadId}' survives: a live block's link still references it`);
@@ -73,7 +73,7 @@ describe('tombstone garbage collection', () => {
       `no link to ${keptDeadId} remains`,
     );
     assert.equal(links.length, 2, "the block's wikilinks are untouched");
-    pruneUnreachableTombstones(fx.store);
+    sweepTombstones(fx.store);
     assert.equal(nodeExists(fx.store, keptDeadId), false, `'${keptDeadId}' is collected now that its only reference is gone`);
   });
 });

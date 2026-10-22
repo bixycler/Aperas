@@ -20,13 +20,12 @@
  * step per §4), so no `trace`/`ResolveDetail` bookkeeping either — the plain (non-createHolder)
  * mode this covers only ever prints the resolved id itself (`kgCli.ts`'s `resolve` command), never
  * the per-segment trace. Reuses `nodeRef.ts`'s pure `slugify`/`tokenize`/`pathToNameTokens` and
- * `tree.ts`'s `findByExactPath` directly — nothing to port for any of them.
+ * the maps' `liveAtPath` directly — nothing to port for any of them.
  */
 
 import { nodeExists, type Db } from './db';
 import { wrap } from './node';
 import type { TreeNode } from './node';
-import { findByExactPath } from './tree';
 import { tokenize, pathToNameTokens, type Token } from '../nodeRef';
 
 const BARE_SNOWFLAKE_RE = /^[0-9A-HJKMNP-TV-Z]{13}$/;
@@ -56,7 +55,7 @@ function resolveDirectOrSnowflake(store: Db, ref: string): string | null {
 }
 
 /** §2.1's `..` at the artifact/folder tier: not a field on the node, a property of the stored
- *  `path` string — trim the last segment and re-resolve via `findByExactPath`. */
+ *  `path` string — trim the last segment and re-resolve via `liveAtPath`. */
 function resolveFromFolderPath(store: Db, folderPath: string, restTokens: Token[]): string | null {
   return resolveTokens(store, [...pathToNameTokens(folderPath), ...restTokens]);
 }
@@ -65,7 +64,7 @@ function resolveFromFolderPath(store: Db, folderPath: string, restTokens: Token[
  *  `descend`'s `findChild` call handles folder/file segments exactly like heading segments, so
  *  there's nothing left for this function to special-case ahead of it. */
 function resolveTokens(store: Db, tokens: Token[]): string | null {
-  const rootId = findByExactPath(store, '.');
+  const rootId = store.maps.liveAtPath('.');
   if (!rootId) return null;
   return descend(store, rootId, tokens);
 }

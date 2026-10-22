@@ -12,7 +12,6 @@ import { join } from 'node:path';
 import { HEADING_TREE_ANCHOR_PROP } from '@aperas/core/astParser';
 import { getProp, getProps } from '@aperas/core/props';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode, type BlockNode, type Link } from '@aperas/core/shell/node';
 import { runBacklinks } from '../../kgBacklinks';
 import { runInsert } from '../../kgInsert';
@@ -63,7 +62,7 @@ No anchor tag on this one at all.
 `);
     trackArtifact(fx.store, aPath);
     ingestArtifact(fx.store, aPath);
-    aId = findByExactPath(fx.store, aPath)!;
+    aId = fx.store.maps.liveAtPath(aPath)!;
     assert.ok(aId, `'${aPath}' is tracked after ingestion`);
 
     h1Block = findHeadingByTitle(artifactA(), 'H1 Heading');
@@ -115,7 +114,7 @@ Should not resolve: [nope](linking-a.md#h1-heading/unanchored-heading).
     const bResult = ingestArtifact(fx.store, bPath);
     assert.ok(bResult, `'${bPath}' actually ingests`);
     assert.equal(bResult!.linkResolution.resolved, 3, 'all 3 link forms ([[Kind:snowflake]], aperas://id/<ID>, ../file#id/<ID>) resolve');
-    const bId = findByExactPath(fx.store, bPath)!;
+    const bId = fx.store.maps.liveAtPath(bPath)!;
     const bArtifact = wrap(fx.store, bId) as unknown as ArtifactNode;
     const referrer = findHeadingByTitle(bArtifact, 'Cross-File Referrer');
     const referrerLinks = (referrer.links as unknown as Link[] | undefined) ?? [];
@@ -137,7 +136,7 @@ Some content that should survive untouched.
 `);
     trackArtifact(fx.store, cleanupPath);
     ingestArtifact(fx.store, cleanupPath);
-    const cleanupId = findByExactPath(fx.store, cleanupPath)!;
+    const cleanupId = fx.store.maps.liveAtPath(cleanupPath)!;
     assert.ok(cleanupId, `'${cleanupPath}' is tracked after ingestion`);
     const before = findHeadingByTitle(wrap(fx.store, cleanupId), 'Cleanup Target');
     assert.ok(before && getProp(before, HEADING_TREE_ANCHOR_PROP) !== undefined, "'Cleanup Target' carries a treeAnchor prop before cleanup");

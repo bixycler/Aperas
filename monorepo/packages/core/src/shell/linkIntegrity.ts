@@ -9,12 +9,11 @@
  */
 
 import { nodeExists, allIdsOfKind, type Db } from './db';
-import { wrap, collectOldWikilinksByBlock, type BlockNode, type Link, type TreeNode } from './node';
+import { wrap, collectOldWikilinksByBlock, linksInOrder, type ApeironNode, type BlockNode, type Link, type TreeNode } from './node';
 import { collectLinkCodesFromText, type LinkOccurrence } from '../astParser';
 import { resolveBlockLinks, retryDanglingRefs, resolveOneCode } from './artifacts';
 import { nodeKindFromId } from './nodeIds';
 import { getProps, type HasProps } from '../props';
-import { findByExactPath } from './tree';
 import type { PendingLinkCodes } from '../artifacts';
 
 export interface LinkDiscrepancy {
@@ -177,7 +176,7 @@ function unresolvedTargetsOf(store: Db, block: BlockNode, links: Link[], artifac
       linkId: link.id,
       targetId,
       kind,
-      linkText: positions.length > 0 ? linkTextAt(block.text, positions[0]) : undefined,
+      linkText: positions.length > 0 ? linkTextAt(block.text, Math.min(...positions)) : undefined,
     });
   }
   return out;
@@ -197,7 +196,7 @@ function sweepBlocks(store: Db, blocks: BlockNode[]): LinkIntegrityReport {
     if (block.tombstonedAt) continue;
     totalLiveBlocks++;
 
-    const storedLinks = (block.links as unknown as Link[] | undefined) ?? [];
+    const storedLinks = linksInOrder(block as unknown as { links?: ApeironNode[] });
     if (storedLinks.length > 0) {
       unresolvedTargets.push(...unresolvedTargetsOf(store, block, storedLinks, artifactPathOfBlock(block)));
     }
@@ -319,7 +318,7 @@ export function repairLinkIntegrity(store: Db, knownReportBefore?: LinkIntegrity
   const repairedArtifacts = Array.from(discrepanciesByArtifact.keys());
 
   for (const artifactPath of repairedArtifacts) {
-    const artifactId = findByExactPath(store, artifactPath);
+    const artifactId = store.maps.liveAtPath(artifactPath);
     if (!artifactId) continue;
 
     // Built from exactly the named discrepant blocks below, non-recursively — never from the whole

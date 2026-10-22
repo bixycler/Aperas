@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_GRAPH } from '@aperas/core/apeironNgn/interface';
-import { MirrorFileError, loadMirror, problemOf, startGraphs } from '@aperas/core/shell/mirrorLoad';
+import { MirrorFileError, loadMirror, problemOf, skippedDocuments, startGraphs } from '@aperas/core/shell/mirrorLoad';
 import { documentsText, type MirrorMapping } from '@aperas/core/shell/mirrorFiles';
 import { dumpDocuments } from '@aperas/core/shell/mirrorDump';
 import { rehydrateStore } from '@aperas/core/shell/store';
@@ -298,6 +298,45 @@ describe('the start of the graphs', () => {
     const warnings = startGraphs(used, [TREE]);
     assert.equal(warnings.length, 1);
     assert.deepEqual(used.idsOfKind(DEFAULT_GRAPH, 'BlockNode'), [blk(1)]);
+  });
+});
+
+describe('the documents a load did not build, as the files hold them', () => {
+  test('both documents that carry a repeated id, at the top or embedded, and no other document; the file named with its resolved path', () => {
+    const link = (owner: string, n: number): Record<string, unknown> => ({ '@id': `${owner}:links:Link:${n}`, '@type': 'Link', target: blk(9) });
+    write({
+      'Apeiron/BlockNode.jsonld': [block(1, { title: 'first' }), block(2), block(1, { title: 'second' }), block(3, { links: [link(blk(3), 7)] }), block(4, { links: [link(blk(3), 7)] })],
+      'Apeiron/.state/BlockNode.jsonld': [block(5)],
+    });
+    const { engine, result } = load();
+    assert.deepEqual(result.rejected.map((r) => r.id).sort(), [blk(1), `${blk(3)}:links:Link:7`].sort(), 'the id of the block and the embedded id carried twice');
+    assert.equal(engine.idsOfKind(TREE, 'BlockNode').length, 1, 'only block 2 was built');
+    const skipped = skippedDocuments(scratch.root, MAPPING, result);
+    assert.deepEqual(skipped.map((s) => s.file), [join(scratch.root, 'Apeiron/BlockNode.jsonld')], 'one file holds them; the file that holds none is not given');
+    assert.deepEqual(skipped[0]!.documents.map((d) => (d as { '@id': string })['@id']), [blk(1), blk(1), blk(3), blk(4)], 'in file order, raw: the two blocks of the repeated id and the two that carry the embedded id');
+    assert.equal((skipped[0]!.documents[0] as { title: string }).title, 'first');
+    assert.equal((skipped[0]!.documents[1] as { title: string }).title, 'second');
+  });
+
+  test('a document the engine refused, and an entry that is no document when the error names the file', () => {
+    const bogus = block(1, { notAField: 'x' });
+    write({ 'Apeiron/BlockNode.jsonld': [bogus, block(2)] });
+    const { result } = load();
+    assert.deepEqual(result.errors.map((e) => e.subject), [blk(1)]);
+    assert.deepEqual(skippedDocuments(scratch.root, MAPPING, result), [{ file: join(scratch.root, 'Apeiron/BlockNode.jsonld'), documents: [bogus] }]);
+    writeTexts(scratch.root, { 'Apeiron/BlockNode.jsonld': documentsText([block(2), 'not a document', { title: 'no id' }]) });
+    const { result: malformed } = load();
+    assert.equal(malformed.errors.length, 2);
+    const file = join(scratch.root, 'Apeiron/BlockNode.jsonld');
+    assert.deepEqual(malformed.errors.map((e) => e.subject), [file, file]);
+    assert.deepEqual(skippedDocuments(scratch.root, MAPPING, malformed), [{ file, documents: ['not a document', { title: 'no id' }] }]);
+  });
+
+  test('a load that skipped nothing gives nothing; asked for an id, the document is found in whichever file of the mapping holds it', () => {
+    write({ 'Apeiron/BlockNode.jsonld': [block(1), block(2)] });
+    const { result } = load();
+    assert.deepEqual(skippedDocuments(scratch.root, MAPPING, result), []);
+    assert.deepEqual(skippedDocuments(scratch.root, MAPPING, { rejected: [{ id: blk(1), files: [] }], errors: [] }), [{ file: join(scratch.root, 'Apeiron/BlockNode.jsonld'), documents: [block(1)] }], 'asked for an id, it finds the document in whichever file of the mapping holds it');
   });
 });
 

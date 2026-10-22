@@ -12,9 +12,10 @@
  * resolution — keep the local mutation, overwrite whatever's on disk.
  *
  * Unless `--discard` is given, this is also one of the three explicit boundaries (alongside
- * `kg:flush --clobber` and a graceful service shutdown) where the tombstone/vacuous-container/
- * stale-unfold GC sweep runs — see `service.ts#reloadStore`'s own doc comment. The counts below
- * reflect that sweep, not just the rehydrate.
+ * `kg:flush --clobber` and a graceful service shutdown) where the tombstone/vacuous-container
+ * GC sweep runs — see `service.ts#reloadStore`'s own doc comment. The counts below
+ * reflect that sweep, not just the load. A mirror the load did not read in full refuses the reload
+ * unless `--start-anyway` accepts it.
  */
 
 import { ensureServiceRunning, request } from './service/serviceClient';
@@ -25,27 +26,27 @@ export async function main(): Promise<void> {
   if (wantsHelp(rawArgs)) {
     printHelp({
       description: 'Discard the in-memory ApeironNgn store and rehydrate it from the AperasKG/Apeiron/ mirror on disk (pick up an external change, e.g. a git pull).',
-      usage: 'aperas reload [--discard]',
+      usage: 'aperas reload [--discard] [--start-anyway]',
       flags: [
         { name: '--discard', description: "Resolve a flush conflict (disk diverged since this service last read it) by dropping the pending local mutation and taking disk's content as-is, instead of leaving the reload stuck." },
+        { name: '--start-anyway', description: "Accept a load that did not read the mirror in full (an id carried by more than one document, or a document the engine refused) and replace the graph in memory with what was read; the documents the load skipped are copied to a side file next to their file first. Without it such a reload is refused and the graph in memory is kept." },
       ],
     });
     return;
   }
   const discard = rawArgs.includes('--discard');
+  const startAnyway = rawArgs.includes('--start-anyway');
   await ensureServiceRunning();
-  const { recordCount, documentCount, prunedTombstones, tombstonedContainers, prunedUnfolds } = await request<{
+  const { recordCount, documentCount, prunedTombstones, tombstonedContainers } = await request<{
     recordCount: number;
     documentCount: number;
     prunedTombstones: number;
     tombstonedContainers: number;
-    prunedUnfolds: number;
-  }>({ op: 'reload', discard });
+  }>({ op: 'reload', discard, startAnyway });
 
   const gcParts: string[] = [];
   if (prunedTombstones) gcParts.push(`${prunedTombstones} unreachable tombstone(s) pruned`);
   if (tombstonedContainers) gcParts.push(`${tombstonedContainers} vacuous container(s) tombstoned`);
-  if (prunedUnfolds) gcParts.push(`${prunedUnfolds} stale unfold(s) cleared`);
 
   console.log(
     `[aperas reload] Reloaded ${recordCount} record(s), ${documentCount} document(s).` +

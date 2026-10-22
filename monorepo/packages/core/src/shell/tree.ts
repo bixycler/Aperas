@@ -7,18 +7,7 @@
  */
 
 import { nodeKindFromId } from './nodeIds';
-import type { Db } from './db';
 import type { TreeView } from './node';
-
-/** An exact match on a stored `path` literal — only ever true for an `ArtifactNode`/`FolderNode`
- *  itself (a `BlockNode`'s path is never stored, only computed on demand by `TreeNode.toPath()`).
- *  Used internally as a building block (anchoring at the root `FolderNode`, checking how much of a
- *  `--create-holder` prefix chain already exists) by `resolve.ts`/`resolveCreate.ts`'s real deep-path
- *  grammar — `kg:tree`/`kg:path`'s own public ref resolution is `resolveDeepPath` (`resolve.ts`),
- *  not this function directly. */
-export function findByExactPath(store: Db, path: string): string | null {
-  return store.maps.liveAtPath(path) ?? null;
-}
 
 export function displayLabel(id: string, node: any): string {
   const kind = nodeKindFromId(id);

@@ -6,7 +6,7 @@ import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Refused, Undecided } from '@aperas/core/apeironNgn/engine';
 import type { Id } from '@aperas/core/apeironNgn/interface';
-import { allIdsOfKind, backlinksOf, defaultSettings, graphOfId, isThreadScoped, liveIdsOfKind, newDb, nodeExists, openDb, type Db } from '@aperas/core/shell/db';
+import { allIdsOfKind, backlinksOf, closeDb, defaultSettings, graphOfId, isThreadScoped, liveIdsOfKind, newDb, nodeExists, openDb, type Db } from '@aperas/core/shell/db';
 import { documentsText } from '@aperas/core/shell/mirrorFiles';
 import { A_DESIGN, A_THREAD, B_ONE, B_THREAD, B_TOMB, F_DOCS, F_ROOT, F_THREADS, P_BARE, P_HUMAN, THREADS, TREE, V_MAIN, VIEWS, fixtureDocs, idOf, scratchRoot, testMapping, textsOf, writeTexts } from '../support/mirrorFixture.ts';
 
@@ -150,6 +150,60 @@ describe('openDb', () => {
   });
 });
 
+describe('closeDb', () => {
+  const put = (files: Record<string, unknown[]>): void => writeTexts(scratch.root, textsOf(testMapping(), files));
+
+  test('drops the three graphs of a handle opened from the fixture, the views first, though the root folder of the main graph lists the threads folder and a main block links into the threads graph', () => {
+    put(fixtureDocs());
+    const { db } = openDb(scratch.root, newDb().settings);
+    assert.equal(graphOfId(db, F_THREADS), THREADS, 'the threads folder is in the threads graph, listed by the root folder of the main graph');
+    assert.deepEqual(db.engine.items(TREE, F_ROOT, 'children'), [F_DOCS, F_THREADS]);
+    const dropped = closeDb(db);
+    assert.equal(dropped[0], VIEWS, 'the views, which nothing points into, go first');
+    assert.deepEqual([...dropped].sort(), [THREADS, TREE, VIEWS].sort());
+    for (const id of [A_DESIGN, A_THREAD, V_MAIN, F_ROOT, F_THREADS, P_HUMAN]) assert.equal(graphOfId(db, id), undefined, `${id} is no longer held`);
+    for (const graph of [TREE, THREADS, VIEWS]) assert.deepEqual(db.engine.idsOfKind(graph, 'BlockNode'), [], `${graph} holds nothing`);
+    assert.throws(() => db.engine.dropGraph(TREE), /no graph/, 'and the graph is gone');
+  });
+
+  test('the pair against the order of the graphs, a container that lists a node of a later graph, is taken out of the list when two graphs wait for each other', () => {
+    put(fixtureDocs());
+    const { db } = openDb(scratch.root, newDb().settings);
+    const owner = blk(9001);
+    db.write.createNode(owner, { kind: 'BlockNode', under: A_THREAD });
+    const link = linkOf(owner, 9001);
+    db.write.addPair(THREADS, owner, 'links', link);
+    db.write.createNode(link, { kind: 'Link', under: owner });
+    db.write.addPair(THREADS, link, 'target', A_DESIGN); // the threads graph points into the main graph, and the root folder of the main graph lists the threads folder
+    db.write.removePair(TREE, B_ONE, 'links', linkOf(B_ONE, 9)); // the fixture's own link from the main graph into the threads graph is not what this case is about
+    const dropped = closeDb(db);
+    assert.deepEqual([...dropped].sort(), [THREADS, TREE, VIEWS].sort(), `all three go: ${dropped.join(', ')}`);
+  });
+
+  test('a handle with nothing in it is closed whole, and a second handle shares nothing with it', () => {
+    put(fixtureDocs());
+    const first = openDb(scratch.root, newDb().settings).db;
+    const second = openDb(scratch.root, newDb().settings).db;
+    assert.deepEqual(closeDb(newDb()), [VIEWS, THREADS, TREE]);
+    closeDb(first);
+    assert.equal(graphOfId(second, A_DESIGN), TREE, 'the other handle still holds its records');
+    assert.equal(second.maps.liveAtPath('docs/design.md'), A_DESIGN);
+  });
+
+  test('graphs that point into each other through links cannot be dropped: they are kept and still answer, and the views go', () => {
+    put(fixtureDocs());
+    const { db } = openDb(scratch.root, newDb().settings);
+    const owner = blk(9001);
+    db.write.createNode(owner, { kind: 'BlockNode', under: A_THREAD });
+    const link = linkOf(owner, 9001);
+    db.write.addPair(THREADS, owner, 'links', link);
+    db.write.createNode(link, { kind: 'Link', under: owner });
+    db.write.addPair(THREADS, link, 'target', A_DESIGN);
+    assert.deepEqual(closeDb(db), [VIEWS], 'the main graph points into the threads graph (the fixture) and the threads graph into the main graph (this link)');
+    assert.equal(graphOfId(db, A_THREAD), THREADS, 'the graphs kept still answer');
+  });
+});
+
 describe('nodeExists and graphOfId', () => {
   test('a node exists when a document stands for it; a ghost named by a list or by a pair does not', () => {
     const db = newDb();
@@ -212,6 +266,13 @@ describe('allIdsOfKind and liveIdsOfKind', () => {
     db.write.tombstone(THREADS, t, AT);
     assert.deepEqual(allIdsOfKind(db, 'ArtifactNode'), [a, t, b]);
     assert.deepEqual(liveIdsOfKind(db, 'ArtifactNode'), [b]);
+  });
+
+  test('the live ids are sorted by id too, whatever order the nodes were made in and whichever graph holds them', () => {
+    const db = newDb();
+    for (const [n, path] of [[5, 'e.md'], [2, '.threads/b.md'], [9, 'i.md'], [1, '.threads/a.md'], [7, 'g.md']] as const) withArtifact(db, n, path);
+    db.write.tombstone(TREE, art(7), AT);
+    assert.deepEqual(liveIdsOfKind(db, 'ArtifactNode'), [1, 2, 5, 9].map(art));
   });
 
   test('a kind with no tombstone marker has all its nodes live', () => {

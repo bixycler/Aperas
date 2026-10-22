@@ -3,15 +3,12 @@
  * loaded `Db` (the engine, its maps and the files of the mirror, `shell/db.ts`) in memory across CLI invocations instead of every
  * `kg:xxx` script loading/dumping the whole mirror on its own. Listens on a Unix domain socket; every request is
  * serialized through `enqueue()` so concurrent connections never interleave store mutations.
- * Flushes to `AperasKG/Apeiron/`'s JSON-LD mirror every 10s if dirty, or immediately when a
- * request carries `flush: true`. A second, independent interval/dirty-flag pair
- * (`STATE_FLUSH_INTERVAL_MS`/`stateDirty`) does the same for `TreeView`'s own `.state/` mirror
- * (Aperas-treeview-design.md §8) — expand/collapse churns far more often than content edits, and
- * `.state/` is cheap and gitignored, so it's tuned separately rather than riding the content
- * mirror's cadence. `Profile` moved out of `.state/` into the ordinary content mirror (§8/§11) —
- * it's per-viewer identity, but stable, not ephemeral, so it now rides the `dirty`/
- * `FLUSH_INTERVAL_MS` cadence like `BlockNode`/`ArtifactNode`/`FolderNode`. Exits after 30 idle
- * minutes or on SIGTERM/SIGINT, flushing both if dirty either way.
+ *
+ * Each graph is flushed on its own (planning/core.md, Batch 11 step 8): the table of settings (`graphConfig.ts`, `resolveGraphSettings`, read from the
+ * configuration above the mirror at boot) gives every graph its directory and its flush interval, one timer runs for each graph at its interval
+ * (the defaults are the main graph `tree` every 10 s, and `threads.tree` and `treeviews`, the git-ignored `.state/`, every 3 s), and a graph is
+ * flushed when it was written (`Db.changed`, which the write layer fills: an op does not say which graph it dirtied, the write layer knows) or
+ * immediately when a request carries `flush: true`. Exits after 30 idle minutes or on SIGTERM/SIGINT, flushing every graph written either way.
  *
  * Started explicitly by `aperas service start`/`restart` (`kgService.ts`) — not meant to be run
  * directly, though doing so still works: `getApeironExportDir()`/`getArtifactsDir()` below are
@@ -21,42 +18,52 @@
  * `graphConfig.ts`'s own doc comment). A direct run just skips the lock-claim race and the graph
  * resolution that only matter when going through the real `start`/`restart` path.
  *
+ * A mirror the load did not read in full (design/packaging.md, the rule for a load that rejects a document): when the load returns `rejected` or `errors`
+ * the service refuses to start and a reload refuses to replace the graph in memory, naming the files and ids in the log and the response, because a flush
+ * would write each file whole and remove what the load skipped. The start-anyway option (`--start-anyway` of `aperas service start`/`restart` and of
+ * `aperas reload`) accepts such a load: before anything can flush, the raw documents the load skipped are copied to a side file next to their file
+ * (`<file>.rejected-<UTC stamp>.json`, the `.state/` files too), and the service works on the unaffected parts. The load's `warnings` are logged and the
+ * service starts; the ids referenced and never defined (`dangling`) are logged as one warning and nothing more.
+ *
  * Staleness: the `Db` held here is a snapshot from whenever it was last (re)loaded — nothing
  * notices `AperasKG/Apeiron/` changing on disk underneath it (e.g. a `git pull` merging someone
  * else's commit) on its own. `reloadStore()` is the fix, the revived TDB-era `kg:import`'s
- * equivalent: flushes both dirty flags first (so no unflushed in-memory work is silently
- * discarded), then loads fresh and swaps the in-memory `Db` reference. Reachable directly
+ * equivalent: sweeps and flushes every written graph first (so no unflushed in-memory work is silently
+ * discarded), then loads a fresh `Db`, swaps it in and frees the old one (`closeDb`: its graphs are dropped). Reachable directly
  * via `{ op: 'reload' }` (`kg:reload`), or implicitly via any op's own `reload: true` — the
  * reciprocal of a mutating op's `flush: true`: `flush` forces a sync *out* immediately after the
  * op runs, `reload` forces a sync *in* immediately before it does, so a write can pick up an
  * external change and persist the result in one round trip.
  *
- * That pre-reload flush is itself guarded (`flushIfDirty`/`flushStateIfDirty`'s `diverged` check):
+ * That pre-reload flush is itself guarded (`flushGraph`'s `diverged` check):
  * the dump of the mirror writes each file whole, a blind full-file replace and not a merge, so
  * flushing this process's own pending mutation over a mirror file an *external* write already
  * changed would silently destroy that external content instead of picking it up. The guard compares
- * each managed file's content hash against what this process last read or wrote; a mismatch refuses
+ * each file of the graph against what this process last read or wrote; a mismatch refuses
  * the flush (and whatever op triggered it) instead of overwriting, leaving the local mutation
- * pending for a human to reconcile. It's keyed on the hash, not the `dirty` flag alone — `dirty` by
- * itself is the ordinary, harmless case (a pending local edit, no external activity at all).
+ * pending for a human to reconcile. It's keyed on the hash, not on the graph being written alone — a pending
+ * local edit with no external activity at all is the ordinary, harmless case.
  */
 
 import { createServer, type Socket } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
-import { unlinkSync, readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
-import { basename, join, resolve, dirname } from 'node:path';
+import { unlinkSync, readFileSync, readdirSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
+import { join, resolve, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, loadRefusal, isThreadScoped, type Db } from '@aperas/core/shell/db';
+import { openDb, closeDb, loadRefusal, isThreadScoped, type Db, type Opened } from '@aperas/core/shell/db';
 import { dumpMirror } from '@aperas/core/shell/mirrorDump';
-import { MAIN_GRAPH, type MirrorFile } from '@aperas/core/shell/mirrorFiles';
+import { skippedDocuments } from '@aperas/core/shell/mirrorLoad';
+import { MAIN_GRAPH, documentsText } from '@aperas/core/shell/mirrorFiles';
+import type { GraphName } from '@aperas/core/apeironNgn/interface';
+import type { GraphSettings } from '@aperas/core/graphConfig';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
-import { resolveTreeView, pruneUnreachableTombstones, tombstoneVacuousContainers, pruneStaleUnfolds, wrap, type TreeNode } from '@aperas/core/shell/node';
+import { resolveTreeView, sweepTombstones, tombstoneVacuousContainers, wrap, type TreeNode } from '@aperas/core/shell/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/shell/linkIntegrity';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { resolveEffectiveApeironRoot, resolveEffectiveThreadSizeCap } from '@aperas/core/graphConfig';
+import { resolveEffectiveApeironRoot, resolveEffectiveThreadSizeCap, resolveGraphSettings } from '@aperas/core/graphConfig';
 import { getRunDir, getSocketPath, markReady, clearLock, writeToken, resolveHttpPort } from './serviceLock';
 import { computeCodeFingerprint } from './codeVersion';
-import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
+import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, START_ANYWAY_ENV, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { handleApiRoute, readRequestBody } from './apiRoutes';
 import { checkAuth, allowedOrigins } from './listenerAuth';
 import { serveStatic } from './staticServe';
@@ -91,8 +98,6 @@ import { runBacklinks } from '../kgBacklinks';
 import { runShow } from '../kgShow';
 import { runProfileCreate, runProfileList, runProfileRemove, runProfileCreateView, runProfileListView, runProfileRemoveView } from '../kgProfile';
 
-const FLUSH_INTERVAL_MS = 10_000;
-const STATE_FLUSH_INTERVAL_MS = 3_000;
 const IDLE_TIMEOUT_MS = 30 * 60_000;
 
 type Stamps = Record<string, string | null>;
@@ -106,22 +111,22 @@ function fileHash(path: string): string | null {
   return existsSync(path) ? computeFileHash(readFileSync(path, 'utf-8')) : null;
 }
 
-/** The files of the mirror that one flush writes, from the mapping: the main graph's (`content`) or the threads and the views graphs' (`.state/`). */
-function mirrorFilesOf(db: Db, root: string, content: boolean): string[] {
-  return db.mapping.filter((m) => (m.graph === MAIN_GRAPH) === content).map((m) => resolve(root, m.file));
+/** The files of the mirror that one graph's flush writes, from the mapping. */
+function mirrorFilesOf(db: Db, root: string, graph: GraphName): string[] {
+  return db.mapping.filter((m) => m.graph === graph).map((m) => resolve(root, m.file));
 }
 
-/** The stamps of files, keyed by the name of the file (the key of a divergence message). */
+/** The stamps of files, keyed by the path of the file. */
 function stampAll(files: readonly string[]): Stamps {
   const stamps: Stamps = {};
-  for (const file of files) stamps[basename(file)] = fileHash(file);
+  for (const file of files) stamps[file] = fileHash(file);
   return stamps;
 }
 
-/** Which of `files` no longer match their last-known stamp (by name) — empty when nothing external touched
+/** Which of `files` no longer match their last-known stamp — empty when nothing external touched
  *  the mirror since this process last read or wrote it, regardless of how long ago that was. */
 function diverged(files: readonly string[], known: Stamps): string[] {
-  return files.filter((file) => fileHash(file) !== known[basename(file)]).map((file) => basename(file));
+  return files.filter((file) => fileHash(file) !== known[file]);
 }
 
 /** Durable fallback for events that matter after the fact but would otherwise only ever reach
@@ -161,61 +166,115 @@ export function main(): void {
   const httpToken = writeToken();
   const httpPort = resolveHttpPort();
 
-  const opened = openDb(contentDir);
-  let store: Db = opened.db;
-  logService(`[ApeironNgn service] Rehydrated ${opened.load.documents + opened.load.embedded} record(s) from ${contentDir}.`);
-  for (const warning of opened.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
-  const bootRefusal = loadRefusal(opened.load);
-  if (bootRefusal !== undefined) {
-    // A flush after a boot that skipped a document would write each file whole and remove it from disk: the service does not start. The lock is cleared so that
-    // the client's wait ends at once and `aperas service start` can say why from the log.
-    logService(`[ApeironNgn service] REFUSING TO START: ${bootRefusal}`);
+  /** Ends the start: the lock is cleared so that the client's wait ends at once and `aperas service start` can say why from the log. */
+  const refuseToStart = (why: string): never => {
+    logService(`[ApeironNgn service] REFUSING TO START: ${why}`);
     clearLock();
     process.exit(1);
+  };
+
+  // The table of settings (directory and flush interval of each graph) is read from the configuration above the mirror, once, and used for every load of this process.
+  let settings: readonly GraphSettings[];
+  try {
+    const table = resolveGraphSettings(contentDir);
+    settings = table.graphs;
+    for (const warning of table.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
+    logService(`[ApeironNgn service] Flush intervals: ${settings.map((g) => `${g.graph} ${g.flushIntervalMs} ms`).join(', ')}.`);
+  } catch (err: any) {
+    return refuseToStart(`the table of graph settings is not readable: ${err.message || err}`);
   }
 
-  let contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
-  let stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
+  const startAnyway = process.env[START_ANYWAY_ENV] === '1';
+
+  /** Logs what a load says besides its problems, and copies the documents it skipped to a side file before anything can flush over them. */
+  function acceptLoad(opened: Opened, atBoot: boolean): void {
+    if (atBoot) logService(`[ApeironNgn service] Loaded ${opened.load.documents + opened.load.embedded} record(s) from ${contentDir}.`);
+    for (const warning of opened.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
+    if (opened.load.dangling.length > 0) {
+      const shown = opened.load.dangling.slice(0, 10).join(', ');
+      logService(`[ApeironNgn service] WARNING: ${opened.load.dangling.length} id(s) referenced and never defined: ${shown}${opened.load.dangling.length > 10 ? ', …' : ''}`);
+    }
+    const refusal = loadRefusal(opened.load);
+    if (refusal === undefined) return;
+    logService(`[ApeironNgn service] START-ANYWAY: ${refusal}`);
+    for (const path of saveSkipped(opened)) logService(`[ApeironNgn service] The documents the load skipped are copied to ${path}.`);
+  }
+
+  /** Copies the raw documents the load skipped to a side file next to their file; a file already copied with the same documents is not copied again. Gives the paths written. */
+  function saveSkipped(opened: Opened): string[] {
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+    const written: string[] = [];
+    for (const { file, documents } of skippedDocuments(contentDir, opened.db.mapping, opened.load)) {
+      const text = documentsText(documents);
+      const base = `${file}.rejected-`;
+      const present = readdirSync(dirname(file)).filter((name) => join(dirname(file), name).startsWith(base) && name.endsWith('.json'));
+      if (present.some((name) => readFileSync(join(dirname(file), name), 'utf-8') === text)) continue;
+      const side = `${base}${stamp}.json`;
+      writeFileSync(side, text);
+      written.push(side);
+    }
+    return written;
+  }
+
+  const opened = openDb(contentDir, settings);
+  let store: Db = opened.db;
+  const bootRefusal = loadRefusal(opened.load);
+  if (bootRefusal !== undefined && !startAnyway) {
+    logService(`[ApeironNgn service] Loaded ${opened.load.documents + opened.load.embedded} record(s) from ${contentDir}.`);
+    for (const warning of opened.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
+    refuseToStart(`${bootRefusal} (to work on the unaffected parts and fix the affected ones in memory: aperas service start --start-anyway)`);
+  }
+  acceptLoad(opened, true);
+
+  /** The stamps of the files of each graph as this process last read or wrote them, and the standing conflict of each graph. */
+  const stamps = new Map<GraphName, Stamps>();
+  const conflicts = new Map<GraphName, string | null>();
+  const stampGraphs = (): void => {
+    for (const graph of store.graphs) {
+      stamps.set(graph, stampAll(mirrorFilesOf(store, contentDir, graph)));
+      conflicts.set(graph, null);
+    }
+  };
+  stampGraphs();
   const threadSizeCap = resolveEffectiveThreadSizeCap();
 
-  let dirty = false;
-  let stateDirty = false;
-  // Set the instant a divergence refuses a flush, cleared the instant it's resolved (a later
-  // flush that no longer diverges, or an explicit `discard`/`clobber`) — independent of `dirty`,
-  // which a resolved-but-not-yet-retried mutation can still be. Recorded here, at the service
-  // level, rather than only thrown to whichever single request happened to hit it: the 10s/3s
-  // timers hit `flushIfDirty`/`flushStateIfDirty` too, with no request behind them to surface an
-  // error to — without this, a conflict the *timer* discovers would sit `dirty` forever, with
-  // nothing ever telling anyone. `handleConnection` below attaches whichever of these is set to
-  // *every* response it sends, regardless of that request's own `op` — so a conflict "emerges" on
-  // the very next `kg:xxx` call of any kind, not just a `flush`/`reload`.
-  let contentConflict: string | null = null;
-  let stateConflict: string | null = null;
   // Standing result of the last corpus-wide link-integrity sweep (startup/reload), attached to every
-  // response the same way the two conflicts above are — see `serviceProtocol.ts#ServiceResponse`.
+  // response the same way the conflicts are — see `serviceProtocol.ts#ServiceResponse`.
   let linkWarning: string | null = null;
 
-  // Startup GC (Aperas-apeironngn-design.md §5) — the same companion sweep `reloadStore`/
+  /** The conflicts as a response carries them: `content` is the main graph's, `state` the others'. Recorded at the service level, rather than only thrown to whichever
+   *  single request happened to hit it: the timers hit `flushGraph` too, with no request behind them to surface an error to — without this, a conflict the *timer*
+   *  discovers would sit pending forever, with nothing ever telling anyone. `handleConnection` below attaches it to *every* response it sends, regardless of
+   *  that request's own `op` — so a conflict "emerges" on the very next `kg:xxx` call of any kind, not just a `flush`/`reload`. */
+  function standingConflict(): { content?: string; state?: string } | undefined {
+    const content = conflicts.get(MAIN_GRAPH) ?? undefined;
+    const others = [...conflicts].filter(([graph, text]) => graph !== MAIN_GRAPH && text).map(([, text]) => text);
+    const state = others.length > 0 ? others.join(' ') : undefined;
+    return content || state ? { content, state } : undefined;
+  }
+
+  /** The rules of the sweep, at the boundaries where the service runs them: a container that holds nothing live is tombstoned (the boot rule), then the engine's
+   *  sweep deletes the tombstones nothing reaches, graph by graph. A graph written by either is flushed by the caller. */
+  function sweeps(): { tombstoned: number; pruned: number } {
+    const { tombstoned } = tombstoneVacuousContainers(store);
+    const { pruned } = sweepTombstones(store);
+    return { tombstoned, pruned };
+  }
+
+  // Startup GC (Aperas-apeironngn-design.md §5) — the same sweeps `reloadStore`/
   // `clobberFlush`/`shutdown` already run at their own explicit boundaries, run here too so a
   // backlog never survives indefinitely across however many restarts land between one real
   // (non-`--discard`) `reload`/`clobber`/graceful shutdown and the next. Must flush immediately
-  // rather than just mark dirty and rely on the periodic timer or some later, unrelated mutation to
-  // carry it along: at cold boot, disk can't have diverged yet (this store was just rehydrated from
+  // rather than just mark the graph written and rely on the periodic timer or some later, unrelated mutation to
+  // carry it along: at cold boot, disk can't have diverged yet (this store was just loaded from
   // it), so this flush is guaranteed to succeed. Deferring it is what let a real backlog (four
   // already-tombstoned blocks from earlier the same day) survive 8+ hours and several restarts
   // untouched — computed in memory every boot, never once written back, gone the moment the
   // process exited before anything else happened to flush.
-  const { tombstoned: initTombstoned } = tombstoneVacuousContainers(store);
-  const { pruned: initPruned } = pruneUnreachableTombstones(store);
-  const { pruned: initStaleUnfolds } = pruneStaleUnfolds(store);
-  if (initTombstoned > 0 || initPruned > 0 || initStaleUnfolds > 0) {
-    dirty = true;
-    stateDirty = true;
-    logService(
-      `[ApeironNgn service] Startup GC: cleaned ${initPruned} unreachable tombstone(s), ${initTombstoned} vacuous container(s), ${initStaleUnfolds} stale unfold(s).`
-    );
-    flushIfDirty();
-    flushStateIfDirty();
+  const bootSweep = sweeps();
+  if (bootSweep.tombstoned > 0 || bootSweep.pruned > 0) {
+    logService(`[ApeironNgn service] Startup GC: cleaned ${bootSweep.pruned} unreachable tombstone(s), ${bootSweep.tombstoned} vacuous container(s).`);
+    flushAll();
   }
 
   let queue: Promise<unknown> = Promise.resolve();
@@ -225,31 +284,38 @@ export function main(): void {
     return result;
   }
 
-  /** Keyed on an actual content-hash mismatch, not `dirty` alone: `dirty` only means *this*
-   *  process has a pending local mutation, which is the common, harmless case (no external write
-   *  at all) — refusing on `dirty` by itself would nag on every ordinary flush. Only a genuine
-   *  divergence since the last read/write is worth refusing over; when one's found, the write is
-   *  skipped entirely (nothing partially overwritten) and the local mutation stays pending in
-   *  memory (still `dirty`) for the caller to resolve and retry. */
-  /** Writes the files of the main graph (`content`) or of the threads and views graphs (`.state/`) of the mapping, whole. The graphs of the whole mapping are read
+  /** Writes the files of one graph of the mapping, whole. The graphs of the whole mapping are read
    *  across: a node's container may be in a graph whose files are not written now. */
-  function writeFiles(content: boolean): void {
-    dumpMirror(store.engine, contentDir, store.mapping, (m: MirrorFile) => (m.graph === MAIN_GRAPH) === content);
+  function writeGraph(graph: GraphName): void {
+    dumpMirror(store.engine, contentDir, store.mapping, (m) => m.graph === graph);
+    stamps.set(graph, stampAll(mirrorFilesOf(store, contentDir, graph)));
+    store.changed.delete(graph);
+    conflicts.set(graph, null);
   }
 
-  function flushIfDirty(): void {
-    if (!dirty) return;
-    const bad = diverged(mirrorFilesOf(store, contentDir, true), contentStamps);
+  /** Flushes one graph if it was written. Keyed on an actual content-hash mismatch, not on the graph being written alone: that only means *this* process has a pending
+   *  local mutation, which is the common, harmless case (no external write at all) — refusing on it by itself would nag on every ordinary flush. Only a genuine
+   *  divergence since the last read/write is worth refusing over; when one's found, the write is skipped entirely (nothing partially overwritten) and the local
+   *  mutation stays pending in memory (the graph still written) for the caller to resolve and retry. */
+  function flushGraph(graph: GraphName): void {
+    if (!store.changed.has(graph)) return;
+    const bad = diverged(mirrorFilesOf(store, contentDir, graph), stamps.get(graph) ?? {});
     if (bad.length > 0) {
-      contentConflict =
-        `${bad.join(', ')} changed on disk since this service last read it — an external ` +
+      const text = `${bad.map((file) => relative(contentDir, file)).join(', ')} changed on disk since this service last read it — an external ` +
         `process (another git pull, a hand-edit) wrote to the mirror while this service held unflushed local changes.`;
-      throw new Error(`Refusing to flush: ${contentConflict} ${CONFLICT_RESOLUTION_HINT}`);
+      conflicts.set(graph, text);
+      throw new Error(`Refusing to flush: ${text} ${CONFLICT_RESOLUTION_HINT}`);
     }
-    writeFiles(true);
-    contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
-    dirty = false;
-    contentConflict = null;
+    writeGraph(graph);
+  }
+
+  /** Flushes every graph that was written, each on its own: a divergence in one must not skip the others (they are unrelated files). The first refusal is thrown once all were tried. */
+  function flushAll(): void {
+    let first: Error | undefined;
+    for (const graph of store.graphs) {
+      try { flushGraph(graph); } catch (err: any) { first ??= err; }
+    }
+    if (first) throw first;
   }
 
   /** Corpus-wide link-integrity sweep (~0.6s, measured), run at the two boundaries where the graph
@@ -329,122 +395,73 @@ export function main(): void {
     return out;
   }
 
-  function flushStateIfDirty(): void {
-    if (!stateDirty) return;
-    const bad = diverged(mirrorFilesOf(store, contentDir, false), stateStamps);
-    if (bad.length > 0) {
-      stateConflict =
-        `.state/${bad.join(', ')} changed on disk since this service last read it.`;
-      throw new Error(`Refusing to flush: ${stateConflict} ${CONFLICT_RESOLUTION_HINT}`);
-    }
-    writeFiles(false);
-    stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
-    stateDirty = false;
-    stateConflict = null;
-  }
-
-  /** Flushes both mirrors if dirty, then rehydrates a fresh `Store` from disk and swaps it in —
-   *  see this file's own doc comment for why. `dirty`/`stateDirty` need no explicit reset here:
-   *  the flushes above already cleared them if they were set, and a fresh rehydrate starts clean
-   *  regardless. A divergence during either flush above propagates out of this function too — a
-   *  reload that can't safely flush first refuses rather than silently discarding the external
+  /** Sweeps and flushes every written graph, then loads a fresh `Db` from disk, swaps it in and frees the old one — see this file's own doc comment for why. A divergence
+   *  during the flush propagates out of this function too — a reload that can't safely flush first refuses rather than silently discarding the external
    *  change it exists to pick up — unless `discard` says to drop the pending local mutation
    *  instead of trying to preserve it, the deliberate, explicit way to resolve a conflict in
    *  favor of the external change (`kg:reload --discard`; never implied by any op's own bare
    *  `reload: true`, which always takes the safe, preserving path — a read shouldn't have the
-   *  side effect of silently dropping someone else's pending write). */
-  function reloadStore(discard = false): {
+   *  side effect of silently dropping someone else's pending write). A load that did not read the mirror in full refuses the reload and the graph in memory
+   *  (with its pending changes) stays as it is, unless `anyway` accepts it (see the doc comment of this file). */
+  function reloadStore(discard = false, anyway = false): {
     recordCount: number;
     documentCount: number;
     prunedTombstones: number;
     tombstonedContainers: number;
-    prunedUnfolds: number;
+    freedGraphs: number;
   } {
     let tombstoned = 0;
     let pruned = 0;
-    let staleUnfolds = 0;
-    if (discard) {
-      // What is on disk is read first: a load that did not read it in full refuses the reload, and the memory (with its pending changes) stays as it is.
-      const probe = openDb(contentDir);
-      const refusal = loadRefusal(probe.load);
-      if (refusal !== undefined) throw new Error(`Refusing to reload: ${refusal}`);
-      dirty = false;
-      stateDirty = false;
-      contentConflict = null;
-      stateConflict = null;
-    } else {
+    if (!discard) {
       // Mark-and-sweep tombstone GC (Aperas-apeironngn-design.md §5) — run here, not discarded:
       // this is exactly the "next service startup/reload" boundary the design settled on, and
-      // `reloadStore` always flushes both mirrors together right after, so a pruned tombstone
-      // reliably stays gone rather than reappearing from the very rehydrate this triggers below.
+      // the flush right after writes every graph the sweeps changed, so a pruned tombstone
+      // reliably stays gone rather than reappearing from the very load this triggers below.
       // Skipped on `discard`, since that path throws away in-memory state instead of flushing it.
-      ({ tombstoned } = tombstoneVacuousContainers(store));
-      ({ pruned } = pruneUnreachableTombstones(store));
-      if (tombstoned > 0 || pruned > 0) {
-        dirty = true;
-        stateDirty = true; // a pruned node's own dangling `unfolds` entries may have been swept too
-      }
-      // Own sweep, not folded into the above: a stale `unfolds` entry (issues/treeview.md) isn't
-      // necessarily tied to anything just pruned here — it can predate this run entirely.
-      ({ pruned: staleUnfolds } = pruneStaleUnfolds(store));
-      if (staleUnfolds > 0) stateDirty = true;
-      flushIfDirty();
-      flushStateIfDirty();
+      ({ tombstoned, pruned } = sweeps());
+      flushAll();
     }
-    const result = openDb(contentDir);
+    // What is on disk is read after the flush; with `discard` it is read before the pending changes are given up, so that a load that cannot be accepted leaves them.
+    const result = openDb(contentDir, settings);
     const refusal = loadRefusal(result.load);
-    if (refusal !== undefined) {
+    if (refusal !== undefined && !anyway) {
+      closeDb(result.db);
       logService(`[ApeironNgn service] Reload refused, the graph in memory is kept: ${refusal}`);
-      throw new Error(`Refusing to reload: ${refusal}`);
+      throw new Error(`Refusing to reload: ${refusal} (to accept it and work on the unaffected parts: aperas reload --start-anyway)`);
     }
+    const old = store;
     store = result.db;
-    contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
-    stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
+    const freed = closeDb(old);
+    stampGraphs();
+    acceptLoad(result, false);
     const records = result.load.documents + result.load.embedded;
     const gcParts: string[] = [];
     if (pruned) gcParts.push(`${pruned} unreachable tombstone(s) pruned`);
     if (tombstoned) gcParts.push(`${tombstoned} vacuous container(s) tombstoned`);
-    if (staleUnfolds) gcParts.push(`${staleUnfolds} stale unfold(s) cleared`);
     logService(
-      `[ApeironNgn service] Reloaded ${records} record(s), ${result.load.documents} document(s).` +
+      `[ApeironNgn service] Reloaded ${records} record(s), ${result.load.documents} document(s); ${freed.length} graph(s) of the old store freed.` +
         (gcParts.length > 0 ? ` GC: ${gcParts.join(', ')}.` : '')
     );
-    for (const warning of result.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
     // The other boundary where the graph can have changed without this process doing it — a reload
     // exists precisely to pick up someone else's write, which is exactly when a link can arrive
     // already broken.
     corpusLinkSweep('reload');
-    return {
-      recordCount: records,
-      documentCount: result.load.documents,
-      prunedTombstones: pruned,
-      tombstonedContainers: tombstoned,
-      prunedUnfolds: staleUnfolds,
-    };
+    return { recordCount: records, documentCount: result.load.documents, prunedTombstones: pruned, tombstonedContainers: tombstoned, freedGraphs: freed.length };
   }
 
   /** The other side of `reloadStore(discard: true)`: resolves a conflict in favor of the *local*
-   *  mutation instead, by writing current memory over disk unconditionally — no dirty check, no
-   *  divergence check. Deliberately its own explicit op (`kg:flush --clobber`) rather than a flag
+   *  mutation instead, by writing current memory over disk unconditionally — no divergence
+   *  check, and every graph is written whether it was or not. Deliberately its own explicit op (`kg:flush --clobber`) rather than a flag
    *  folded into some unrelated mutating op's own `flush`, since this isn't tied to any particular
    *  mutation — it's "push out whatever's pending right now, no matter what's on disk," the direct
    *  counterpart to `--discard`'s "pull in whatever's on disk, no matter what's pending." Named
    *  `clobber`, not `force` — see `kgFlush.ts`'s doc comment for why the name alone doesn't route
    *  around `npm run kg:flush --force`'s original footgun (npm's own `--` separator requirement
    *  applies to any `--flag`, not just recognized npm options). */
-  function clobberFlush(): { clobbered: true; prunedTombstones: number; tombstonedContainers: number; prunedUnfolds: number } {
-    const { tombstoned } = tombstoneVacuousContainers(store); // same companion sweep `reloadStore` runs — see its own comment
-    const { pruned } = pruneUnreachableTombstones(store); // same GC pass `reloadStore` runs — see its own comment
-    const { pruned: staleUnfolds } = pruneStaleUnfolds(store); // same `unfolds` audit `reloadStore` runs — see its own comment
-    writeFiles(true);
-    contentStamps = stampAll(mirrorFilesOf(store, contentDir, true));
-    dirty = false;
-    contentConflict = null;
-    writeFiles(false);
-    stateStamps = stampAll(mirrorFilesOf(store, contentDir, false));
-    stateDirty = false;
-    stateConflict = null;
-    return { clobbered: true, prunedTombstones: pruned, tombstonedContainers: tombstoned, prunedUnfolds: staleUnfolds };
+  function clobberFlush(): { clobbered: true; prunedTombstones: number; tombstonedContainers: number } {
+    const { tombstoned, pruned } = sweeps(); // the same sweeps `reloadStore` runs — see its own comment
+    for (const graph of store.graphs) writeGraph(graph);
+    return { clobbered: true, prunedTombstones: pruned, tombstonedContainers: tombstoned };
   }
 
   let idleTimer: NodeJS.Timeout;
@@ -453,21 +470,20 @@ export function main(): void {
     idleTimer = setTimeout(() => shutdown(0), IDLE_TIMEOUT_MS);
   }
 
-  // Both timers already swallow a thrown divergence rather than crash the process — logged (even
+  // One timer for each graph, at the flush interval of the table of settings. Every timer already swallows a thrown divergence rather than crash the process — logged (even
   // though `stdio: 'ignore'` on the normal detached spawn means it goes nowhere in practice) so a
-  // foreground/debug run at least shows it, instead of a silently-stuck `dirty` flag retrying every
+  // foreground/debug run at least shows it, instead of a silently-stuck written flag retrying every
   // interval forever. An explicit `--flush`/`--reload`/`--discard` from a CLI command always
   // surfaces the same error normally through the request/response path regardless.
-  const flushTimer = setInterval(() => {
-    enqueue(() => flushIfDirty()).catch((err) => logService(`[ApeironNgn service] Timed flush: ${err.message}`));
-  }, FLUSH_INTERVAL_MS);
-  const stateFlushTimer = setInterval(() => {
-    enqueue(() => flushStateIfDirty()).catch((err) => logService(`[ApeironNgn service] Timed state flush: ${err.message}`));
-  }, STATE_FLUSH_INTERVAL_MS);
+  const flushTimers = settings.map(({ graph, flushIntervalMs }) =>
+    setInterval(() => {
+      enqueue(() => flushGraph(graph)).catch((err) => logService(`[ApeironNgn service] Timed flush of ${graph}: ${err.message}`));
+    }, flushIntervalMs)
+  );
 
   let shuttingDown = false;
-  /** Each flush attempted and caught independently: a divergence on one mirror must not skip the
-   *  other (they're unrelated files), and neither may throw unhandled here — `.finally()` below
+  /** Each graph flushed and caught independently: a divergence on one must not skip the
+   *  others (they're unrelated files), and none may throw unhandled here — `.finally()` below
    *  has no `.catch()` after it, so an uncaught rejection from inside would go unhandled entirely.
    *  A stop must always complete, so a divergence at shutdown time is accepted as data loss (the
    *  pending local mutation never got flushed) rather than silently swallowed with no trace — the
@@ -476,27 +492,23 @@ export function main(): void {
   function shutdown(code: number): void {
     if (shuttingDown) return;
     shuttingDown = true;
-    clearInterval(flushTimer);
-    clearInterval(stateFlushTimer);
+    for (const timer of flushTimers) clearInterval(timer);
     clearTimeout(idleTimer);
     server.close();
     httpServer.close();
     enqueue(() => {
-      // Same GC pass as `reloadStore`/`clobberFlush` (see `reloadStore`'s own comment) — shutdown
+      // Same sweeps as `reloadStore`/`clobberFlush` (see `reloadStore`'s own comment) — shutdown
       // is the other half of the "gone at next startup" boundary: whatever's pruned here is what
-      // the *next* service start rehydrates from, including after a plain idle-timeout exit with
-      // no other pending mutation at all (`pruned > 0` alone must still trigger a flush below, same
+      // the *next* service start loads, including after a plain idle-timeout exit with
+      // no other pending mutation at all (a sweep that removed something alone must still trigger a flush below, same
       // reasoning as `reloadStore`). Wrapped in its own try/catch for the same "a stop must always
-      // complete" reason the two flushes already are.
+      // complete" reason the flushes already are.
       try {
-        const { tombstoned } = tombstoneVacuousContainers(store);
-        const { pruned } = pruneUnreachableTombstones(store);
-        if (tombstoned > 0 || pruned > 0) { dirty = true; stateDirty = true; }
-        const { pruned: staleUnfolds } = pruneStaleUnfolds(store);
-        if (staleUnfolds > 0) stateDirty = true;
+        sweeps();
       } catch (err: any) { logService(`[ApeironNgn service] Shutdown: tombstone GC failed — ${err.message}`); }
-      try { flushIfDirty(); } catch (err: any) { logService(`[ApeironNgn service] Shutdown WARNING: content mirror flush refused — ${err.message}. Discarding un-flushed in-memory changes.`); }
-      try { flushStateIfDirty(); } catch (err: any) { logService(`[ApeironNgn service] Shutdown WARNING: .state mirror flush refused — ${err.message}. Discarding un-flushed in-memory state.`); }
+      for (const graph of store.graphs) {
+        try { flushGraph(graph); } catch (err: any) { logService(`[ApeironNgn service] Shutdown WARNING: ${graph} mirror flush refused — ${err.message}. Discarding un-flushed in-memory changes.`); }
+      }
     }).finally(() => {
       clearLock();
       process.exit(code);
@@ -508,19 +520,17 @@ export function main(): void {
       case 'ping':
         return { pong: true, codeFingerprint };
       case 'reload':
-        return reloadStore(req.discard);
+        return reloadStore(req.discard, req.startAnyway === true);
       case 'flush':
         if (req.clobber) return clobberFlush();
         else {
-          flushIfDirty();
-          flushStateIfDirty();
+          flushAll();
           return { clobbered: false };
         }
       case 'track': {
         if (req.reload) reloadStore();
         const result = runTrack(store, req.paths, req.force);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       case 'trackReverse':
@@ -529,8 +539,7 @@ export function main(): void {
       case 'ingest': {
         if (req.reload) reloadStore();
         const result = runIngest(store, req.paths, req.track, req.force);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       case 'unfold': {
@@ -541,39 +550,30 @@ export function main(): void {
         if (req.peek) return runUnfold(store, req.ref, null, req.showTombstoned);
         const view = resolveTreeView(store, req.viewRef);
         const result = runUnfold(store, req.ref, view, req.showTombstoned);
-        stateDirty = true;
         // `resolveTreeView`'s `ensureDefaultView` fallback may have just minted a first-use
-        // `Profile` as a side effect -- `Profile` lives in the content mirror now, not `.state/`
-        // (Aperas-treeview-design.md §8/§11), so only `dirty`'s own flush cadence would ever
-        // persist it. Harmless to set unconditionally: a no-op re-dehydrate when nothing new was
-        // actually minted, same as `dirty` already tolerates from every other mutating op here.
-        dirty = true;
-        if (req.flush) { flushStateIfDirty(); flushIfDirty(); }
+        // `Profile` as a side effect -- `Profile` lives in the main graph (Aperas-treeview-design.md
+        // §8/§11): the write layer marks the graph it was written in, so the flush finds it.
+        if (req.flush) flushAll();
         return result;
       }
       case 'fold': {
         if (req.reload) reloadStore();
         const view = resolveTreeView(store, req.viewRef);
         const result = runFold(store, req.ref, view);
-        stateDirty = true;
-        dirty = true; // see the matching comment in 'unfold' above
-        if (req.flush) { flushStateIfDirty(); flushIfDirty(); }
+        if (req.flush) flushAll();
         return result;
       }
       case 'zoom': {
         if (req.reload) reloadStore();
         const view = resolveTreeView(store, req.viewRef);
         const result = runZoom(store, req.ref, view);
-        stateDirty = true;
-        dirty = true; // see the matching comment in 'unfold' above
-        if (req.flush) { flushStateIfDirty(); flushIfDirty(); }
+        if (req.flush) flushAll();
         return result;
       }
       case 'resolve': {
         if (req.reload) reloadStore();
         const result = runResolve(store, req);
-        if (req.createHolder) dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       // The three write paths where a link resolved at write time has been seen not to persist
@@ -585,8 +585,7 @@ export function main(): void {
         const artifactId = artifactForRef(req.path, req.base);
         const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runInsert(store, req);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return withLinkCheck(result, artifactId, before);
       }
       case 'update': {
@@ -594,8 +593,7 @@ export function main(): void {
         const artifactId = artifactForRef(req.path, req.base);
         const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runUpdate(store, req);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return withLinkCheck(result, artifactId, before);
       }
       case 'remove': {
@@ -603,8 +601,7 @@ export function main(): void {
         const artifactId = artifactForRef(req.path, req.base);
         const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runRemove(store, req);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return withLinkCheck(result, artifactId, before);
       }
       // Same scoped link-integrity check every other mutating op gets: a retype rewrites `.type`/
@@ -615,15 +612,13 @@ export function main(): void {
         const artifactId = artifactForRef(req.path, req.base);
         const before = artifactId ? checkArtifactLinkIntegrity(store, artifactId) : null;
         const result = runRetype(store, req);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return withLinkCheck(result, artifactId, before);
       }
       case 'project': {
         if (req.reload) reloadStore();
         const result = runProject(store, req.path, req.dryRun, req.force);
-        if (!req.dryRun && !('conflict' in result)) dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       case 'tree':
@@ -641,8 +636,7 @@ export function main(): void {
       case 'profileCreate': {
         if (req.reload) reloadStore();
         const result = runProfileCreate(store, req.handle, req.name, req.kind);
-        dirty = true;
-        if (req.flush) flushIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       case 'profileList':
@@ -651,19 +645,15 @@ export function main(): void {
       case 'profileRemove': {
         if (req.reload) reloadStore();
         const result = runProfileRemove(store, req.handle);
-        if (result.removed) dirty = true; // the Profile itself -- content mirror
-        if (result.viewsRemoved > 0) stateDirty = true; // its cascade-deleted TreeViews -- state mirror
-        if (req.flush) { flushIfDirty(); flushStateIfDirty(); }
+        if (req.flush) flushAll();
         return result;
       }
       case 'profileCreateView': {
         if (req.reload) reloadStore();
         // A new TreeView only -- it never auto-creates its owning Profile the way `ensureDefaultView`
-        // does (`createTreeView` throws if `--profile` doesn't already resolve), so `stateDirty`
-        // alone is right here, unlike 'unfold'/'fold' above.
+        // does (`createTreeView` throws if `--profile` doesn't already resolve).
         const result = runProfileCreateView(store, req.name, req.profileHandle);
-        stateDirty = true;
-        if (req.flush) flushStateIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       case 'profileListView':
@@ -672,16 +662,14 @@ export function main(): void {
       case 'profileRemoveView': {
         if (req.reload) reloadStore();
         const result = runProfileRemoveView(store, req.name);
-        if (result.removed) stateDirty = true;
-        if (req.flush) flushStateIfDirty();
+        if (req.flush) flushAll();
         return result;
       }
       case 'checkLinks': {
         if (req.reload) reloadStore();
         if (req.repair) {
           const res = repairLinkIntegrity(store);
-          dirty = true;
-          if (req.flush) flushIfDirty();
+          if (req.flush) flushAll();
           return res;
         }
         return checkLinkIntegrity(store);
@@ -704,11 +692,9 @@ export function main(): void {
           const req = decodeMessage<ServiceRequest>(line);
           const result = await handle(req);
           resetIdleTimer();
-          // Attached regardless of `req.op` — see `contentConflict`/`stateConflict`'s own doc
+          // Attached regardless of `req.op` — see `standingConflict`'s own doc
           // comment for why this can't wait for a `flush`/`reload` call to surface it.
-          const conflict = (contentConflict || stateConflict)
-            ? { content: contentConflict ?? undefined, state: stateConflict ?? undefined }
-            : undefined;
+          const conflict = standingConflict();
           return {
             ok: true,
             result,

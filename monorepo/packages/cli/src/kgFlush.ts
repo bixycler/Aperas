@@ -36,17 +36,15 @@ export async function main(): Promise<void> {
   }
   const clobber = rawArgs.includes('--clobber');
   await ensureServiceRunning();
-  const { clobbered, prunedTombstones, tombstonedContainers, prunedUnfolds } = await request<{
+  const { clobbered, prunedTombstones, tombstonedContainers } = await request<{
     clobbered: boolean;
     prunedTombstones?: number;
     tombstonedContainers?: number;
-    prunedUnfolds?: number;
   }>({ op: 'flush', clobber });
 
   const gcParts: string[] = [];
   if (prunedTombstones) gcParts.push(`${prunedTombstones} unreachable tombstone(s) pruned`);
   if (tombstonedContainers) gcParts.push(`${tombstonedContainers} vacuous container(s) tombstoned`);
-  if (prunedUnfolds) gcParts.push(`${prunedUnfolds} stale unfold(s) cleared`);
 
   let note = '';
   if (clobbered) {

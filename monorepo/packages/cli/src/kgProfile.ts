@@ -23,6 +23,7 @@ import {
   type ApeironNode,
 } from '@aperas/core/shell/node';
 import { allIdsOfKind } from '@aperas/core/shell/db';
+import { compareIds } from '@aperas/core/apeironNgn/order';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
@@ -68,7 +69,9 @@ export function runProfileList(store: Db, handle?: string): { profiles: ProfileL
   const profile = findProfileByHandle(store, handle);
   if (!profile) throw new Error(`Profile '${handle}' not found.`);
   const views = backlinks(store, profile.id, 'profile') as unknown as TreeView[];
-  const preferences = ((profile.preferences as unknown as { key: string; value: string }[] | undefined) ?? [])
+  // The preferences and the unfolded ids are sets: listed by id (design/core.md, "Where an order shows").
+  const preferences = [...((profile.preferences as unknown as { id: string; key: string; value: string }[] | undefined) ?? [])]
+    .sort((a, b) => compareIds(a.id, b.id))
     .map(({ key, value }) => ({ key, value }));
   return {
     ...summarize(store, profile.id),
@@ -113,7 +116,7 @@ export function runProfileListView(store: Db, name?: string): { views: ViewLine[
   }
   const view = findTreeViewByName(store, name);
   if (!view) throw new Error(`TreeView '${name}' not found.`);
-  const unfolds = ((view.unfolds as unknown as ApeironNode[] | undefined) ?? []).map((n) => n.id);
+  const unfolds = ((view.unfolds as unknown as ApeironNode[] | undefined) ?? []).map((n) => n.id).sort(compareIds);
   return { ...summarizeView(store, view.id), unfolds };
 }
 

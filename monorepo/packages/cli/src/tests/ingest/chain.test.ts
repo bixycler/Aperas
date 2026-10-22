@@ -14,7 +14,6 @@ import { getArtifactsDir } from '@aperas/core/artifacts';
 import { getProps } from '@aperas/core/props';
 import { trackArtifact, ingestArtifact } from '@aperas/core/shell/artifacts';
 import { ingestFolderTree } from '@aperas/core/shell/folders';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { wrap, type ArtifactNode, type BlockNode } from '@aperas/core/shell/node';
 import { makeFixtureStore, type FixtureStore } from '../support/fixture.ts';
 import { sampleMarkdown } from '../support/sampleMarkdown.ts';
@@ -69,7 +68,7 @@ describe('ingestion chain', () => {
   });
 
   test('4: the ingested tree reads back through wrap()', () => {
-    demoId = findByExactPath(fx.store, artifactPath) ?? '';
+    demoId = fx.store.maps.liveAtPath(artifactPath) ?? '';
     assert.ok(demoId, 'an ArtifactNode exists for the demo artifact after ingestion');
     const artifactNode = wrap(fx.store, demoId) as unknown as ArtifactNode;
     assert.notEqual(artifactNode.ingestedHash, undefined, 'the ArtifactNode has ingested content');

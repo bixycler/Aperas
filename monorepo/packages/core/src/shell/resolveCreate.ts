@@ -36,7 +36,6 @@
 import { nodeExists, type Db } from './db';
 import { wrap, createNode } from './node';
 import type { TreeNode, BlockNode, ArtifactNode, FolderNode } from './node';
-import { findByExactPath } from './tree';
 import { tokenize, pathToNameTokens, type Token } from '../nodeRef';
 import { generateNodeId } from '../snowflake';
 
@@ -94,7 +93,7 @@ function hasLaterMdSegment(tokens: Token[], fromIndex: number): boolean {
  *  `descend` itself now probes/creates every tier (folder/file/heading) uniformly (Aperas-crud-
  *  design.md §8), so there's nothing left for this function to do beyond finding the root. */
 function resolveTokens(store: Db, tokens: Token[], opts: CreateOpts, trace: ResolveTraceEntry[]): string | null {
-  const rootId = findByExactPath(store, '.');
+  const rootId = store.maps.liveAtPath('.');
   if (!rootId) return null;
   return descend(store, rootId, tokens, opts, trace);
 }

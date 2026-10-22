@@ -9,7 +9,11 @@
 //   - `tombstoneSubtree` collects the ids of the subtree before the write, because the write takes each member out of the lists that held it and empties
 //     its own, and tells the maps by id after it. The walk is the engine's: containment inside the graph, a member of another graph (the root folder lists
 //     the threads folder) is not in the subtree and is not told, since the engine did not tombstone it.
-//   - Nothing here reads a map and nothing here is imported yet: the shell still runs on the old code until the flip.
+//   - Each function that changes the engine tells `touch` which graphs it changed, after the engine took the write and before the maps are told, so the service
+//     flushes a graph that was written and none other (planning/core.md, Batch 11 step 8). A write of a graph touches that graph; a list splice also touches the graph
+//     of the item, whose document states its container (`parent`); a tombstone, a removal and a sweep that removed something touch every graph, because they leave
+//     the lists and the `unfolds` of the other graphs too (design/core.md, "Reads and rules across graphs"). `undefined` means every graph.
+//   - Nothing here reads a map.
 import type { Engine, GraphName, Id, Value } from '@aperas/core/apeironNgn/interface';
 import { graphOfNewNode, type NewNode } from './graphOfPath';
 import type { Lookups } from './lookups';
@@ -57,45 +61,72 @@ function subtreeIds(engine: Engine, graph: GraphName, id: Id): Id[] {
   return members;
 }
 
-/** The write layer over an engine and its maps. */
-export function createWriteLayer(engine: Engine, maps: Lookups): WriteLayer {
+/** Which graphs a write changed: one graph, or `undefined` for every graph. */
+export type Touch = (graph: GraphName | undefined) => void;
+
+/** The write layer over an engine and its maps; `touch` is told the graphs each write changed. */
+export function createWriteLayer(engine: Engine, maps: Lookups, touch: Touch = () => {}): WriteLayer {
+  /** The graph of an item whose document states its container; a ghost, which no graph holds, changes no file. */
+  const touchItem = (item: Id): void => {
+    const graph = engine.graphOf(item);
+    if (graph !== undefined) touch(graph);
+  };
   return {
     createNode(id, node) {
       const graph = graphOfNewNode(engine, node);
       engine.createNode(graph, id, node.kind);
+      touch(graph);
       maps.built(graph, id);
       return graph;
     },
     addPair(graph, subject, field, value) {
       engine.addPair(graph, subject, field, value);
+      touch(graph);
       maps.fieldWritten(graph, subject, field);
     },
     clearField(graph, subject, field) {
       engine.clearField(graph, subject, field);
+      touch(graph);
       maps.fieldWritten(graph, subject, field);
     },
     removePair(graph, subject, field, value) {
       engine.removePair(graph, subject, field, value);
+      touch(graph);
       maps.fieldWritten(graph, subject, field);
     },
-    insertItem: (graph, host, field, item, at) => engine.insertItem(graph, host, field, item, at),
-    moveItem: (graph, host, field, item, to) => engine.moveItem(graph, host, field, item, to),
-    removeItem: (graph, host, field, item) => engine.removeItem(graph, host, field, item),
+    insertItem(graph, host, field, item, at) {
+      engine.insertItem(graph, host, field, item, at);
+      touch(graph);
+      touchItem(item);
+    },
+    moveItem(graph, host, field, item, to) {
+      engine.moveItem(graph, host, field, item, to);
+      touch(graph);
+    },
+    removeItem(graph, host, field, item) {
+      engine.removeItem(graph, host, field, item);
+      touch(graph);
+      touchItem(item);
+    },
     tombstone(graph, id, at) {
       engine.tombstone(graph, id, at);
+      touch(undefined);
       maps.tombstoned(graph, id);
     },
     tombstoneSubtree(graph, id, at) {
       const members = subtreeIds(engine, graph, id);
       engine.tombstoneSubtree(graph, id, at);
+      touch(undefined);
       for (const member of members) maps.tombstoned(graph, member);
     },
     removeNode(graph, id) {
       engine.removeNode(graph, id);
+      touch(undefined);
       maps.removed(graph, id);
     },
     sweep(graph) {
       const ids = engine.sweep(graph);
+      if (ids.length > 0) touch(undefined);
       maps.swept(graph, ids);
       return ids;
     },

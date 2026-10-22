@@ -6,7 +6,6 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateNodeId } from '@aperas/core/snowflake';
-import { findByExactPath } from '@aperas/core/shell/tree';
 import { createNode } from '@aperas/core/shell/node';
 import { runPath } from '../../kgPath';
 import { runResolve } from '../../kgResolve';
@@ -145,8 +144,8 @@ describe('path commands', () => {
 
     test('refused: a path that resolves to nothing, and a link, which has no path of its own', () => {
       refuses(() => runPath(fx.store, 'cmd_demo/nothing.md'), NOT_TRACKED);
-      // The message the code means (`has no walkable parent chain`) is not what it says today: a Link has no `toPath`, so the call fails with a TypeError. Any refusal passes.
-      assert.throws(() => runPath(fx.store, c.alphaLinkToBeta), Error);
+      // A Link has no `toPath`: the refusal is its own, and not the TypeError of calling a function a Link does not have.
+      assert.throws(() => runPath(fx.store, c.alphaLinkToBeta), (e: unknown) => e instanceof Error && !(e instanceof TypeError) && e.message === `'${c.alphaLinkToBeta}' is a Link, which has no path: only a tracked artifact, folder or block does.`);
     });
   });
 
@@ -184,7 +183,7 @@ describe('path commands', () => {
           node.path = path;
           if (id === dead) node.tombstonedAt = AT;
         }
-        const found = findByExactPath(fx.store, path);
+        const found = fx.store.maps.liveAtPath(path);
         answers[order] = found === live ? 'live' : found === dead ? 'dead' : String(found);
       }
       assert.deepEqual(answers, { 'live first': 'live', 'dead first': 'live' }, 'the live node is the answer under both orders');

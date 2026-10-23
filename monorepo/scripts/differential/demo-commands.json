@@ -1,0 +1,5 @@
+[
+  {"name": "track", "args": ["track", "cmd_demo/beta.md", "cmd_demo/dup.md", "cmd_demo/gamma.md"], "status": 0},
+  {"name": "ingest", "args": ["ingest", "cmd_demo/beta.md", "cmd_demo/dup.md", "cmd_demo/gamma.md"], "status": 0},
+  {"name": "tree", "args": ["tree", "cmd_demo/beta.md"], "status": 0}
+]

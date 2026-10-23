@@ -14,6 +14,7 @@ import { resolve } from 'node:path';
 const STARTING_GRACE_MS = 10_000;
 
 export interface LockInfo {
+  /** The service's own process once it is `ready`. While the lock is `starting` it is the process that claimed it, then (`recordStartingPid`) the process spawned to start the service: a waiter tells a service still starting from one that died by whether this pid lives. */
   pid: number;
   socketPath: string;
   startedAt: string;
@@ -100,6 +101,13 @@ export function claimLock(apeironRoot: string, artifactsRoot: string, httpPort: 
   writeSync(fd, JSON.stringify(info));
   closeSync(fd);
   return 'claimed';
+}
+
+/** Replaces the pid of a lock that is still `starting` with the pid of the process just spawned for it. The claiming process is a short-lived CLI that may end while the service goes on starting, so only the spawned process says whether the start is alive. */
+export function recordStartingPid(pid: number): void {
+  const lock = readLock();
+  if (lock === null || lock.status !== 'starting') return;
+  writeFileSync(getLockPath(), JSON.stringify({ ...lock, pid }));
 }
 
 /** Called by the service itself once its socket is actually listening — overwrites the lock with

@@ -1,7 +1,7 @@
 /**
  * ApeironNgn shared service client (Aperas-apeironngn-design.md §4 rollout step 5) — every
  * `kg:xxx` script uses this instead of loading and dumping the mirror itself.
- * `ensureServiceRunning` errors with instructions rather than auto-starting one (AperasKG/
+ * `ensureServiceRunning` errors with instructions rather than auto-starting one (it waits for a service that is still starting, as a start does) (AperasKG/
  * artifacts/discussion/packaging.md's "Settled: no concurrency..." note: an implicit auto-spawn
  * meant whichever command happened to run first silently decided which graph the service bound to
  * for its whole lifetime — `aperas service start`/`restart` (`kgService.ts`) is now the only place
@@ -15,14 +15,23 @@ import { connect } from 'node:net';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getSocketPath, getRunDir, readLock } from './serviceLock';
+import { getSocketPath, getRunDir, readLock, isProcessAlive, type LockInfo } from './serviceLock';
 import { encodeMessage, decodeMessage, CONFLICT_RESOLUTION_HINT, START_ANYWAY_ENV, type ServiceRequest, type ServiceResponse } from './serviceProtocol';
 import { computeCodeFingerprint } from './codeVersion';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PING_TIMEOUT_MS = 300;
-const READY_TIMEOUT_MS = 5_000;
+/** How long a start waits for the lock to say `ready` when `APERAS_READY_TIMEOUT_MS` does not say: a service on a large mirror, or on a loaded machine, takes far longer than a few seconds, and a wait that gives up first reports a failure of a start that is going well. */
+export const DEFAULT_READY_TIMEOUT_MS = 180_000;
+/** How often the wait says that the service is still starting. */
+const STILL_STARTING_NOTE_MS = 10_000;
 const READY_POLL_MS = 100;
+
+/** The wait of a start, in milliseconds: `APERAS_READY_TIMEOUT_MS` when it is a positive number, else the default. */
+export function readyTimeoutMs(): number {
+  const n = Number(process.env.APERAS_READY_TIMEOUT_MS);
+  return process.env.APERAS_READY_TIMEOUT_MS?.trim() && Number.isFinite(n) && n > 0 ? n : DEFAULT_READY_TIMEOUT_MS;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -101,19 +110,41 @@ function refusalSince(since: number): string | undefined {
   return undefined;
 }
 
-/** Waits for the service to answer. A service that refuses to start clears the lock the caller claimed and exits: the wait ends at once and says why from the log. */
-export async function waitForReady(): Promise<void> {
+/** The reason a service that ended without becoming ready gave, from the log, or the plain fact. */
+function endedWithoutReady(startedAt: number, what: string): Error {
+  const why = refusalSince(startedAt - 1000);
+  return new Error(why ? `ApeironNgn service ${why}` : `ApeironNgn service ${what} (see service.log in the run directory)`);
+}
+
+/**
+ * Waits for the service to answer, for `APERAS_READY_TIMEOUT_MS` (default 180 s) at most. While the process the lock names lives and the lock does not yet say `ready`, the service
+ * is still starting, and the wait says so on stderr every ten seconds; a start fails with a message of its own only when that process died (a service that refuses to start clears
+ * the lock the caller claimed and exits: the wait ends at once and says why from the log) or when the time is out, and a time out leaves the service running.
+ */
+export async function waitForReady(options: { timeoutMs?: number; noteEveryMs?: number } = {}): Promise<void> {
   const startedAt = Date.now();
-  const deadline = startedAt + READY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  const timeoutMs = options.timeoutMs ?? readyTimeoutMs();
+  const noteEveryMs = options.noteEveryMs ?? STILL_STARTING_NOTE_MS;
+  const deadline = startedAt + timeoutMs;
+  let nextNote = startedAt + noteEveryMs;
+  let last: LockInfo | null = null;
+  for (;;) {
     if (await ping()) return;
-    if (readLock() === null) {
-      const why = refusalSince(startedAt - 1000);
-      throw new Error(why ? `ApeironNgn service ${why}` : 'ApeironNgn service ended without becoming ready (see service.log in the run directory)');
+    last = readLock();
+    if (last === null) throw endedWithoutReady(startedAt, 'ended without becoming ready');
+    if (!isProcessAlive(last.pid)) {
+      // a refusal clears the lock and then ends the process: the lock read now is the later word
+      throw endedWithoutReady(startedAt, readLock() === null ? 'ended without becoming ready' : `process ${last.pid} died before it was ready`);
+    }
+    const now = Date.now();
+    if (now >= deadline) break;
+    if (now >= nextNote) {
+      console.error(`[aperas service] Still starting (process ${last.pid}, ${Math.round((now - startedAt) / 1000)} s)...`);
+      nextNote += noteEveryMs;
     }
     await sleep(READY_POLL_MS);
   }
-  throw new Error('ApeironNgn service did not become ready in time');
+  throw new Error(`ApeironNgn service did not become ready in time: it is still ${last.status === 'starting' ? 'starting' : 'not answering'} after ${Math.round(timeoutMs / 1000 * 10) / 10} s (process ${last.pid} lives, the lock says "${last.status}"). It is left running; try again once it is up, see service.log in the run directory, or set APERAS_READY_TIMEOUT_MS (milliseconds) for a longer wait.`);
 }
 
 /** Spawns the actual long-lived service process, bound to `apeironRoot`/`artifactsRoot` for its
@@ -131,7 +162,7 @@ export async function waitForReady(): Promise<void> {
  *    bundle itself — it's the only entrypoint that exists once built) with plain `node` and the
  *    hidden `--__service` flag `aperas.ts`'s own `main()` checks for first, before normal verb
  *    dispatch. */
-export function spawnService(apeironRoot: string, artifactsRoot: string, httpPort: number, graphName?: string, startAnyway = false): void {
+export function spawnService(apeironRoot: string, artifactsRoot: string, httpPort: number, graphName?: string, startAnyway = false): number | undefined {
   const env = {
     ...process.env,
     APERAS_APEIRON_ROOT: apeironRoot,
@@ -150,7 +181,7 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
     const tsxBin = resolve(rootDir, 'node_modules', '.bin', 'tsx');
     const child = spawn(tsxBin, [serviceEntry], { cwd: rootDir, detached: true, stdio: 'ignore', env });
     child.unref();
-    return;
+    return child.pid;
   }
 
   const bundlePath = process.argv[1]!;
@@ -161,6 +192,7 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
     env,
   });
   child.unref();
+  return child.pid;
 }
 
 /** Checks whether a service is already listening — never starts one. `aperas service start` is
@@ -168,6 +200,11 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
  *  concurrency..." note); every ordinary `kg:xxx` command just needs to know it can proceed. */
 export async function ensureServiceRunning(): Promise<void> {
   if (await ping()) return;
+  const lock = readLock();
+  if (lock?.status === 'starting' && isProcessAlive(lock.pid)) { // a service on its way up: wait for it, as a start does
+    await waitForReady();
+    return;
+  }
   throw new Error('No ApeironNgn service running. Start one with: aperas service start');
 }
 

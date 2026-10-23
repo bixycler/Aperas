@@ -1,6 +1,6 @@
-// The real suites against the real test files: every test file outside `corpus/` is in exactly one of `commit`, `models`
-// and `tools`; the corpus files are in none of the three and only in `demand`; `essential` is inside `commit`; `demand`
-// lists the three and the corpus files. Reads the suites through the runner's `--list`; runs no test.
+// The real suites against the real test files: every test file outside `corpus/` is in exactly one of `commit`, `models`,
+// `tools` and `differential`; the corpus files are in none of the four and only in `demand`; `essential` is inside `commit`; `demand`
+// lists the four and the corpus files. Reads the suites through the runner's `--list`; runs no test.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, statSync } from 'node:fs';
@@ -34,33 +34,34 @@ describe('suites', () => {
   const commit = listed('commit');
   const models = listed('models');
   const tools = listed('tools');
+  const differential = listed('differential');
   const demand = listed('demand');
   const essential = listed('essential');
   const disk = onDisk();
   const corpus = disk.filter((f) => f.startsWith('corpus/'));
 
-  test('every test file outside the corpus is in exactly one of commit, models and tools', () => {
+  test('every test file outside the corpus is in exactly one of commit, models, tools and differential', () => {
     for (const f of disk.filter((f) => !f.startsWith('corpus/'))) {
-      const homes = [['commit', commit], ['models', models], ['tools', tools]].filter(([, list]) => (list as string[]).includes(f)).map(([n]) => n);
-      assert.equal(homes.length, 1, `${f} is in ${homes.length === 0 ? 'none of commit, models and tools' : homes.join(' and ')}`);
+      const homes = [['commit', commit], ['models', models], ['tools', tools], ['differential', differential]].filter(([, list]) => (list as string[]).includes(f)).map(([n]) => n);
+      assert.equal(homes.length, 1, `${f} is in ${homes.length === 0 ? 'none of commit, models, tools and differential' : homes.join(' and ')}`);
     }
   });
 
-  test('the corpus files are in none of commit, models and tools, and every one is in demand', () => {
+  test('the corpus files are in none of commit, models, tools and differential, and every one is in demand', () => {
     assert.ok(corpus.length > 0);
     for (const f of corpus) {
-      for (const [name, list] of [['commit', commit], ['models', models], ['tools', tools]] as const) assert.ok(!list.includes(f), `${f} is in ${name}`);
+      for (const [name, list] of [['commit', commit], ['models', models], ['tools', tools], ['differential', differential]] as const) assert.ok(!list.includes(f), `${f} is in ${name}`);
       assert.ok(demand.includes(f), `${f} is not in demand`);
     }
   });
 
   test('no suite names a file that is not on disk, and essential is inside commit', () => {
     const all = new Set(disk);
-    for (const f of [...commit, ...models, ...tools, ...demand, ...essential]) assert.ok(all.has(f), `${f} is not a test file on disk`);
+    for (const f of [...commit, ...models, ...tools, ...differential, ...demand, ...essential]) assert.ok(all.has(f), `${f} is not a test file on disk`);
     for (const f of essential) assert.ok(commit.includes(f), `${f} is in essential and not in commit`);
   });
 
-  test('demand is exactly the three suites and the corpus files', () => {
-    assert.deepEqual([...demand].sort(), [...new Set([...commit, ...models, ...tools, ...corpus])].sort());
+  test('demand is exactly the four suites and the corpus files', () => {
+    assert.deepEqual([...demand].sort(), [...new Set([...commit, ...models, ...tools, ...differential, ...corpus])].sort());
   });
 });

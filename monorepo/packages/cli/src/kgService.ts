@@ -12,7 +12,7 @@
  * did as its own first half, just without the respawn after.
  */
 
-import { readLock, isProcessAlive, clearLock, claimLock, resolveHttpPort } from './service/serviceLock';
+import { readLock, isProcessAlive, clearLock, claimLock, recordStartingPid, resolveHttpPort } from './service/serviceLock';
 import { ping, spawnService, waitForReady } from './service/serviceClient';
 import { resolveEffectiveApeironRoot, resolveEffectiveArtifactsRoot, resolveEffectiveGraphName } from '@aperas/core/graphConfig';
 import { wantsHelp, printHelp } from './kgHelp';
@@ -38,7 +38,8 @@ async function bindAndSpawn(startAnyway: boolean): Promise<{ apeironRoot: string
   if (claimLock(apeironRoot, artifactsRoot, httpPort) !== 'claimed') {
     throw new Error('Another `aperas service start`/`restart` appears to be in progress — try again shortly.');
   }
-  spawnService(apeironRoot, artifactsRoot, httpPort, graphName, startAnyway);
+  const pid = spawnService(apeironRoot, artifactsRoot, httpPort, graphName, startAnyway);
+  if (pid !== undefined) recordStartingPid(pid);
   await waitForReady();
   return { apeironRoot, artifactsRoot };
 }
@@ -52,6 +53,13 @@ export async function runStart(options: { startAnyway?: boolean } = {}): Promise
     return;
   }
   const lock = readLock();
+  if (lock?.status === 'starting' && isProcessAlive(lock.pid)) { // another start is under way: join its wait rather than clear its lock and start a second service
+    console.log(`[aperas service] Already starting (pid ${lock.pid}) — waiting for it.`);
+    await waitForReady();
+    const ready = readLock();
+    console.log(`[aperas service] Started — bound to ${ready ? describeBinding(ready.apeironRoot, ready.artifactsRoot) : describeBinding(lock.apeironRoot, lock.artifactsRoot)}.`);
+    return;
+  }
   if (lock) clearLock(); // not actually answering — a stale leftover from a crash, not a live claim
   const { apeironRoot, artifactsRoot } = await bindAndSpawn(options.startAnyway === true);
   console.log(`[aperas service] Started — bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);

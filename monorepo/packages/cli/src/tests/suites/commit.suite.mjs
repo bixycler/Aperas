@@ -1,5 +1,5 @@
 // Run before a commit: `essential` and every other fast test file that runs on a tiny store. The seeded model files
-// are in `models` and the runner's own test is in `tools`; every test file outside the corpus is in exactly one of the three.
+// are in `models`; the runner's own test and the rehearsal of the cutover are in `tools`; the tests of the differential run (`differential/`), which run Python, are in `differential`; every test file outside the corpus is in exactly one of the four.
 import { defineSuite } from '../support/suite.mjs';
 
 export default defineSuite(import.meta.url, [
@@ -53,5 +53,6 @@ export default defineSuite(import.meta.url, [
   '../service/flush.test.ts',
   '../service/ops.test.ts',
   '../service/refusal.test.ts',
+  '../service/startWait.test.ts',
   '../runner/suites.test.ts',
 ], 60);

@@ -68,12 +68,27 @@ export interface Opened {
   readonly duplicates: readonly Duplicate[];
 }
 
-/** The refusal a load that did not read the mirror in full deserves, naming the files and ids; nothing when it read every document. A flush after such a load would write each file whole and remove what was skipped. */
-export function loadRefusal(load: LoadResult): string | undefined {
+/** How many ids a refusal printed on a terminal names: the rest is counted, and the full list goes to the log. */
+export const REFUSAL_SHOWN_IDS = 20;
+
+/**
+ * The refusal a load that did not read the mirror in full deserves, naming the files and ids; nothing when it read every document. A flush after such a load would write each file whole and remove what was skipped.
+ * With `limit`, the text names at most that many ids in all (the duplicated ones first, then the ones the engine refused) and says how many are left out, and `fullListIn` (where the full text is written) is named in it;
+ * without it, every id is named, for the log.
+ */
+export function loadRefusal(load: LoadResult, options: { limit?: number; fullListIn?: string } = {}): string | undefined {
+  const total = load.rejected.length + load.errors.length;
+  if (total === 0) return undefined;
+  const limit = options.limit ?? Infinity;
+  const rejected = load.rejected.slice(0, limit);
+  const errors = load.errors.slice(0, Math.max(0, limit - rejected.length));
   const parts: string[] = [];
-  if (load.rejected.length > 0) parts.push(`${load.rejected.length} id(s) carried by more than one document, none kept: ${load.rejected.map((r) => `${r.id} (${r.files.join(', ')})`).join('; ')}`);
-  if (load.errors.length > 0) parts.push(`${load.errors.length} document(s) the engine refused: ${load.errors.map((e) => `${e.subject} (${e.class}: ${e.message})`).join('; ')}`);
-  return parts.length > 0 ? `the mirror was not read in full — ${parts.join(' — ')}` : undefined;
+  if (load.rejected.length > 0) parts.push(`${load.rejected.length} id(s) carried by more than one document, none kept: ${rejected.map((r) => `${r.id} (${r.files.join(', ')})`).join('; ')}`);
+  if (load.errors.length > 0 && errors.length > 0) parts.push(`${load.errors.length} document(s) the engine refused: ${errors.map((e) => `${e.subject} (${e.class}: ${e.message})`).join('; ')}`);
+  else if (load.errors.length > 0) parts.push(`${load.errors.length} document(s) the engine refused (not listed here)`);
+  const shown = rejected.length + errors.length;
+  const left = shown < total ? ` — ${shown} of ${total} named, ${total - shown} more not shown${options.fullListIn ? `; the full list is in ${options.fullListIn}` : ''}` : '';
+  return `the mirror was not read in full — ${parts.join(' — ')}${left}`;
 }
 
 const warningOfDuplicate = (d: Duplicate): string => `the ${d.map} ${JSON.stringify(d.key)} is held by ${d.ids.length} live nodes (${d.ids.join(', ')}): a lookup answers the first`;

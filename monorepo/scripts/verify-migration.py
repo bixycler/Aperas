@@ -4,22 +4,22 @@
 One-time tool of the cutover to the new engine, with `migrate-mirror.py`, which must sit in the same
 directory (the verifier loads it for the rules' constants). Python 3, standard library and `git` only.
 
-  python3 monorepo/scripts/verify-migration.py <clone dir> [--rules 123456]
+  python3 monorepo/scripts/verify-migration.py <clone dir> [--rules 1256]
 
 <clone dir> is a git clone of the graph (the argument is required and has no default, so the verifier
 never reads the real graph unless it is named) whose HEAD is the baseline commit, committed before the
 migration, and whose working tree is the migrated mirror: run `migrate-mirror.py <clone dir>` on it first.
-`--rules` names the rules that the migration was run with (default all six; see `migrate-mirror.py` and
-`planning/core.md`, Batch 9, step 6).
+`--rules` names the rules that the migration was run with (default 1256, the general rules, as in `migrate-mirror.py`; 123456 for this project's own graph; see
+`migrate-mirror.py` and `planning/core.md`, Batch 9, step 6).
 
 Reads: `Apeiron/*.jsonld` and `Apeiron/.state/*.jsonld` of the clone, before = `git show HEAD:<file>`,
 after = the working tree; both directories are read together. Writes nothing in the clone and nothing
-anywhere but the terminal. Every difference is classified as one of the six rules'; anything else is
+anywhere but the terminal. Every difference is classified as one of the rules' that were run; anything else is
 listed as UNEXPECTED, and so is a migrated clone that still holds an `unfolds` entry whose target is not defined (rule 5) or
 an ArtifactNode that holds a `type` (rule 6). Also prints the conformity checks of the migrated state and five samples of each
 kind of change, then ends with the exit status: 0 for a clean check (`UNEXPECTED differences: 0`), 1 when
 unexpected differences are listed, 2 for a usage error or a stop condition: with no argument, or with an
-argument that is not a graph root (a directory holding `Apeiron/`), the verifier prints this text on stderr,
+argument that is not a graph root (a directory holding `Apeiron/`; an argument that starts with `-`, `--help` among them, is never one), the verifier prints this text on stderr,
 reads nothing and exits with status 2; so does a `--rules` with no value or with a value that is not a list
 of rule numbers 1 to 6 (a usage message on stderr, nothing read); it has no other stop condition. Read the conformity counts as well:
 they do not change the status. Any other failure (an unreadable file, a `git` error) still ends in a Python
@@ -32,15 +32,18 @@ import subprocess
 import sys
 import collections
 
-if len(sys.argv) < 2 or not os.path.isdir(os.path.join(sys.argv[1], "Apeiron")):
+if len(sys.argv) < 2:
     print(__doc__, file=sys.stderr)
+    sys.exit(2)
+if sys.argv[1].startswith("-") or not os.path.isdir(os.path.join(sys.argv[1], "Apeiron")):
+    print("usage error: the first argument must be a graph root, a directory that holds Apeiron/; got %r; nothing was read\nusage: verify-migration.py <clone dir> [--rules 1..6]" % sys.argv[1], file=sys.stderr)
     sys.exit(2)
 
 if "--rules" in sys.argv:
     _k = sys.argv.index("--rules")
     _v = sys.argv[_k + 1] if _k + 1 < len(sys.argv) else ""
     if not _v or any(c not in "123456" for c in _v):
-        print("usage error: --rules takes a list of rule numbers 1 to 6, e.g. --rules 3 or --rules 12; nothing was read", file=sys.stderr)
+        print("usage error: --rules takes a list of rule numbers 1 to 6, e.g. --rules 3 or --rules 12; nothing was read\nusage: verify-migration.py <clone dir> [--rules 1..6]", file=sys.stderr)
         sys.exit(2)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,7 +54,7 @@ spec.loader.exec_module(mm)
 DELETE_SET = mm.DELETE_SET
 
 clone = sys.argv[1]
-rules = sys.argv[sys.argv.index("--rules") + 1] if "--rules" in sys.argv else "123456"
+rules = sys.argv[sys.argv.index("--rules") + 1] if "--rules" in sys.argv else mm.DEFAULT_RULES
 rels = [os.path.relpath(f, clone) for f in sorted(glob.glob(clone + "/Apeiron/*.jsonld")) + sorted(glob.glob(clone + "/Apeiron/.state/*.jsonld"))]
 
 
@@ -222,7 +225,9 @@ print("  parentless live documents: %d %s" % (len(parentless), dict(byt)))
 print("   FolderNode:", [i for i in parentless if i.startswith("FolderNode")], " ArtifactNode:", [i for i in parentless if i.startswith("ArtifactNode")])
 print("   READMEs among them:", [i for i in parentless if i in DELETE_SET])
 print("   README.md artifacts still defined:", [i for i, d in A.items() if d["@type"] == "ArtifactNode" and d.get("path", "").endswith("README.md")])
-print("   dinhlx:", A[mm.DINHLX], " default:", A["Profile:00CA03JXD8000"])
+for _profile in (mm.DINHLX, "Profile:00CA03JXD8000"):   # this project's own two profiles, when the graph has them
+    if _profile in A:
+        print("   %s:" % _profile, A[_profile])
 
 print("\nsamples (up to five each)")
 for c in sorted(kinds):

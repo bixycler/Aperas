@@ -58,7 +58,7 @@ export function makeCorpusCopy(): CorpusCopy {
     assertNotRealMirror(apeironRoot);
     assertNotRealMirror(artifactsRoot);
     cpSync(sourceApeironRoot, apeironRoot, { recursive: true, dereference: true });
-    const migrated = spawnSync('python3', [MIGRATE, root], { encoding: 'utf8' });
+    const migrated = spawnSync('python3', [MIGRATE, root, '--rules', '123456'], { encoding: 'utf8' });
     if (migrated.status !== 0) throw new Error(`migrate-mirror.py exited ${migrated.status}: ${migrated.stdout}${migrated.stderr}`);
     mkdirSync(artifactsRoot, { recursive: true });
     process.env.APERAS_APEIRON_ROOT = apeironRoot;

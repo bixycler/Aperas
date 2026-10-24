@@ -39,7 +39,7 @@ describe('corpus: the new load and dump on a migrated copy of the real mirror', 
 
   test('the copy is migrated by the six rules, and a second run changes nothing', () => {
     const run = (): string => {
-      const r = spawnSync('python3', [MIGRATE, root], { encoding: 'utf8' });
+      const r = spawnSync('python3', [MIGRATE, root, '--rules', '123456'], { encoding: 'utf8' });
       assert.equal(r.status, 0, `migrate-mirror.py exited ${r.status}: ${r.stdout}${r.stderr}`);
       return r.stdout;
     };

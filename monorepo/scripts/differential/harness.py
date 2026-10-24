@@ -18,7 +18,8 @@ environment, in the side's graph root, with stdin closed unless the command give
 and `--no-prompt` added where the verb has them), records for each the exit status, stdout and stderr, ends with `flush` on each,
 copies both dumps (`<dir>/dumps/<side>/Apeiron`), and stops its own services by the pid of each one's own lock, after checking
 that the pid is that service (its command line holds the side's code root, its environment the side's roots and run directory, and
-it is not a pid a working service's lock names). It never signals any other process. Nothing is compared: the normaliser and the comparer are piece 3.
+it is not a pid a working service's lock names). It never signals any other process. The `untouched` of `results["working"]` means that no pid a working service's lock named was
+signalled by the harness (`World.signal` records every signal sent by pid); it does not say the working service is still alive, which an idle stop of its own can end during a run. Nothing is compared: the normaliser and the comparer are piece 3.
 
 The list of commands is a JSON list of objects: `{"name": "...", "args": ["verb", ...], "stdin": "text" (optional, piped; without it
 the command reads /dev/null), "timeout": S (optional), "status": N (optional: the exit status each side must give; a command that does
@@ -140,6 +141,19 @@ class World:
         self.out = out
         self.working_run_dirs = list(default_working_run_dirs() if working_run_dirs is None else working_run_dirs)
         self.real_graph = real_graph
+        self.signalled = set()   # every pid the harness has sent a signal to by its pid (not the groups of its own children), recorded before the signal is sent
+
+    def signal(self, pid, sig):
+        """The only way the harness signals a service by its pid: refuses a pid a working service's lock names, records the pid, then sends the signal."""
+        if pid in self.pids():
+            raise Refusal("refusing to signal pid %d: a working service's lock names it" % pid)
+        self.signalled.add(pid)
+        os.kill(pid, sig)
+
+    def untouched(self, pids_at_start):
+        """The verdict on the working service: True while no pid a working lock named (at the start or now) was signalled by the harness. It says nothing about whether those
+        pids are alive at the end: a working service that stopped by its own idle timer during the run leaves it True."""
+        return not (self.signalled & (set(pids_at_start) | self.pids()))
 
     def locks(self):
         return [lk for lk in (lock_of(d) for d in self.working_run_dirs) if isinstance(lk, dict)]
@@ -544,7 +558,7 @@ def stop_side(side, world, timeout):
         except Refusal as e:
             info["unverified"].append(str(e))
     for pid in ours:
-        os.kill(pid, signal.SIGTERM)
+        world.signal(pid, signal.SIGTERM)
         info["signal"] = "SIGTERM"
     deadline = time.time() + timeout
     while time.time() < deadline and any(is_alive(pid) for pid in ours):
@@ -552,7 +566,7 @@ def stop_side(side, world, timeout):
     for pid in ours:
         if is_alive(pid):
             verify_ours(side, pid, world)
-            os.kill(pid, signal.SIGKILL)
+            world.signal(pid, signal.SIGKILL)
             info["signal"] = "SIGKILL"
     deadline = time.time() + 15
     while time.time() < deadline and processes_with_env(side.needles()):
@@ -856,7 +870,7 @@ def run(args):
                 if manifest(getattr(side, side_dir)) != wanted:
                     raise Failure("the copy of %s/ for the side %s is not the snapshot's" % (sub, side.name))
         results["copies"] = {"ref": digest_of(manifest(sides[0].apeiron)), "new": digest_of(manifest(sides[1].apeiron))}
-        r = subprocess.run([sys.executable, os.path.join(args.tools, "migrate-mirror.py"), sides[1].root], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"})
+        r = subprocess.run([sys.executable, os.path.join(args.tools, "migrate-mirror.py"), sides[1].root, "--rules", "123456"], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"})
         results["migration"] = {"status": r.returncode, "stdout": r.stdout.strip()[-2000:], "stderr": r.stderr.strip()[-2000:]}
         if r.returncode != 0:
             raise Failure("migrate-mirror.py ended with status %d on the copy of the new side: %s %s" % (r.returncode, r.stdout.strip()[-400:], r.stderr.strip()[-400:]))
@@ -991,7 +1005,8 @@ def run(args):
         if was != now:
             problems.append("the git state of the code %s changed during the run: %s -> %s" % (s.code, was, now))
     results["working"]["locksAfter"] = world.locks()
-    results["working"]["untouched"] = all(is_alive(pid) for pid in results["working"]["pids"])   # the pids the lock named at the start, not those it names now (a service that stopped leaves no lock)
+    results["working"]["signalled"] = sorted(world.signalled & (set(results["working"]["pids"]) | world.pids()))
+    results["working"]["untouched"] = world.untouched(results["working"]["pids"])   # no working pid was signalled by the harness; whether the working service is still alive is not part of it
     if after_snapshot_changed(snapshot, before):
         problems.append("the snapshot changed during the run")
     results["loadAverageAtEnd"] = os.getloadavg()
@@ -1027,7 +1042,8 @@ def print_table(results, rows):
             print("retry %-4s %d call(s) ended with `No ApeironNgn service running` while the service was alive and were made again: %s" % (name, info["count"], ", ".join("%s (x%d)" % (b[1], b[2]) for b in info["commands"][:8])))
     for name, s in results.get("stops", {}).items():
         print("stop  %-4s signal %s, stopped %s" % (name, s.get("signal"), s.get("stopped")))
-    print("processes left: %s; working service pids %s untouched: %s" % (results["processesLeft"], results["working"]["pids"], results["working"]["untouched"]))
+    print("processes left: %s; working service pids %s, signalled by the harness: %s; untouched (no working pid was signalled by the harness; the working service may have stopped by itself): %s"
+          % (results["processesLeft"], results["working"]["pids"], results["working"].get("signalled", []), results["working"]["untouched"]))
     for p in results["problems"]:
         print("PROBLEM: " + p)
     print("DIFFERENTIAL RUN: %s" % ("FAILED" if results["problems"] else "COMPLETE"))

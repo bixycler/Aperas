@@ -90,7 +90,7 @@ class Engine:
         h.copy_tree(os.path.join(self.source, "artifacts"), os.path.join(self.pristine, "artifacts"))
         shutil.copy2(os.path.join(self.source, "aperas.config.json"), self.pristine)
         if self.name == "new":
-            r = subprocess.run([sys.executable, os.path.join(tools, "migrate-mirror.py"), self.pristine], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            r = subprocess.run([sys.executable, os.path.join(tools, "migrate-mirror.py"), self.pristine, "--rules", "123456"], capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                env={k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"})
             if r.returncode != 0:
                 raise h.Failure("migrate-mirror.py ended with %d: %s %s" % (r.returncode, r.stdout[-300:], r.stderr[-300:]))
@@ -468,14 +468,14 @@ def main(argv=None):
             if e.side:
                 left += h.processes_with_env(e.side.needles())
         results["processesLeft"] = left
-        results["working"]["untouched"] = all(h.is_alive(pid) for pid in results["working"]["pids"])
+        results["working"]["untouched"] = world.untouched(results["working"]["pids"])   # no working pid was signalled by the harness
         with open(os.path.join(out, "figures.json"), "w") as f:
             json.dump(results, f, indent=1, default=str)
         text = tables(results)
         with open(os.path.join(out, "figures.txt"), "w") as f:
             f.write(text + "\n")
         print(text)
-        log("processes left: %s; working service untouched: %s" % (left, results["working"]["untouched"]))
+        log("processes left: %s; working service untouched (no working pid was signalled by the harness): %s" % (left, results["working"]["untouched"]))
     return code if not left else 1
 
 

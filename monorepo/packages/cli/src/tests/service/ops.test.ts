@@ -384,6 +384,14 @@ describe('service: every op of handle()', () => {
     const idOfLine = (line: string): string => line.split('  ')[0].replace('aperas://id/', '');
     let citing = '';
 
+    test('an insert of a block with a relative path link comes back without linkBreakage, the link is stored, and the sweep finds nothing', async () => {
+      const r = await call<{ lines: string[]; linkResolution: { resolved: number }; linkBreakage?: unknown }>({ op: 'insert', path: 'cmd_demo/dup.md/Dup', markdown: 'To [beta](./beta.md).\n', flush: true, reload: false });
+      assert.deepEqual([r.linkResolution.resolved, r.linkBreakage], [1, undefined]);
+      const shown = await call<{ links?: Array<{ target: string }> }>({ op: 'show', pathArg: idOfLine(r.lines[0]), reload: false });
+      assert.deepEqual(shown.links?.map((l) => l.target), [c.betaArt]);
+      assert.deepEqual((await call<{ discrepancies: unknown[] }>({ op: 'checkLinks', repair: false, reload: false, flush: false })).discrepancies, []);
+    });
+
     test('a write that makes a link code resolvable in a block that holds no link for it comes back with linkBreakage', async () => {
       const first = await call<{ lines: string[]; linkResolution: { dangling: number }; linkBreakage?: unknown }>({ op: 'insert', path: 'cmd_demo/gamma.md/Gamma', markdown: 'Citing [late]([[#late]]).\n', flush: true, reload: false });
       citing = idOfLine(first.lines[0]);

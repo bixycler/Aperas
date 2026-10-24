@@ -9,14 +9,16 @@ before it, because the reference engine cannot read the migrated mirror (it need
 
   python3 monorepo/scripts/migrate-mirror.py <graph-root> --dry               # counts only, writes nothing
   python3 monorepo/scripts/migrate-mirror.py <graph-root>                     # migrates in place
-  python3 monorepo/scripts/migrate-mirror.py <graph-root> --rules 3           # a subset of the rules
+  python3 monorepo/scripts/migrate-mirror.py <graph-root> --rules 123456      # all six: the project's own graph
+  python3 monorepo/scripts/migrate-mirror.py <graph-root> --rules 34          # only the two that are the project's own
   python3 monorepo/scripts/migrate-mirror.py <graph-root> --roundtrip         # proves the writer only
 
 Reads and writes: `<graph-root>/Apeiron/*.jsonld` and `<graph-root>/Apeiron/.state/*.jsonld`, nothing else.
 Both directories are read together because ids refer across them; a file is rewritten only when the rules
 change it, and the documents of every file are written sorted by `@id`. The graph root is a required
 argument and has no default: with no argument the script prints this text on stderr and exits with status 2,
-so it never reaches the real graph unless a caller names it. `--dry` writes nothing and prints the counts.
+and a first argument that starts with `-` (`--help` among them) or is not a directory that holds `Apeiron/` is a usage
+error (a usage line on stderr, exit status 2, nothing read or written), so it never reaches the real graph unless a caller names it. `--dry` writes nothing and prints the counts.
 `--roundtrip` writes nothing in the graph root: every file is loaded, written back to a temporary place
 and compared byte for byte with the original. Any condition the rules cannot decide makes the script stop,
 list it and write nothing; so does a usage error, `--rules` with no value or with a value that is not a
@@ -24,15 +26,17 @@ list of rule numbers 1 to 6 (a message on stderr, nothing read or written).
 Exit status 0 is a completed run (or a clean `--roundtrip`); 1 is a `--roundtrip` that finds a file
 different; 2 is a usage error or a stop condition.
 
-Rules (all six by default; --rules selects a subset, e.g. --rules 3):
+Rules (1, 2, 5 and 6 by default, the general ones; --rules selects the rules to run instead, e.g. --rules 123456
+for all six, which is what this project's own graph needs, or --rules 34 for the two that are its own):
   1. every embedded Link loses its `predicate` key and nothing else
   2. every document with `tombstonedAt` loses parent, links, props; its
      children becomes []; its id leaves the children of the container its
      parent named (in whichever file that container is); literals stay
-  3. the six README.md artifacts and their six paragraphs are deleted, after
-     a re-check that nothing in either directory refers to them
-  4. Profile:00CJC4S69R000 (dinhlx) gets `kind: human`, placed in the field
-     order handle, name, kind, preferences
+  3. (this project's graph only) the six README.md artifacts and their six
+     paragraphs are deleted, after a re-check that nothing in either
+     directory refers to them
+  4. (this project's graph only) Profile:00CJC4S69R000 (dinhlx) gets
+     `kind: human`, placed in the field order handle, name, kind, preferences
   5. every `unfolds` entry whose target is not defined (no document and no
      embedded entry of that id stands in either directory) is stripped; a
      document left with no entry loses the key
@@ -62,7 +66,9 @@ DELETE_SET = set(README_ARTIFACTS + README_PARAGRAPHS)
 DINHLX = "Profile:00CJC4S69R000"
 PROFILE_ORDER = ["@id", "@type", "handle", "name", "kind", "preferences"]
 TOMBSTONE_DROP = ("parent", "links", "props")
-RULES = "123456"
+RULES = "123456"          # every rule there is: the values `--rules` may name
+DEFAULT_RULES = "1256"    # the general rules: what a run without `--rules` applies
+USAGE = "usage: migrate-mirror.py <graph-root> [--dry | --roundtrip] [--rules 1..6]   (the first argument is a graph root: a directory that holds Apeiron/)"
 
 
 def serialize(docs):
@@ -127,13 +133,16 @@ def main():
         print(__doc__, file=sys.stderr)
         return 2
     root = args[0]
+    if root.startswith("-") or not os.path.isdir(os.path.join(root, "Apeiron")):
+        print("usage error: the first argument must be the graph root, a directory that holds Apeiron/; got %r; nothing was read or written\n%s" % (root, USAGE), file=sys.stderr)
+        return 2
     dry = "--dry" in args
-    rules = RULES
+    rules = DEFAULT_RULES
     if "--rules" in args:
         k = args.index("--rules")
         rules = args[k + 1] if k + 1 < len(args) else ""
         if not rules or any(c not in RULES for c in rules):
-            print("usage error: --rules takes a list of rule numbers 1 to 6, e.g. --rules 3 or --rules 12; nothing was written", file=sys.stderr)
+            print("usage error: --rules takes a list of rule numbers 1 to 6, e.g. --rules 3 or --rules 12; nothing was written\n%s" % USAGE, file=sys.stderr)
             return 2
     if "--roundtrip" in args:
         return 1 if roundtrip(root) else 0

@@ -24,10 +24,11 @@
  */
 
 import { build } from 'esbuild';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, cpSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { DIST_FILES, distPackageJson, shipsFromSkill } from './buildPlan.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliDir = __dirname;
@@ -60,20 +61,22 @@ cpSync(join(cliDir, 'README.md'), join(distDir, 'README.md'));
 
 const repoRoot = join(cliDir, '..', '..', '..'); // packages/cli -> packages -> monorepo -> repo root
 cpSync(join(repoRoot, 'LICENSE'), join(distDir, 'LICENSE'));
+cpSync(join(repoRoot, 'CHANGELOG.md'), join(distDir, 'CHANGELOG.md'));
 
 const BUNDLED_SKILLS = ['aperas', 'aperas-orchestrator', 'aperas-grapher', 'aperas-coder', 'kg-doc-ingest'];
 for (const skill of BUNDLED_SKILLS) {
-  cpSync(join(repoRoot, 'skills', skill), join(distDir, 'skills', skill), { recursive: true });
+  cpSync(join(repoRoot, 'skills', skill), join(distDir, 'skills', skill), {
+    recursive: true,
+    filter: shipsFromSkill, // a `__pycache__/` or `*.pyc` left in a skill by a local run never ships
+  });
 }
 console.log(`[build:aperas] Copied skills/{${BUNDLED_SKILLS.join(',')}} -> ${join(distDir, 'skills')}`);
 
-const distPkg = {
-  name: 'aperas',
-  version: cliPkg.version,
-  license: cliPkg.license || 'Unlicense',
-  type: 'module',
-  bin: { aperas: './aperas.js' },
-};
+const distPkg = distPackageJson(cliPkg.version, cliPkg.license);
 writeFileSync(join(distDir, 'package.json'), JSON.stringify(distPkg, null, 2) + '\n', 'utf-8');
+
+for (const name of DIST_FILES) {
+  if (!existsSync(join(distDir, name))) throw new Error(`[build:aperas] dist/${name} is named in "files" and is missing`);
+}
 
 console.log(`[build:aperas] Wrote ${join(distDir, 'aperas.js')} + ${join(distDir, 'package.json')}`);

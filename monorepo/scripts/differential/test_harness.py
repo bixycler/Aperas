@@ -80,7 +80,8 @@ def free_ports(n, slot, owner=None):
     """n different free ports, claimed (see `claim_port`), from the whole range of the harness (2800 to 2899), those of the slot-th slice (2800 + 20 * slot, 20 ports) first and each
     group in a random order. The slice keeps the test classes and live cases of a run away from each other as far as it can; the claim is what makes it certain, and also
     keeps two runs at the same time apart. The claims are given up when the `owner` test case is over, or at the end of the process. A start that is refused for a port with a listener (not a test of ours) is repeated with other ports by `Live.run_list`."""
-    lo = harness.PORT_RANGE[0] + SLICE * slot
+    slices = (harness.PORT_RANGE[1] - harness.PORT_RANGE[0] + 1) // SLICE
+    lo = harness.PORT_RANGE[0] + SLICE * (slot % slices)   # more cases than slices share one: the claims keep them apart
     mine = list(range(lo, lo + SLICE))
     others = [p for p in range(harness.PORT_RANGE[0], harness.PORT_RANGE[1] + 1) if p not in mine]
     random.shuffle(mine)
@@ -99,6 +100,7 @@ def free_ports(n, slot, owner=None):
 
 def run_cli(*args, **kw):
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
+    env.update(kw.get("env", {}))
     return subprocess.run([sys.executable, HARNESS] + list(args), capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=kw.get("timeout", 120))
 
 
@@ -246,6 +248,57 @@ class Assertions(unittest.TestCase):
         self.assertEqual(info["signal"], None)
         self.assertEqual(len(info["unverified"]), 1)
         self.assertIsNone(sleeper.poll(), "the process was signalled")
+        self.assertEqual(self.world.signalled, set())
+
+    def test_the_refusal_to_signal_holds_whatever_the_locks_say(self):
+        """The service of a side that a lock of its own names but is not a service of the side's code is never signalled, a working lock naming the same pid or not."""
+        sleeper = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.kill)
+        os.makedirs(self.ref.run_dir)
+        with open(os.path.join(self.ref.run_dir, "apeironngn.lock"), "w") as h:
+            json.dump({"pid": sleeper.pid}, h)
+        worlds = [harness.World(self.out, working_run_dirs=[], real_graph="/nowhere"),
+                  harness.World(self.out, working_run_dirs=[fake_lock(os.path.join(self.out, "w1"), pid=sleeper.pid)], real_graph="/nowhere"),
+                  harness.World(self.out, working_run_dirs=[fake_lock(os.path.join(self.out, "w2"), pid=2 ** 22 + 7)], real_graph="/nowhere")]
+        for world in worlds:
+            info = harness.stop_side(self.ref, world, 1)
+            self.assertEqual(info["signal"], None)
+            self.assertEqual(len(info["unverified"]), 1)
+            self.assertIsNone(sleeper.poll(), "the process was signalled")
+            self.assertEqual(world.signalled, set())
+            self.assertTrue(world.untouched(world.pids()))
+        # The world itself refuses a pid a working lock names, before it records or sends anything.
+        with self.assertRaisesRegex(harness.Refusal, "working service's lock names it"):
+            worlds[1].signal(sleeper.pid, signal.SIGKILL)
+        self.assertIsNone(sleeper.poll())
+        self.assertEqual(worlds[1].signalled, set())
+
+    def test_untouched_means_no_working_pid_was_signalled_not_that_the_working_pids_are_alive(self):
+        # A working lock names a scratch process that ends by itself (the idle stop of the working service): nobody signalled it, so the verdict stays true.
+        stand_in = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(stand_in.wait)
+        self.addCleanup(stand_in.kill)
+        world = harness.World(self.out, working_run_dirs=[fake_lock(os.path.join(self.out, "w"), pid=stand_in.pid)], real_graph="/nowhere")
+        at_start = sorted(world.pids())
+        self.assertEqual(at_start, [stand_in.pid])
+        stand_in.kill()
+        stand_in.wait()
+        self.assertFalse(harness.is_alive(stand_in.pid))
+        self.assertTrue(world.untouched(at_start))
+        # ... and with the lock gone as well (a service that stopped leaves no lock).
+        os.remove(os.path.join(self.out, "w", "aperas", "apeironngn.lock"))
+        self.assertEqual(world.pids(), set())
+        self.assertTrue(world.untouched(at_start))
+        # The verdict can still be false: a pid the lock named at the start that the harness did signal.
+        victim = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(victim.wait)
+        self.addCleanup(victim.kill)
+        world.signal(victim.pid, signal.SIGKILL)
+        victim.wait()
+        self.assertEqual(world.signalled, {victim.pid})
+        self.assertFalse(world.untouched(at_start + [victim.pid]))
+        self.assertTrue(world.untouched(at_start))
 
 
 class Cli(unittest.TestCase):
@@ -371,13 +424,22 @@ class Ports(unittest.TestCase):
     """The ports the live cases choose are claimed: two test processes of one run, which choose at the same time, never get the same one."""
 
     def test_a_claimed_port_is_refused_to_another_process_until_it_is_released(self):
+        code = "import sys; sys.path.insert(0, %r); import test_harness as th; print(th.claim_port(int(sys.argv[1])))" % HERE
+        other = lambda port: subprocess.run([sys.executable, "-I", "-c", code, str(port)], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
+        # A port `free_ports` chose is refused to another process while this one holds it.
         [port] = free_ports(1, 1, self)
-        code = "import sys; sys.path.insert(0, %r); import test_harness as th; print(th.claim_port(%d))" % (HERE, port)
-        other = lambda: subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
-        self.assertEqual(other(), "False")
-        release_ports([port])
-        self.assertEqual(other(), "True")
-        self.assertTrue(claim_port(port))   # the child process is over: its claim went with it
+        self.assertEqual(other(port), "False")
+        # Giving a claim up and taking it again is tried on a number that is not a port of the range, and that is this process's alone (its pid): no other test process, of this run or of a
+        # run at the same time, chooses it, which it could with a port of the range as soon as this one let go of it (the window between the release and the other process's claim).
+        private = 100000 + os.getpid()
+        self.assertNotIn(private, range(harness.PORT_RANGE[0], harness.PORT_RANGE[1] + 1))
+        self.assertTrue(claim_port(private))
+        self.addCleanup(release_ports, [private])
+        self.addCleanup(lambda: os.path.exists(os.path.join(CLAIM_DIR, str(private))) and os.remove(os.path.join(CLAIM_DIR, str(private))))
+        self.assertEqual(other(private), "False")
+        release_ports([private])
+        self.assertEqual(other(private), "True")
+        self.assertTrue(claim_port(private))   # the child process is over: its claim went with it
 
     def test_the_same_slice_gives_different_ports_and_the_range_is_used_when_the_slice_is_used_up(self):
         first = free_ports(SLICE, 1, self)
@@ -448,12 +510,40 @@ class Live(LiveBase):
         self.assertEqual(self.own_processes(), [])
         self.assertEqual(res["processesLeft"], [])
         self.assertTrue(res["working"]["untouched"])
-        self.assertTrue(all(harness.is_alive(pid) for pid in working))
+        self.assertEqual(res["working"]["signalled"], [])
+        self.assertIn("untouched (no working pid was signalled by the harness", r.stdout)
         self.assertEqual(harness.manifest(self.snap), self.before)
         # every command was given to a service that answers; a wait of 0.5 s or more would be listed (a demo service is not busy), and every start is timed until it answers
         self.assertEqual(res["busyBefore"], {"ref": [], "new": []})
         self.assertTrue(all("answeringAfter" in s for s in res["starts"].values()))
         self.assertEqual(res["problems"], [])
+
+    def test_a_working_pid_that_dies_during_the_run_leaves_untouched_true(self):
+        # A scratch process stands in for the working service: its lock names it, and it ends by itself while the run is under way.
+        working = os.path.join(self.dir, "work")
+        stand_in = subprocess.Popen(["sleep", "3"])
+        self.addCleanup(stand_in.wait)
+        self.addCleanup(stand_in.kill)
+        fake_lock(working, pid=stand_in.pid, httpPort=2876)
+        path = os.path.join(self.dir, "list.json")
+        with open(path, "w") as h:
+            json.dump({"final_flush": False, "commands": [{"name": "wait", "wait": 5}, {"name": "tree", "args": ["tree", "cmd_demo/none.md"], "status": 1}]}, h)
+        r = None
+        for attempt in range(5):
+            r = run_cli("--snapshot", self.snap, "--out", self.out, "--commands", path, "--ports", self.ports, "--reference-code", harness.MONOREPO, env={"XDG_RUNTIME_DIR": working})
+            if r.returncode != 2 or "something listens on the port" not in r.stderr + r.stdout:
+                break
+            shutil.rmtree(self.out, True)
+            self.ports = ",".join(str(p) for p in free_ports(2, self.slot, self))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        res = self.results()
+        self.assertIn(stand_in.pid, res["working"]["pids"])   # (the default run directories are seen too: a real working service is in the list as well)
+        self.assertIsNotNone(stand_in.poll(), "the stand-in was to end during the run")
+        self.assertFalse(harness.is_alive(stand_in.pid))
+        self.assertEqual(res["working"]["signalled"], [])
+        self.assertTrue(res["working"]["untouched"])
+        self.assertEqual(res["problems"], [])
+        self.assertEqual(self.own_processes(), [])
 
     def test_an_unexpected_status_fails_the_run_and_the_services_are_still_stopped(self):
         path = os.path.join(self.dir, "list.json")

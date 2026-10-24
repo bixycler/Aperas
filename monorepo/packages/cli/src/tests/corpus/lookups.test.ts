@@ -28,7 +28,7 @@ describe('corpus: the maps of a literal value on a migrated copy of the real mir
     root = mkdtempSync(join(tmpdir(), 'aperas-lookups-corpus-'));
     assertNotRealMirror(root);
     cpSync(source, join(root, 'Apeiron'), { recursive: true, dereference: true });
-    const r = spawnSync('python3', [MIGRATE, root], { encoding: 'utf8' });
+    const r = spawnSync('python3', [MIGRATE, root, '--rules', '123456'], { encoding: 'utf8' });
     assert.equal(r.status, 0, `migrate-mirror.py exited ${r.status}: ${r.stdout}${r.stderr}`);
     engine = newEngine();
     const load = loadMirror(engine, root, testMapping());

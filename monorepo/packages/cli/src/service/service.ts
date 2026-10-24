@@ -50,7 +50,7 @@ import { createServer as createHttpServer } from 'node:http';
 import { unlinkSync, readFileSync, readdirSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, closeDb, loadRefusal, isThreadScoped, type Db, type Opened } from '@aperas/core/shell/db';
+import { openDb, closeDb, loadRefusal, REFUSAL_SHOWN_IDS, isThreadScoped, type Db, type Opened } from '@aperas/core/shell/db';
 import { dumpMirror } from '@aperas/core/shell/mirrorDump';
 import { skippedDocuments } from '@aperas/core/shell/mirrorLoad';
 import { MAIN_GRAPH, documentsText } from '@aperas/core/shell/mirrorFiles';
@@ -222,7 +222,10 @@ export function main(): void {
   if (bootRefusal !== undefined && !startAnyway) {
     logService(`[ApeironNgn service] Loaded ${opened.load.documents + opened.load.embedded} record(s) from ${contentDir}.`);
     for (const warning of opened.warnings) logService(`[ApeironNgn service] WARNING: ${warning}`);
-    refuseToStart(`${bootRefusal} (to work on the unaffected parts and fix the affected ones in memory: aperas service start --start-anyway)`);
+    // the log holds the whole list; the line the client prints from it names REFUSAL_SHOWN_IDS ids, the count, and where the rest is
+    logService(`[ApeironNgn service] Refused documents, the full list: ${bootRefusal}`);
+    const shortRefusal = loadRefusal(opened.load, { limit: REFUSAL_SHOWN_IDS, fullListIn: join(getRunDir(), 'service.log') });
+    refuseToStart(`${shortRefusal} (to work on the unaffected parts and fix the affected ones in memory: aperas service start --start-anyway)`);
   }
   acceptLoad(opened, true);
 
@@ -427,7 +430,8 @@ export function main(): void {
     if (refusal !== undefined && !anyway) {
       closeDb(result.db);
       logService(`[ApeironNgn service] Reload refused, the graph in memory is kept: ${refusal}`);
-      throw new Error(`Refusing to reload: ${refusal} (to accept it and work on the unaffected parts: aperas reload --start-anyway)`);
+      const shortRefusal = loadRefusal(result.load, { limit: REFUSAL_SHOWN_IDS, fullListIn: join(getRunDir(), 'service.log') });
+      throw new Error(`Refusing to reload: ${shortRefusal} (to accept it and work on the unaffected parts: aperas reload --start-anyway)`);
     }
     const old = store;
     store = result.db;

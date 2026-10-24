@@ -147,9 +147,24 @@ function resolveFallbackGraphRoot(): string {
  * `process.cwd()` default baked into `resolveGraphConfig`.
  */
 export function resolveEffectiveApeironRoot(startDir?: string): string {
-  if (process.env.APERAS_APEIRON_ROOT) return process.env.APERAS_APEIRON_ROOT;
+  return describeEffectiveApeironRoot(startDir).path;
+}
+
+/** The Apeiron root `resolveEffectiveApeironRoot` answers, and how it was found: `variable`
+ *  (`APERAS_APEIRON_ROOT`), `config` (an `aperas.config.json`, named in `source`) or `fallback`
+ *  (the `AperasKG` beside the checkout, or four directories above an installed bundle). */
+export interface ApeironRootResolution {
+  path: string;
+  via: 'variable' | 'config' | 'fallback';
+  /** The variable name, the path of the config file, or the starting directory of the search that found no config. */
+  source: string;
+}
+
+export function describeEffectiveApeironRoot(startDir?: string): ApeironRootResolution {
+  if (process.env.APERAS_APEIRON_ROOT) return { path: process.env.APERAS_APEIRON_ROOT, via: 'variable', source: 'APERAS_APEIRON_ROOT' };
   const config = resolveGraphConfig(startDir);
-  return config ? config.apeironRoot : resolve(resolveFallbackGraphRoot(), 'Apeiron');
+  if (config) return { path: config.apeironRoot, via: 'config', source: config.configPath };
+  return { path: resolve(resolveFallbackGraphRoot(), 'Apeiron'), via: 'fallback', source: resolve(startDir ?? process.cwd()) };
 }
 
 /** Same as `resolveEffectiveApeironRoot`, for the artifacts (markdown tree) root — checks

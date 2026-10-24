@@ -57,6 +57,7 @@ function printTopLevelHelp(): void {
   const width = Math.max(...verbs.map((v) => v.length));
   console.log('Usage: aperas <verb> [args...]');
   console.log('       aperas <verb> --help   (per-command usage/flags)');
+  console.log('       aperas --version       (also -v: print the version of this CLI)');
   console.log();
   console.log('Verbs:');
   for (const verb of verbs) {
@@ -76,6 +77,13 @@ async function main(): Promise<void> {
   if (verb === '--__service') {
     const { main: startService } = await import('./service/service');
     startService();
+    return;
+  }
+
+  // The version never touches the service (or the graph): it reads this CLI's own package.json.
+  if (verb === '--version' || verb === '-v') {
+    const { readCliVersion } = await import('./cliVersion');
+    console.log(`aperas ${readCliVersion()}`);
     return;
   }
 

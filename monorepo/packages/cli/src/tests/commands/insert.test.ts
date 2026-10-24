@@ -112,11 +112,15 @@ describe('insert, update and retype', () => {
     test('links in the piped text are resolved, and a link to a title with no node makes a placeholder', () => {
       const r = runInsert(fx.store, { path: 'cmd_demo/fm.md/Fm', markdown: `## Linked\n\nSee [section]([[${bare(c.betaSec)}]]) and [later]([[NotYetThere]]).\n` });
       const id = createdIdOf(r.lines[0]);
-      assert.equal(r.linkResolution!.resolved, 1);
-      assert.equal(r.linkResolution!.dangling, 1);
+      assert.equal(r.linkResolution!.resolved, 2);
+      assert.equal(r.linkResolution!.dangling, 0);
       const links = linkIdsOf(fx, id);
-      assert.equal(links.length, 1, 'one resolved link; the other has no node to point to');
-      assert.equal(linkTargetOf(fx, id, links[0]), c.betaSec);
+      assert.equal(links.length, 2, 'both resolve: the title with no node gets a placeholder, as it does in `ingest` and `update`');
+      const targets = links.map((l) => linkTargetOf(fx, id, l));
+      assert.ok(targets.includes(c.betaSec));
+      const placeholder = targets.find((t) => t !== c.betaSec)!;
+      assert.equal(stored(placeholder).title, 'NotYetThere');
+      assert.equal((stored(placeholder) as { holder?: boolean }).holder, true);
     });
 
     test('a lone list item landing after a run continues it; a wrong number in an ordered run is refused', () => {

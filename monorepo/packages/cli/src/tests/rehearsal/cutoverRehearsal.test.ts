@@ -12,46 +12,13 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { REAL_GRAPH, assertNotRealMirror } from '../support/fixture.ts';
-import { A_DESIGN, B_CHILD, B_ONE, B_TOMB, B_TWO, P_BARE, V_MAIN, fixtureDocs, idOf, testMapping, textsOf, writeTexts } from '../support/mirrorFixture.ts';
+import { B_CHILD, B_TWO, P_BARE, idOf, writeTexts } from '../support/mirrorFixture.ts';
+import { oldFormTexts } from '../support/oldFormMirror.ts';
 
 const SCRIPTS = resolve(import.meta.dirname, '../../../../../scripts');
 const REHEARSAL = join(SCRIPTS, 'cutover-rehearsal.py');
 const MIGRATE = join(SCRIPTS, 'migrate-mirror.py');
 const VERIFY = join(SCRIPTS, 'verify-migration.py');
-
-type Doc = Record<string, any>;
-const flake = (n: number): string => `00T5MX${String(n).padStart(7, '0')}`;
-const mapping = testMapping();
-
-/** The fixture mirror in the form the reference engine left, for the six rules to act on; `change` edits the documents of each file first. */
-function oldFormTexts(change: (docs: Record<string, Doc[]>) => void = () => {}): Record<string, string> {
-  const docs = structuredClone(fixtureDocs()) as Record<string, Doc[]>;
-  const all = (): Doc[] => Object.values(docs).flat();
-  const find = (id: string): Doc => all().find((d) => d['@id'] === id)!;
-  // Rule 1: every embedded Link holds a `predicate`.
-  for (const d of all()) for (const l of d.links ?? []) l.predicate = '[[wikilink]]';
-  // Rule 2: a tombstone that keeps its parent, a link and a prop, and is still listed by its container.
-  const tomb = find(B_TOMB);
-  tomb.parent = A_DESIGN;
-  tomb.links = [{ '@id': `${B_TOMB}:links:Link:${flake(100)}`, '@type': 'Link', target: B_ONE, predicate: '[[wikilink]]' }];
-  tomb.props = [{ '@id': `${B_TOMB}:props:StringProp:${flake(101)}`, '@type': 'StringProp', key: 'k', value: 'v' }];
-  find(A_DESIGN).children.push(B_TOMB);
-  // Rule 4: the profile that gets a `kind` (and the default profile, which the verifier prints).
-  docs['Apeiron/Profile.jsonld']!.push({ '@id': 'Profile:00CA03JXD8000', '@type': 'Profile', handle: 'default' }, { '@id': 'Profile:00CJC4S69R000', '@type': 'Profile', handle: 'dinhlx', name: 'dinhlx' });
-  // Rule 5: an `unfolds` entry that names nothing.
-  find(V_MAIN).unfolds.push(idOf('BlockNode', 9999));
-  // Rule 6: an artifact with a `type`.
-  find(A_DESIGN).type = 'document';
-  // Rule 3: the twelve README documents, parentless, each artifact with its paragraph.
-  const readmes = [['00CN1QE950000', '00CN1QEAGG001'], ['00CN4ZQ8Y0000', '00CN4ZQAPG001'], ['00CN4ZSF58000', '00CN4ZSHMG001'], ['00CN4ZTZRR000', '00CN4ZV1G8001'], ['00CN4ZWHCG000', '00CN4ZWJMG001'], ['00CN4ZXWJ8000', '00CN4ZXXRR001']];
-  for (const [a, p] of readmes) {
-    docs['Apeiron/ArtifactNode.jsonld']!.push({ '@id': `ArtifactNode:${a}`, '@type': 'ArtifactNode', title: 'README', children: [`BlockNode:${p}`], path: 'README.md' });
-    docs['Apeiron/BlockNode.jsonld']!.push({ '@id': `BlockNode:${p}`, '@type': 'BlockNode', title: 'readme text', parent: `ArtifactNode:${a}`, type: 'paragraph', children: [] });
-  }
-  change(docs);
-  for (const list of Object.values(docs)) list.sort((x, y) => (x['@id'] < y['@id'] ? -1 : 1));
-  return textsOf(mapping, docs);
-}
 
 interface Outcome { status: number; stdout: string; stderr: string; steps: Record<string, string> }
 
@@ -134,7 +101,7 @@ describe('the cutover rehearsal', { concurrency: true }, () => {
   const breaks: [string, () => Promise<Outcome>, string][] = [
     ['the dry run writes', () => rehearse([rootOf('root-m1'), '--out', scratch('out-m1'), '--tools', toolsWith('tools-m1', [['    if not dry:\n        for f in really:', '    if True:\n        for f in really:']])]), '2'],
     ['the migration ends with a failure', () => rehearse([rootOf('root-m2'), '--out', scratch('out-m2'), '--tools', toolsWith('tools-m2', [['    return 0\n\n\nif __name__', '    return 0 if dry else 2\n\n\nif __name__']])]), '3'],
-    ['the migration leaves a rule out (the type of an artifact stays)', () => rehearse([rootOf('root-m3'), '--out', scratch('out-m3'), '--tools', toolsWith('tools-m3', [['RULES = "123456"', 'RULES = "12345"']])]), '4'],
+    ['the migration leaves a rule out (the type of an artifact stays)', () => rehearse([rootOf('root-m3'), '--out', scratch('out-m3'), '--tools', toolsWith('tools-m3', [['    if "6" in rules:', '    if "6" in rules and False:']])]), '4'],
     ['a second run changes a byte', () => rehearse([rootOf('root-m4'), '--out', scratch('out-m4'), '--tools', toolsWith('tools-m4', [['    return 0\n\n\nif __name__', '    if not dry and not really:\n        with open(sorted(files)[0], "a") as h:\n            h.write("\\n")\n    return 0\n\n\nif __name__']])]), '5'],
     ['the load warns (a container lists a child that another parent owns)', () => rehearse([rootOf('root-m5', oldFormTexts((docs) => { docs['Apeiron/BlockNode.jsonld']!.find((d) => d['@id'] === B_TWO)!.children.push(B_CHILD); })), '--out', scratch('out-m5')]), '6'],
     ['a file is not in the canonical form (the keys of a profile are out of order)', () => rehearse([rootOf('root-m6', oldFormTexts((docs) => { const i = docs['Apeiron/Profile.jsonld']!.findIndex((d) => d['@id'] === P_BARE); const d = docs['Apeiron/Profile.jsonld']![i]!; docs['Apeiron/Profile.jsonld']![i] = { handle: d.handle, '@type': d['@type'], '@id': d['@id'] }; })), '--out', scratch('out-m6')]), '7'],

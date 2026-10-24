@@ -5,5 +5,6 @@ import { defineSuite } from '../support/suite.mjs';
 
 export default defineSuite(import.meta.url, [
   '../rehearsal/cutoverRehearsal.test.ts',
+  '../rehearsal/migrationScripts.test.ts',
   '../smoke/cutoverSmoke.test.ts',
 ], 40);

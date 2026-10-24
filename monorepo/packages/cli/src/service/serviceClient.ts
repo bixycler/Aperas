@@ -100,6 +100,16 @@ export async function ping(): Promise<boolean> {
   }
 }
 
+/** One ping, for a reader that only looks (`aperas service status`): the answer of a service that replies within `PING_TIMEOUT_MS`, else null. It prints nothing, unlike `ping`, which warns of stale code. */
+export async function pingAnswer(): Promise<{ codeFingerprint?: string } | null> {
+  try {
+    const res = await sendRaw({ op: 'ping' }, PING_TIMEOUT_MS);
+    return res.ok === true ? { codeFingerprint: (res.result as { codeFingerprint?: string } | undefined)?.codeFingerprint } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The reason a starting service gave for refusing to start: the last line of its log that says `REFUSING TO START`, written at or after `since`. */
 function refusalSince(since: number): string | undefined {
   try {

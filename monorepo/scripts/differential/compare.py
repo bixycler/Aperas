@@ -108,7 +108,7 @@ def migrate_reference(dump_dir, tools):
         shutil.copytree(dump_dir, os.path.join(scratch, "Apeiron"))
         script = os.path.join(tools, "migrate-mirror.py")
         env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
-        p = subprocess.run([sys.executable, script, scratch], capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=300)
+        p = subprocess.run([sys.executable, script, scratch, "--rules", "123456"], capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=300)
         if p.returncode != 0:
             raise Failure("migrate-mirror.py on the reference's dump ended with status %d:\n%s%s" % (p.returncode, p.stdout, p.stderr))
         return os.path.join(scratch, "Apeiron"), scratch

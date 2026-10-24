@@ -25,6 +25,8 @@ a usage error or a refusal, with nothing read or written.
 The real graph root (`AperasKG` beside this monorepo, however it is spelled) is refused unless `--allow-real-root` is given: the
 rehearsal belongs on a copy of it made with `cp -a`, and run on the real one it is still read-only, but only on purpose.
 `--tools <dir>` names the directory that holds `migrate-mirror.py` and `verify-migration.py` (default: this script's own).
+The rehearsal is of this project's own graph, so both scripts run with `--rules 123456`: all six rules, the two that are the project's own included
+(the scripts' default is the four general ones).
 """
 import json
 import os
@@ -41,6 +43,7 @@ REAL_GRAPH = os.path.realpath(os.path.join(MONOREPO, "..", "AperasKG"))
 LOADDUMP = os.path.join(MONOREPO, "packages", "cli", "diagnostics", "mirror_loaddump.ts")
 TSX = os.path.join(MONOREPO, "node_modules", ".bin", "tsx")
 STEP_TIMEOUT = 300
+RULES = "123456"   # this project's graph needs all six rules; the scripts' own default is the general four
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
 
 
@@ -187,7 +190,7 @@ def main(argv):
         return 1
 
     # 2. the dry run
-    status, text, secs = run([py, migrate, out, "--dry"])
+    status, text, secs = run([py, migrate, out, "--dry", "--rules", RULES])
     _, dirty, _ = git(out, "status", "--porcelain")
     would = number_after("files that differ after the rules:", text)
     ok = status == 0 and would is not None and dirty.strip() == ""
@@ -195,7 +198,7 @@ def main(argv):
     stats = [l.strip() for l in text.splitlines() if re.match(r"^\s+\S.*\s\d+$", l) and "files that differ" not in l]
 
     # 3. the migration
-    status, text, secs = run([py, migrate, out])
+    status, text, secs = run([py, migrate, out, "--rules", RULES])
     _, changed, _ = git(out, "status", "--porcelain")
     changed_files = [l[3:] for l in changed.splitlines() if l.strip()]
     ok = status == 0 and would is not None and len(changed_files) == would and all(f.endswith(".jsonld") for f in changed_files)
@@ -203,7 +206,7 @@ def main(argv):
     migrated = digests(out)
 
     # 4. the verifier
-    status, text, secs = run([py, verify, out])
+    status, text, secs = run([py, verify, out, "--rules", RULES])
     gates = [
         ("UNEXPECTED differences:", "unexpected differences"),
         ("Link with a predicate (any document):", "links with a predicate"),
@@ -221,7 +224,7 @@ def main(argv):
     parentless = re.search(r"parentless live documents: (\d+) (\{.*\})", text)
 
     # 5. the second run
-    status, text, secs = run([py, migrate, out])
+    status, text, secs = run([py, migrate, out, "--rules", RULES])
     again = number_after("files that differ after the rules:", text)
     same = digests(out) == migrated
     ok = status == 0 and again == 0 and same

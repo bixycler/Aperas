@@ -218,7 +218,6 @@ export function runInsert(store: Db, req: InsertReq): { lines: string[]; linkRes
       (createNode(store, id, { under: parentId }) as unknown as BlockNode).hydrateFromParsed(child);
       return id;
     });
-    const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
 
     if (anchorId !== undefined) {
       let insertRef = anchorId;
@@ -232,6 +231,9 @@ export function runInsert(store: Db, req: InsertReq): { lines: string[]; linkRes
     } else {
       for (const newId of newIds) parent.appendChild(newId);
     }
+    // After the placement, not before: a link written as a relative path (`./beta.md`, `../design/core.md`, no `#id/`) is resolved against the artifact the block sits in, and a block not yet placed in its parent walks up to nothing, so the link would be left out of `.links`.
+    // Still inside the guard: a link refused here takes the placed blocks out again.
+    const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
     return { newIds, linkResolution };
   });
 

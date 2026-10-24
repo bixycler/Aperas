@@ -2,7 +2,8 @@
 // the one map of `store.maps`, which the write layer tells after each accepted write, so a node tracked, renamed, tombstoned or created in the same run is found
 // the way the map has it and by nothing else. Cases: an artifact tracked and the folder over it ingested in one run, a file renamed on disk, a path reused after
 // a removal (a new artifact with a new id), a ghost folder and a node with no title that no sweep lists, a thread artifact that lands in the threads graph, and
-// a `Link` whose `position` props the store reads in another order than the text's (the ids of the props stay). The cases share one store and one scratch
+// a `Link` whose `position` props the store reads in another order than the text's (the ids of the props stay), and an ingest of a file that does not exist
+// (it fails the way the reference's does, and leaves no record of any kind in the store). The cases share one store and one scratch
 // folder and run in order. The store is reached through `fx.store`, `wrap`, the maps and the `runX` functions only.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,9 +11,9 @@ import { renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { THREADS_GRAPH, MAIN_GRAPH } from '@aperas/core/graphConfig';
 import { getProps } from '@aperas/core/props';
-import { graphOfId, liveDocumentIdsOfKind } from '@aperas/core/shell/db';
+import { allIdsOfKind, graphOfId, liveDocumentIdsOfKind } from '@aperas/core/shell/db';
 import { getFolderRecord, ingestFolderTree } from '@aperas/core/shell/folders';
-import { trackAllArtifacts } from '@aperas/core/shell/artifacts';
+import { trackAllArtifacts, trackArtifact } from '@aperas/core/shell/artifacts';
 import { createNode, wrap, type ArtifactNode, type BlockNode, type FolderNode, type Link } from '@aperas/core/shell/node';
 import { generateNodeId } from '@aperas/core/snowflake';
 import { runIngest } from '../../kgIngest';
@@ -202,6 +203,32 @@ describe('ingest and the map by path', () => {
       runIngest(fx.store, ['ing_demo/pos.md'], true, false);
       const after = (wrap(fx.store, linkId) as unknown as Link).props as unknown as Array<{ id: string; key: string; value: string }>;
       assert.deepEqual(after.map((p) => p.id), idsBefore, 'the props are the same nodes: the same positions are not a change');
+    });
+  });
+
+  describe('a file that does not exist', () => {
+    const everyArtifactId = () => allIdsOfKind(fx.store, 'ArtifactNode');
+    test('ingest of it fails with the read error and leaves no record: no new ArtifactNode, nothing at its path', () => {
+      const before = everyArtifactId();
+      assert.throws(() => runIngest(fx.store, ['ing_demo/missing.md'], false, false), /ENOENT/);
+      assert.deepEqual(everyArtifactId(), before, 'the store holds the same ArtifactNode records as before');
+      assert.equal(artifactAt('ing_demo/missing.md'), undefined);
+    });
+
+    test('ingest of it with --track, and track of it, leave no record either', () => {
+      const before = everyArtifactId();
+      assert.throws(() => runIngest(fx.store, ['ing_demo/missing.md'], true, false), /ENOENT/);
+      assert.throws(() => trackArtifact(fx.store, 'ing_demo/missing.md'), /ENOENT/);
+      assert.deepEqual(everyArtifactId(), before);
+      assert.equal(artifactAt('ing_demo/missing.md'), undefined);
+    });
+
+    test('a missing file after a good one in the same run keeps the good one tracked and adds nothing for the missing one', () => {
+      writeArtifact(fx, 'ing_demo/present.md', '# Present\n\nHere.\n');
+      const before = everyArtifactId();
+      assert.throws(() => runIngest(fx.store, ['ing_demo/present.md', 'ing_demo/missing.md'], false, false), /ENOENT/);
+      const added = everyArtifactId().filter((id) => !before.includes(id));
+      assert.deepEqual(added, [artifactAt('ing_demo/present.md')], 'only the file that exists has a record');
     });
   });
 });

@@ -549,3 +549,67 @@ describe('a write the engine refuses leaves the maps as they were', () => {
     assert.deepEqual(db.engine.items(TREE, a, 'children'), [blk(1)]);
   });
 });
+
+describe('guard', () => {
+  const asRefused = (e: unknown): boolean => e instanceof Refused;
+
+  test('a function that throws takes the nodes it created with it: out of the list that held one, out of the graph, out of the maps; the error passes on unchanged', () => {
+    const db = newDb();
+    const a = withArtifact(db, 1, 'a.md');
+    const before = [db.engine.items(TREE, a, 'children'), allIdsOfKind(db, 'BlockNode'), db.maps.size()];
+    const p = idOf('Profile', 1);
+    assert.throws(() => db.write.guard(() => {
+      db.write.createNode(blk(1), { kind: 'BlockNode', under: a });
+      db.write.insertItem(TREE, a, 'children', blk(1));
+      db.write.createNode(blk(2), { kind: 'BlockNode', under: a });
+      db.write.createNode(p, { kind: 'Profile' });
+      db.write.addPair(TREE, p, 'handle', 'will');
+      db.write.insertItem(TREE, a, 'children', blk(1)); // refused: already in the list
+    }), asRefused);
+    assert.deepEqual([db.engine.items(TREE, a, 'children'), allIdsOfKind(db, 'BlockNode'), db.maps.size()], before);
+    assert.equal(db.maps.profileByHandle('will'), undefined);
+    assert.equal(nodeExists(db, blk(1)) || nodeExists(db, blk(2)) || nodeExists(db, p), false);
+    assert.deepEqual(db.engine.subjectsOf(TREE, 'children', blk(1)), [], 'no list names a node taken out');
+    assert.ok(db.changed.has(TREE), 'and the service flushes the graph');
+  });
+
+  test('a function that returns keeps what it created, and gives what it gave', () => {
+    const db = newDb();
+    const a = withArtifact(db, 1, 'a.md');
+    const given = db.write.guard(() => {
+      db.write.createNode(blk(1), { kind: 'BlockNode', under: a });
+      db.write.insertItem(TREE, a, 'children', blk(1));
+      return 'done';
+    });
+    assert.equal(given, 'done');
+    assert.deepEqual(db.engine.items(TREE, a, 'children'), [blk(1)]);
+  });
+
+  test('a node that was there before the guard stays, with what the function wrote to it', () => {
+    const db = newDb();
+    const a = withArtifact(db, 1, 'a.md');
+    assert.throws(() => db.write.guard(() => {
+      db.write.createNode(blk(1), { kind: 'BlockNode', under: a });
+      db.write.addPair(TREE, a, 'text', 'written');
+      throw new Error('stop');
+    }), /stop/);
+    assert.equal(nodeExists(db, a), true);
+    assert.equal(db.engine.first(TREE, a, 'text'), 'written', 'a change to an existing node is not undone');
+    assert.equal(nodeExists(db, blk(1)), false);
+  });
+
+  test('a guard inside a guard: an inner throw that the outer function catches takes only the inner nodes; an outer throw takes both', () => {
+    const db = newDb();
+    const a = withArtifact(db, 1, 'a.md');
+    assert.throws(() => db.write.guard(() => {
+      db.write.createNode(blk(1), { kind: 'BlockNode', under: a });
+      try {
+        db.write.guard(() => { db.write.createNode(blk(2), { kind: 'BlockNode', under: a }); throw new Error('inner'); });
+      } catch { /* the outer function goes on */ }
+      assert.equal(nodeExists(db, blk(1)), true);
+      assert.equal(nodeExists(db, blk(2)), false);
+      throw new Error('outer');
+    }), /outer/);
+    assert.equal(nodeExists(db, blk(1)), false);
+  });
+});

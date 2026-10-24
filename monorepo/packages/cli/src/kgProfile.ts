@@ -31,11 +31,13 @@ import { wantsHelp, printHelp } from './kgHelp';
 export function runProfileCreate(store: Db, handle: string, name?: string, kind?: string): { id: string } {
   if (findProfileByHandle(store, handle)) throw new Error(`Profile '${handle}' already exists.`);
   const id = `Profile:${generateNodeId()}`;
-  const profile = createNode(store, id) as unknown as Profile;
-  profile.handle = handle;
-  if (name) profile.name = name;
-  if (kind) profile.kind = kind; // Optional -- "not yet known" is just left unset
-  return { id };
+  return store.write.guard(() => {
+    const profile = createNode(store, id) as unknown as Profile;
+    profile.handle = handle;
+    if (name) profile.name = name;
+    if (kind) profile.kind = kind; // Optional -- "not yet known" is just left unset
+    return { id };
+  });
 }
 
 interface ProfileLine {
@@ -85,7 +87,7 @@ export function runProfileRemove(store: Db, handle: string): { removed: boolean;
 }
 
 export function runProfileCreateView(store: Db, name: string, profileHandle: string): { id: string } {
-  return createTreeView(store, name, profileHandle);
+  return store.write.guard(() => createTreeView(store, name, profileHandle));
 }
 
 interface ViewLine {

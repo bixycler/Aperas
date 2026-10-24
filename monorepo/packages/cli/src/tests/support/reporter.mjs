@@ -9,7 +9,13 @@ const WARN_AFTER_MS = BUDGET_S === undefined || !Number.isFinite(BUDGET_S) ? Inf
 
 const SUITE_NAME = process.env.NT_SUITE || 'unknown';
 
-const errorText = (err) => String(err?.cause?.message ?? err?.message ?? err ?? '').split('\n').slice(0, 6).join('\n      ');
+// A short message is shown whole up to 6 lines. A long one (a failed assertion that carries the output of a process, such as a Python `unittest` run, whose
+// assertion text and traceback come last) shows its first 3 lines, a marker with the number of lines left out, and its last 40 lines.
+const errorText = (err) => {
+  const lines = String(err?.cause?.message ?? err?.message ?? err ?? '').split('\n');
+  const shown = lines.length <= 6 ? lines : lines.length <= 43 ? lines : [...lines.slice(0, 3), `... (${lines.length - 43} lines left out)`, ...lines.slice(-40)];
+  return shown.join('\n      ');
+};
 
 export default async function* reporter(source) {
   const t0 = Date.now();

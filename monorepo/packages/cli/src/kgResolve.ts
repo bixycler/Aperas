@@ -41,7 +41,7 @@ function resolveCreateHolder(store: Db, pathArg: string, base: string | undefine
 }
 
 export function runResolve(store: Db, req: { paths: string[]; base?: string; createHolder: boolean; titles?: string[] }) {
-  if (req.createHolder) return resolveCreateHolder(store, req.paths[0], req.base, req.titles ?? []);
+  if (req.createHolder) return store.write.guard(() => resolveCreateHolder(store, req.paths[0], req.base, req.titles ?? []));
   return resolvePlain(store, req.paths, req.base);
 }
 

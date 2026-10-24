@@ -20,7 +20,7 @@
  *   in order, if no anchor given) — never merged into one node, never rejected.
  */
 
-import type { Db } from '@aperas/core/shell/db';
+import { graphOfId, type Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { wrap, createNode, rejectSlugPathCollisions, findEnclosingArtifactId } from '@aperas/core/shell/node';
 import type { BlockNode, TreeNode } from '@aperas/core/shell/node';
@@ -129,6 +129,11 @@ export function runInsert(store: Db, req: InsertReq): { lines: string[]; linkRes
   // non-transactional-`kg:insert` gap: hydration used to run before anchor resolution, so a bad
   // anchor left the freshly-hydrated nodes live in the store with no rollback).
   const anchorId = anchorRef !== undefined ? resolveOne(store, anchorRef, req.base, 'Anchor') : undefined;
+  // The anchor must be a direct child of the parent, and that is asked here, before the first node is made, with the other refusals that need nothing written; `insertChild` asks it again
+  // as the engine's own backstop, after the nodes are hydrated.
+  if (anchorId !== undefined && store.engine.placeOf(graphOfId(store, parentId)!, parentId, store.engine.schema.roles.containment!, anchorId) === undefined) {
+    throw new Error(`insertOrderedChild: anchor '${anchorId}' is not a child of '${parentId}'.`);
+  }
 
   // Extracted *before* any of `topLevel` is hydrated below — `extractLinkCodes` strips the
   // (schema-unknown) `linkCodes` field off each node as it walks, in place, the same order
@@ -206,25 +211,29 @@ export function runInsert(store: Db, req: InsertReq): { lines: string[]; linkRes
     }
   }
 
-  const newIds = topLevel.map((child) => {
-    const id = `BlockNode:${child.blockId}`;
-    (createNode(store, id, { under: parentId }) as unknown as BlockNode).hydrateFromParsed(child);
-    return id;
-  });
-  const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
+  // From the first node made to the last placement, a refusal takes the nodes the command made with it (the write layer's `guard`): a refused command leaves nothing behind.
+  const { newIds, linkResolution } = store.write.guard(() => {
+    const newIds = topLevel.map((child) => {
+      const id = `BlockNode:${child.blockId}`;
+      (createNode(store, id, { under: parentId }) as unknown as BlockNode).hydrateFromParsed(child);
+      return id;
+    });
+    const linkResolution = resolveBlockLinks(store, pendingLinks, undefined, undefined, findEnclosingArtifactId(parent) ?? undefined);
 
-  if (anchorId !== undefined) {
-    let insertRef = anchorId;
-    for (const newId of newIds) {
-      parent.insertChild(newId, insertRef, side!);
-      if (side === 'after') insertRef = newId; // chain forward so the sequence lands in parse order
-      // side === 'before': every entry anchors to the same original anchor, in forward order, which
-      // already accumulates in the right order (each new entry lands right before the anchor,
-      // after whatever was already placed there).
+    if (anchorId !== undefined) {
+      let insertRef = anchorId;
+      for (const newId of newIds) {
+        parent.insertChild(newId, insertRef, side!);
+        if (side === 'after') insertRef = newId; // chain forward so the sequence lands in parse order
+        // side === 'before': every entry anchors to the same original anchor, in forward order, which
+        // already accumulates in the right order (each new entry lands right before the anchor,
+        // after whatever was already placed there).
+      }
+    } else {
+      for (const newId of newIds) parent.appendChild(newId);
     }
-  } else {
-    for (const newId of newIds) parent.appendChild(newId);
-  }
+    return { newIds, linkResolution };
+  });
 
   const lines = newIds.map((id) => {
     const node = wrap(store, id) as unknown as BlockNode;

@@ -141,6 +141,18 @@ describe('runner', () => {
     assert.match(run(dir, ['--group', 'g']).stdout, /WARN the run is over 1 s/); // a group alone uses the commit budget
   });
 
+  test('the reporter shows a short failure message whole and, of a long one, its first 3 lines, the number left out and its last 40 lines', () => {
+    const failing = (message: string): string =>
+      `import { test } from 'node:test';\nimport assert from 'node:assert/strict';\ntest('bad', () => { assert.equal(1, 2, ${JSON.stringify(message)}); });\n`;
+    const numbered = (n: number): string => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n');
+    const dir = tree({ 'g/short.test.ts': failing(numbered(3)), 'g/long.test.ts': failing(numbered(100)), 'suites/commit.suite.mjs': suite('../g/short.test.ts', '../g/long.test.ts') });
+    const out = run(dir, []).stdout;
+    assert.match(out, /line 1\n\s+line 2\n\s+line 3\n\s*\n\s+1 !== 2\n/);
+    assert.match(out, /line 3\n\s+\.\.\. \(60 lines left out\)\n\s+line 64\n/);
+    assert.match(out, /line 100\n\s*\n\s+1 !== 2\n/);
+    assert.doesNotMatch(out, /line 4\n/);
+  });
+
   test('a suite budget that is not a positive number of seconds is refused', () => {
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import { defineSuite } from ${JSON.stringify(SUITE_HELPER)}; defineSuite('file:///x.suite.mjs', [], 0);`], { encoding: 'utf8', env: cleanEnv() });
     assert.notEqual(r.status, 0);

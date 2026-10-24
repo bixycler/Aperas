@@ -561,9 +561,10 @@ export class ArtifactNode extends BlockNode {
   /** `artifacts.ts`'s old `trackArtifact`'s per-node half, folded — registers or refreshes this
    *  lightweight ArtifactNode against `artifactPath`'s current file content, skipping when the
    *  hash hasn't changed. Takes the path explicitly (not `this.path`) since a brand-new,
-   *  not-yet-tracked instance has no `path` of its own yet. */
-  trackFromDisk(artifactPath: string): { tracked: boolean } {
-    const content = readFileSync(join(getArtifactsDir(), artifactPath), 'utf-8');
+   *  not-yet-tracked instance has no `path` of its own yet. `content` is the file's text when the
+   *  caller has already read it (`trackArtifact` reads it before it makes a new record, so a file
+   *  that cannot be read leaves no record); otherwise it is read here. */
+  trackFromDisk(artifactPath: string, content: string = readFileSync(join(getArtifactsDir(), artifactPath), 'utf-8')): { tracked: boolean } {
     const fileHash = computeFileHash(content);
     // Both must hold for a real no-op: a pure rename (matched by trackAllArtifacts/
     // trackArtifactsScoped's own Gestalt/exact-key matching) is the common case where content is

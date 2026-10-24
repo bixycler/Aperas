@@ -38,6 +38,12 @@ Piece 4 adds these keys to a command: `"fs": [...]` (edits of the files of both 
 purpose; they replace `status` for their side), `"hangs": ["ref"]` (the sides on which the command is expected to outlive its timeout: the reference engine loops on a move into
 its own subtree; such a side is not given another command, and its service, which cannot answer a signal, is killed by the pid of its lock after a short wait) and
 `"comment"`. The services' `service.log` files are copied to `<dir>/logs/<side>.service.log` after the stops.
+A command may also carry `"then_fs": [...]` (the same edits as `fs`, applied to a side right after that side's command, before the next side's command starts: a command and the edit that
+must follow it by milliseconds, as a case that edits a file under a pending write needs; the service's timer has no time to flush in between).
+`--content-flush-ms N` writes a flush interval of N ms for the content graph (`graphs.tree.flushIntervalMs`) into the new side's scratch `aperas.config.json` (made from the snapshot's, or
+a minimal one beside the roots), so that no timer of the new service flushes the content during a case; the reference has no such setting and keeps its 10 s timer.
+A command whose answer on a side is exactly `No ApeironNgn service running` while that side's service process is alive is run again (the client throws before it sends anything, so the
+command did not run), up to 3 times after a wait for the service to answer a ping; every retry is recorded in `results.json` (`retries`) and printed, never hidden.
 """
 import argparse
 import hashlib
@@ -361,19 +367,140 @@ def build_argv(cmd):
 
 
 NOT_READY_IN_TIME = "did not become ready in time"
+# The reference's client throws this before it sends anything when its service does not answer a ping within 0.3 s (a busy service): the command did not run.
+NO_SERVICE_ANSWER = "[aperas] Failed: No ApeironNgn service running. Start one with: aperas service start"
+MAX_RETRIES = 3
+
+
+def side_service_alive(side):
+    """True while a process of the side's environment (its service; the short-lived client that claimed the lock is gone by then) is alive and not a zombie."""
+    return any(is_alive(pid) for pid in processes_with_env(side.needles()))
+
+
+def side_service_alive(side):
+    """True while a process of the side's environment (its service; the short-lived client that claimed the lock is gone by then) is alive and not a zombie."""
+    return any(is_alive(pid) for pid in processes_with_env(side.needles()))
+
+
+def is_no_service_answer(res):
+    """True when the call ended with exactly the client's refusal to send, and printed nothing else: the command did not run."""
+    return res["status"] == 1 and not res["timed_out"] and res["stderr"].strip() == NO_SERVICE_ANSWER and res["stdout"].strip() == ""
+
+
+def run_command(side, argv, timeout, stdin_text, wait_cap, then_fs=None):
+    """One command on one side, given to a service that answers: a wait for a ping first (the reference's client takes a service that does not answer a ping within 0.3 s for no
+    service, and a service of a large mirror is busy for seconds after a write), then the call; a call that ends with exactly `NO_SERVICE_ANSWER` while a process of the side is alive did
+    not run, and is made again after a new wait, up to `MAX_RETRIES` times. `then_fs` (edits of files) is applied to the side right after the last call. The waits and the retries are
+    returned, so how often a service was busy is data. -> dict(res, busy, retries=[{"seconds": the failed call's, "waited": the wait before the next}], fs_error=text or None)."""
+    busy = wait_answering(side, wait_cap) if side.lock() is not None else 0.0
+    res = run_aperas(side, argv, timeout, stdin_text)
+    retries = []
+    while is_no_service_answer(res) and len(retries) < MAX_RETRIES and side_service_alive(side):
+        retries.append({"seconds": res["seconds"], "waited": wait_answering(side, wait_cap)})
+        res = run_aperas(side, argv, timeout, stdin_text)
+    fs_error = None
+    if then_fs:
+        try:
+            apply_fs(side, then_fs)
+        except Refusal as e:
+            fs_error = str(e)
+    return {"res": res, "busy": busy, "retries": retries, "fs_error": fs_error}
+
+
+def place_config(side, snapshot, content_flush_ms=None):
+    """Puts the side's scratch `aperas.config.json` beside its roots: the snapshot's own when it has one (the reference's always is a plain copy). With `content_flush_ms` the file of the new
+    side also holds `graphs.tree.flushIntervalMs`; with no config in the snapshot it is a minimal one that names the side's two roots. -> the config written, or None when there is none."""
+    src = os.path.join(snapshot, "aperas.config.json")
+    dst = os.path.join(side.root, "aperas.config.json")
+    if content_flush_ms is None or side.name != "new":
+        if os.path.isfile(src):
+            shutil.copy2(src, dst)
+            return read_json(src)
+        return None
+    cfg = read_json(src) if os.path.isfile(src) else {"graph": {"apeiron": "./Apeiron", "artifacts": "./artifacts"}}
+    if not isinstance(cfg, dict):
+        raise Refusal("the snapshot's aperas.config.json is not a JSON object")
+    graphs = dict(cfg.get("graphs") or {})
+    graphs["tree"] = dict(graphs.get("tree") or {}, flushIntervalMs=content_flush_ms)
+    cfg["graphs"] = graphs
+    with open(dst, "w", encoding="utf-8") as h:
+        json.dump(cfg, h, indent=2)
+        h.write("\n")
+    return cfg
 
 
 def wait_ready(side, timeout):
-    """Wait until the lock in the side's run directory says `ready`, or its pid has ended, or `timeout` seconds have passed."""
+    """Wait until the lock in the side's run directory says `ready`, or the process the lock names has ended and no other process of the side is alive (the lock of the reference's
+    service names the short-lived client that claimed it until the service itself rewrites it, so a dead pid alone does not say the service has ended), or `timeout` seconds have passed."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         lock = side.lock()
-        if isinstance(lock, dict):
-            if lock.get("status") == "ready":
-                return
-            if isinstance(lock.get("pid"), int) and not is_alive(lock["pid"]):
-                return
-        time.sleep(0.2)
+        if isinstance(lock, dict) and lock.get("status") == "ready":
+            return
+        named_alive = isinstance(lock, dict) and isinstance(lock.get("pid"), int) and is_alive(lock["pid"])
+        if not named_alive and not side_service_alive(side):
+            return
+        time.sleep(0.5)
+
+
+def answers_ping(side, timeout=2.0):
+    """True when the side's service answers a `ping` on its socket within `timeout` seconds (a lock that says `ready` names a service that may still be busy with its start)."""
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.settimeout(timeout)
+    try:
+        c.connect(side.socket_path())
+        c.sendall(b'{"op":"ping"}\n')
+        data = b""
+        while b"\n" not in data:
+            chunk = c.recv(4096)
+            if not chunk:
+                return False
+            data += chunk
+        return json.loads(data.split(b"\n", 1)[0].decode("utf-8")).get("ok") is True
+    except (OSError, ValueError):
+        return False
+    finally:
+        c.close()
+
+
+def wait_answering(side, timeout):
+    """Waits until the side's service answers a ping, or no process of the side is alive any more, or `timeout` seconds have passed. -> seconds waited."""
+    t = time.time()
+    while time.time() - t < timeout:
+        if answers_ping(side):
+            break
+        if not side_service_alive(side):
+            break
+        time.sleep(0.5)
+    return round(time.time() - t, 3)
+
+
+def rss_of(pid):
+    """-> {"rss": kB, "peak": kB} of a process, from /proc (VmRSS and VmHWM), or None."""
+    try:
+        text = proc_text(pid, "status")
+    except OSError:
+        return None
+    out = {}
+    for key, name in (("VmRSS", "rss"), ("VmHWM", "peak")):
+        m = re.search(r"^%s:\s+(\d+) kB" % key, text, re.M)
+        if m:
+            out[name] = int(m.group(1))
+    return out or None
+
+
+def settle_after_service_command(side, argv, res, timeout):
+    """After a `service start` or `restart`: a call that gave up before the service was ready (the reference's client waits 5 s for the lock to say `ready`; a service on a large
+    mirror takes far longer, and goes on starting) is waited out until the lock says `ready` or no process of the side is alive any more; then, whatever the call said, the
+    side's service is waited for until it answers a ping (the reference's client takes a service that does not answer within 0.3 s for no service, and clears its lock: a service still busy
+    with its start must not be given the next command). -> seconds waited, or None when there was nothing to wait for."""
+    if argv[:2] not in (["service", "start"], ["service", "restart"]):
+        return None
+    t = time.time()
+    if res["status"] not in (0, None) and NOT_READY_IN_TIME in (res["stdout"] + res["stderr"]):
+        wait_ready(side, timeout)
+    wait_answering(side, max(timeout - (time.time() - t), 0))
+    return round(time.time() - t, 3)
 
 
 def start_side(side, world, others, timeout):
@@ -395,6 +522,8 @@ def start_side(side, world, others, timeout):
         raise Failure("the service of the side %s bound to something else than its own: %s" % (side.name, json.dumps(lock)))
     verify_ours(side, lock["pid"], world)
     info["pid"] = lock["pid"]
+    info["rss"] = rss_of(lock["pid"])
+    info["answeringAfter"] = wait_answering(side, max(timeout - (time.time() - t), 0))
     return info
 
 
@@ -490,7 +619,7 @@ def write_demo_snapshot(directory):
 # ---------------------------------------------------------------------------------------------------------------- the list
 
 FS_OPS = {"write", "modify-document", "edit-embedded", "duplicate-document", "truncate", "delete"}
-COMMAND_KEYS = {"name", "args", "stdin", "timeout", "status", "flush", "no_prompt", "fs", "wait", "capture", "status_ref", "status_new", "hangs", "comment"}
+COMMAND_KEYS = {"name", "args", "stdin", "timeout", "status", "flush", "no_prompt", "fs", "then_fs", "wait", "capture", "status_ref", "status_new", "hangs", "comment"}
 
 
 def load_commands(path):
@@ -518,7 +647,9 @@ def load_commands(path):
             raise Refusal("command %d needs an `args` list of strings" % (i + 1))
         if not has_args and not (c.get("fs") or c.get("wait")):
             raise Refusal("command %d needs an `args` list of strings" % (i + 1))
-        for key, kinds in (("stdin", str), ("timeout", (int, float)), ("status", int), ("status_ref", int), ("status_new", int), ("flush", bool), ("no_prompt", bool), ("name", str), ("capture", bool), ("wait", (int, float)), ("comment", str), ("fs", list), ("hangs", list)):
+        if c.get("then_fs") and not has_args:
+            raise Refusal("command %d has `then_fs` and no `args`: the edits follow a command" % (i + 1))
+        for key, kinds in (("stdin", str), ("timeout", (int, float)), ("status", int), ("status_ref", int), ("status_new", int), ("flush", bool), ("no_prompt", bool), ("name", str), ("capture", bool), ("wait", (int, float)), ("comment", str), ("fs", list), ("then_fs", list), ("hangs", list)):
             if key in c and (not isinstance(c[key], kinds) or isinstance(c[key], bool) and kinds is not bool):
                 raise Refusal("command %d: `%s` has the wrong type" % (i + 1, key))
         extra = set(c) - COMMAND_KEYS
@@ -526,7 +657,7 @@ def load_commands(path):
             raise Refusal("command %d: unknown keys %s" % (i + 1, sorted(extra)))
         if any(h not in ("ref", "new") for h in c.get("hangs", [])):
             raise Refusal("command %d: `hangs` names sides `ref` and `new` only" % (i + 1))
-        for op in c.get("fs", []):
+        for op in c.get("fs", []) + c.get("then_fs", []):
             if not isinstance(op, dict) or op.get("op") not in FS_OPS:
                 raise Refusal("command %d: an `fs` step is an object whose `op` is one of %s" % (i + 1, sorted(FS_OPS)))
         out.append(c)
@@ -636,6 +767,7 @@ def parse_args(argv):
     p.add_argument("--start-timeout", type=float, default=120)
     p.add_argument("--stop-timeout", type=float, default=60)
     p.add_argument("--tools", default=SCRIPTS)
+    p.add_argument("--content-flush-ms", type=float, help="the flush interval of the content graph written into the new side's scratch aperas.config.json (the reference has no such setting)")
     p.add_argument("--allow-real-root", action="store_true")
     p.add_argument("--demo-snapshot")
     p.add_argument("-h", "--help", action="store_true")
@@ -674,6 +806,8 @@ def validate(args):
         ports = []
     if len(ports) != 2 or ports[0] == ports[1]:
         raise Refusal("--ports takes two different ports, the reference's first: e.g. 2851,2852")
+    if args.content_flush_ms is not None and not 0 < args.content_flush_ms < 2 ** 31:
+        raise Refusal("--content-flush-ms must be a positive number of milliseconds below 2^31")
     if not 0 <= args.machine_number <= 511:
         raise Refusal("--machine-number must be 0 to 511")
     commands, final_flush = load_commands(args.commands)
@@ -712,9 +846,10 @@ def run(args):
             os.makedirs(side.root)
             copy_tree(os.path.join(snapshot, "Apeiron"), side.apeiron)
             copy_tree(os.path.join(snapshot, "artifacts"), side.artifacts)
-            if os.path.isfile(os.path.join(snapshot, "aperas.config.json")):
-                shutil.copy2(os.path.join(snapshot, "aperas.config.json"), os.path.join(side.root, "aperas.config.json"))
             os.makedirs(side.xdg_config)
+            config = place_config(side, snapshot, args.content_flush_ms)
+            if side.name == "new" and args.content_flush_ms is not None:
+                results["newConfig"] = config
         for sub, side_dir in (("Apeiron", "apeiron"), ("artifacts", "artifacts")):
             wanted = {k[len(sub) + 1:]: v for k, v in before.items() if k.startswith(sub + os.sep)}
             for side in sides:
@@ -760,13 +895,27 @@ def run(args):
                 if side.name in hung:
                     problems.append("command %d (%s) was not run on the side %s: an earlier command hung there" % (i, c["name"], side.name))
                     continue
-                res = run_aperas(side, argv, c.get("timeout", args.command_timeout), c.get("stdin"))
+                # A command is given to a service that answers, and is made again if the reference's client says there is none while its service is alive (`run_command`); the waits and
+                # the retries are recorded, so how often a service was busy is data and the commands do not depend on the moment they arrive.
+                step = run_command(side, argv, c.get("timeout", args.command_timeout), c.get("stdin"), min(args.command_timeout, 300), c.get("then_fs"))
+                res, busy = step["res"], step["busy"]
+                if step["fs_error"]:
+                    problems.append("command %d (%s) on the side %s: %s" % (i, c["name"], side.name, step["fs_error"]))
+                waited = settle_after_service_command(side, argv, res, args.start_timeout)
                 base = os.path.join(out, "commands", "%03d-%s.%s" % (i, slug(c["name"]), side.name))
                 for stream in ("stdout", "stderr"):
                     with open(base + "." + stream, "w", encoding="utf-8") as h:
                         h.write(res[stream])
                 record[side.name] = {"status": res["status"], "seconds": res["seconds"], "timedOut": res["timed_out"], "stdout": os.path.relpath(base + ".stdout", out), "stderr": os.path.relpath(base + ".stderr", out),
                                      "stdoutBytes": len(res["stdout"].encode()), "stderrBytes": len(res["stderr"].encode())}
+                if waited is not None:
+                    record[side.name]["settledAfter"] = waited
+                if busy >= 0.5:
+                    record[side.name]["busyBefore"] = busy
+                if step["retries"]:
+                    record[side.name]["retries"] = step["retries"]
+                if c.get("then_fs"):
+                    record["thenFs"] = c["then_fs"]
                 expected_hang = side.name in c.get("hangs", [])
                 if res["timed_out"]:
                     hung.add(side.name)
@@ -787,6 +936,13 @@ def run(args):
             results["commands"].append(record)
             rows.append(record)
         results["hung"] = sorted(hung)
+        results["busyBefore"] = {sd.name: [[r["index"], r["name"], r[sd.name]["busyBefore"]] for r in results["commands"] if sd.name in r and "busyBefore" in r[sd.name]] for sd in sides}
+        results["retries"] = {sd.name: {"count": sum(len(r[sd.name]["retries"]) for r in results["commands"] if "retries" in r.get(sd.name, {})),
+                                        "commands": [[r["index"], r["name"], len(r[sd.name]["retries"])] for r in results["commands"] if "retries" in r.get(sd.name, {})]} for sd in sides}
+        results["rssAtEnd"] = {}
+        for side in sides:
+            lk = side.lock()
+            results["rssAtEnd"][side.name] = rss_of(lk["pid"]) if isinstance(lk, dict) and isinstance(lk.get("pid"), int) else None
 
         # The dumps: the files `flush` wrote, copied while the services still run.
         os.makedirs(os.path.join(out, "dumps"))
@@ -835,7 +991,7 @@ def run(args):
         if was != now:
             problems.append("the git state of the code %s changed during the run: %s -> %s" % (s.code, was, now))
     results["working"]["locksAfter"] = world.locks()
-    results["working"]["untouched"] = all(is_alive(pid) for pid in world.pids())
+    results["working"]["untouched"] = all(is_alive(pid) for pid in results["working"]["pids"])   # the pids the lock named at the start, not those it names now (a service that stopped leaves no lock)
     if after_snapshot_changed(snapshot, before):
         problems.append("the snapshot changed during the run")
     results["loadAverageAtEnd"] = os.getloadavg()
@@ -863,6 +1019,12 @@ def print_table(results, rows):
             continue
         print("%-4d %-28s %-9s %-9s %8.2f %8.2f" % (r["index"], r["name"][:28], (r.get("ref") or {}).get("status", "-"), (r.get("new") or {}).get("status", "-"),
                                                      (r.get("ref") or {}).get("seconds", 0), (r.get("new") or {}).get("seconds", 0)))
+    for name, busy in results.get("busyBefore", {}).items():
+        if busy:
+            print("busy  %-4s did not answer a ping for 0.5 s or more before %d command(s): %s" % (name, len(busy), ", ".join("%s (%.1f s)" % (b[1], b[2]) for b in busy[:8])))
+    for name, info in results.get("retries", {}).items():
+        if info["count"]:
+            print("retry %-4s %d call(s) ended with `No ApeironNgn service running` while the service was alive and were made again: %s" % (name, info["count"], ", ".join("%s (x%d)" % (b[1], b[2]) for b in info["commands"][:8])))
     for name, s in results.get("stops", {}).items():
         print("stop  %-4s signal %s, stopped %s" % (name, s.get("signal"), s.get("stopped")))
     print("processes left: %s; working service pids %s untouched: %s" % (results["processesLeft"], results["working"]["pids"], results["working"]["untouched"]))

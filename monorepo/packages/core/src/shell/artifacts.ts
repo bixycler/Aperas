@@ -189,8 +189,12 @@ export interface TrackResult {
  *  `undefined`, so it's unconditionally "changed"). */
 export function trackArtifact(store: Db, artifactPath: string): TrackResult {
   const existingId = store.maps.liveAtPath(artifactPath, { kind: 'ArtifactNode' });
-  const node = (existingId ? wrap(store, existingId) : createNode(store, `ArtifactNode:${generateNodeId()}`, { path: artifactPath })) as unknown as ArtifactNode;
-  return node.trackFromDisk(artifactPath);
+  // The file is read before a new record is made: a file that cannot be read (missing, a directory) throws here and leaves no record behind.
+  const content = readFileSync(join(getArtifactsDir(), artifactPath), 'utf-8');
+  return store.write.guard(() => {
+    const node = (existingId ? wrap(store, existingId) : createNode(store, `ArtifactNode:${generateNodeId()}`, { path: artifactPath })) as unknown as ArtifactNode;
+    return node.trackFromDisk(artifactPath, content);
+  });
 }
 
 export interface ArtifactSweepStats {
@@ -685,11 +689,14 @@ export function ingestArtifact(store: Db, artifactPath: string, force: boolean =
     throw new Error(`Artifact '${artifactPath}' is not tracked yet — run track first.`);
   }
   const record = wrap(store, existingId) as unknown as ArtifactNode;
-  const result = record.ingestFromDisk(force, bypassUnchangedCheck);
-  if (!result) return null;
-  const { pendingLinks, oldLinkTargets, oldWikilinksByBlock, ...rest } = result;
-  const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, existingId, 'skip');
-  return { ...rest, linkResolution };
+  // A file whose ingestion throws leaves none of the blocks and links it made (the write layer's `guard`); what it changed in nodes that were already there stays.
+  return store.write.guard(() => {
+    const result = record.ingestFromDisk(force, bypassUnchangedCheck);
+    if (!result) return null;
+    const { pendingLinks, oldLinkTargets, oldWikilinksByBlock, ...rest } = result;
+    const linkResolution = resolveBlockLinks(store, pendingLinks, oldLinkTargets, oldWikilinksByBlock, existingId, 'skip');
+    return { ...rest, linkResolution };
+  });
 }
 
 /** `ingestArtifact`'s own non-null result shape, incl. `linkResolution` — named once here so

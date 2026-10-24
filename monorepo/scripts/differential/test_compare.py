@@ -3,8 +3,10 @@
 
   Values      the comparison of two dumps as parsed values: the order of keys, of documents and of sets does not matter, `children` is a list, an empty set is an
               absent one, a minted id is mapped by order, and a changed literal, a missing child, an id swapped or a timestamp that is missing or not a time is caught
-  Table       the table of matchers: 28 entries keyed 1 to 28 in the groups of Layer 4, the five a dump can show have a function, every other says why it is not seen by a dump
+  Table       the table of matchers: 31 entries keyed 1 to 31 in the groups of Layer 4, the five a dump can show have a function, every other says why it is not seen by a dump
   Matchers    for each entry with a function, a minimal pair of dumps that only that entry claims (no finding), and near misses that no entry claims
+  Facts       what the snapshot says about the six README documents, the tombstones (by artifact, by graph) and the unfolds that name one, for the matchers of the outputs
+  Emptied     the containers a removal of the run left empty, without the tombstones the snapshot already held
   Outputs     the ids that only a command's stdout names are mapped by order, and the two ways of mapping must agree; times in an output are masked
   Migration   the reference's dump is migrated with `migrate-mirror.py` before the comparison, so the migration's own changes are not differences
   Cli         the exit status (0, 1, 2), the table, `--json`, and `--run` on a run directory
@@ -325,11 +327,11 @@ class Values(Base):
 
 
 class Table(unittest.TestCase):
-    def test_the_28_entries_are_keyed_in_the_order_of_layer_4(self):
-        self.assertEqual(sorted(compare.MATCHERS), list(range(1, 29)))
+    def test_the_31_entries_are_keyed_in_the_order_of_layer_4(self):
+        self.assertEqual(sorted(compare.MATCHERS), list(range(1, 32)))
         groups = [m.group for _, m in sorted(compare.MATCHERS.items())]
-        self.assertEqual([groups.count(g) for g in ("flip", "order", "ingest", "sweeps", "follow-up")], [12, 7, 2, 6, 1])
-        self.assertEqual(len({m.title for m in compare.MATCHERS.values()}), 28)
+        self.assertEqual([groups.count(g) for g in ("flip", "order", "ingest", "sweeps", "follow-up", "move", "refused")], [12, 7, 2, 7, 1, 1, 1])
+        self.assertEqual(len({m.title for m in compare.MATCHERS.values()}), 31)
         for k, m in compare.MATCHERS.items():
             self.assertEqual(m.key, k)
             self.assertTrue(m.note, k)
@@ -345,8 +347,8 @@ class Table(unittest.TestCase):
 
     def test_nothing_is_seen_on_identical_dumps(self):
         r = compare.Result()
-        self.assertEqual(r.not_seen(), list(range(1, 29)))
-        self.assertEqual(r.not_seen_by_a_dump(), [k for k in range(1, 29) if k not in (2, 3, 21, 23, 25)])
+        self.assertEqual(r.not_seen(), list(range(1, 32)))
+        self.assertEqual(r.not_seen_by_a_dump(), [k for k in range(1, 32) if k not in (2, 3, 21, 23, 25)])
 
 
 def tombstone(d):
@@ -397,6 +399,40 @@ class Matchers(Base):
         r = self.run_pair(edit_ref=er, edit_new=en)
         self.caught(r)
         self.assertEqual((r.findings[0][0].scope, r.findings[0][0].op), ("doc", "only-new"))
+
+    def test_entry_2_claims_an_unfold_of_a_tombstone_the_new_side_pruned(self):
+        er, en = self.removed_paragraph()
+
+        def ref_unfolds(files):
+            er(files)
+            find(files, IDS["V"])["unfolds"].append(IDS["P"])
+        r = self.run_pair(edit_ref=ref_unfolds, edit_new=en)
+        self.only(r, 2)
+        self.assertEqual(r.seen[2], 2)   # the tombstone and the unfold that names it
+
+    def test_entry_2_does_not_claim_an_unfold_of_a_live_node_or_of_a_tombstone_the_new_side_keeps_or_of_nothing(self):
+        # a live node: the unfold is only the reference's
+        r = self.run_pair(edit_ref=lambda f: find(f, IDS["V"])["unfolds"].append(IDS["P"]))
+        self.caught(r)
+        # a tombstone that the new side holds as well
+        er, en = self.removed_paragraph(new_keeps_tombstone=True)
+
+        def ref_unfolds(files):
+            er(files)
+            find(files, IDS["V"])["unfolds"].append(IDS["P"])
+        r = self.run_pair(edit_ref=ref_unfolds, edit_new=en)
+        self.assertEqual([(d.scope, d.op) for d, _ in r.findings], [("element", "only-ref")])
+        # an id that no node has
+        r = self.run_pair(edit_ref=lambda f: find(f, IDS["V"])["unfolds"].append(S("BlockNode", 99)))
+        self.caught(r)
+        # the other direction: an unfold only the new side holds
+        er, en = self.removed_paragraph()
+
+        def new_unfolds(files):
+            en(files)
+            find(files, IDS["V"])["unfolds"].append(IDS["P"])
+        r = self.run_pair(edit_ref=er, edit_new=new_unfolds)
+        self.assertNotIn(2, [k for d, k in r.claims if d.scope == "element" and d.field == "unfolds"])
 
     # ---- 3: a removal tombstones the container it empties
     def emptied_list(self, new_prunes):
@@ -588,6 +624,73 @@ def command(index, name, ref_out, new_out, ref_status=0, new_status=0, ref_err="
             "new": {"status": new_status, "timedOut": False, "stdout": new_out, "stderr": new_err}}
 
 
+class FactsOfTheSnapshot(unittest.TestCase):
+    """`Facts`: what the matchers of the outputs read from the mirror the run started from."""
+
+    def files(self):
+        A, T, F = "ArtifactNode:00D8A0000000A", "ArtifactNode:00D8A0000000B", "FolderNode:00D8F0000000F"
+        return {
+            "BlockNode.jsonld": [
+                {"@id": "BlockNode:00D8B0000000A", "@type": "BlockNode", "title": "# H", "type": "heading", "parent": A, "children": ["BlockNode:00D8B0000000B"]},
+                {"@id": "BlockNode:00D8B0000000B", "@type": "BlockNode", "title": "gone", "type": "listItem", "tombstonedAt": "2026-10-01T00:00:00.000Z", "parent": "BlockNode:00D8B0000000A", "children": [],
+                 "links": [{"@id": "BlockNode:00D8B0000000B:links:Link:00D8L0000000A", "@type": "Link", "target": "BlockNode:00D8B0000000A"}]},
+                {"@id": "BlockNode:00CN1QEAGG001", "@type": "BlockNode", "title": "readme", "type": "paragraph", "parent": "ArtifactNode:00CN1QE950000"},
+                {"@id": "BlockNode:00CN4ZQAPG001", "@type": "BlockNode", "title": "readme", "type": "paragraph", "tombstonedAt": "2026-10-01T00:00:00.000Z"},
+            ],
+            "ArtifactNode.jsonld": [{"@id": A, "@type": "ArtifactNode", "title": "a.md", "path": "d/a.md", "parent": F, "children": ["BlockNode:00D8B0000000A"]},
+                                    {"@id": T, "@type": "ArtifactNode", "title": "t.md", "path": "d/t.md", "tombstonedAt": "2026-10-01T00:00:00.000Z"},
+                                    {"@id": "ArtifactNode:00CN1QE950000", "@type": "ArtifactNode", "title": "README.md", "path": "README.md", "parent": F}],
+            ".state/BlockNode.jsonld": [{"@id": "BlockNode:00D8T0000000A", "@type": "BlockNode", "title": "t", "type": "paragraph"}],
+            ".state/TreeView.jsonld": [{"@id": "TreeView:00D8V0000000A", "@type": "TreeView", "unfolds": ["BlockNode:00D8B0000000B", "BlockNode:00D8B0000000A", "BlockNode:00D8Z0000000Z"]}],
+        }
+
+    def test_the_tombstones_by_artifact_and_the_links_they_hosted(self):
+        f = compare.Facts(self.files())
+        self.assertEqual(f.tomb, {"BlockNode:00D8B0000000B", "ArtifactNode:00D8A0000000B", "BlockNode:00CN4ZQAPG001"})
+        self.assertEqual(f.tomb_blocks("d/a.md"), [("BlockNode:00D8B0000000B", "listItem", "gone")])
+        self.assertEqual(f.tomb_links("d/a.md"), 1)
+        self.assertEqual((f.tomb_blocks("d/none.md"), f.tomb_links("d/none.md")), ([], 0))
+        self.assertEqual(f.tombstoned_artifacts, {"d/t.md": "ArtifactNode:00D8A0000000B"})
+
+    def test_the_readme_documents_the_graph_of_a_node_and_the_unfolds_that_name_a_tombstone(self):
+        f = compare.Facts(self.files())
+        self.assertEqual(f.readme_paths, ["README.md"])
+        self.assertEqual(f.readme_paragraphs, 1)   # the tombstoned paragraph is not a live block
+        self.assertEqual((f.graph_of("BlockNode:00D8T0000000A"), f.graph_of("BlockNode:00D8B0000000B"), f.graph_of("BlockNode:nothing")), ("state", "mirror", None))
+        self.assertEqual(f.tomb_unfolds("TreeView:00D8V0000000A"), ["BlockNode:00D8B0000000B"])
+        self.assertEqual(f.tomb_unfolds("TreeView:none"), [])
+
+    def test_the_readme_ids_are_the_ones_the_migration_deletes(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("migrate_mirror", os.path.join(os.path.dirname(HERE), "migrate-mirror.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual((compare.README_ARTIFACTS, compare.README_PARAGRAPHS), (mod.README_ARTIFACTS, mod.README_PARAGRAPHS))
+
+    def test_a_snapshot_directory_is_read_from_its_root_or_from_its_apeiron_directory(self):
+        tmp = tempfile.mkdtemp(prefix="dfacts-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        write_dump(os.path.join(tmp, "Apeiron"), self.files())
+        self.assertEqual(compare.snapshot_facts(tmp).readme_paths, ["README.md"])
+        self.assertEqual(compare.snapshot_facts(os.path.join(tmp, "Apeiron")).readme_paths, ["README.md"])
+
+
+class EmptiedIds(unittest.TestCase):
+    """`Context.emptied_ids`: the containers that a removal of the run left empty, and not the tombstones the snapshot already held."""
+
+    def ctx(self, facts):
+        nd = lambda i, **f: compare.NDoc(i, i, "BlockNode", "BlockNode.jsonld", f, {})
+        ref = {"BlockNode:W": nd("BlockNode:W", type="list", tombstonedAt="<timestamp>", children=[]), "BlockNode:OLD": nd("BlockNode:OLD", type="list", tombstonedAt="<timestamp>", children=[])}
+        return compare.Context(ref, {}, set(), facts=facts)
+
+    def test_without_the_snapshot_every_empty_container_of_the_reference_is_one(self):
+        self.assertEqual(self.ctx(None).emptied_ids(), {"BlockNode:W", "BlockNode:OLD"})
+
+    def test_a_tombstone_of_the_snapshot_is_not_emptied_by_the_run(self):
+        facts = compare.Facts({"BlockNode.jsonld": [{"@id": "BlockNode:OLD", "@type": "BlockNode", "tombstonedAt": "2026-10-01T00:00:00.000Z"}]})
+        self.assertEqual(self.ctx(facts).emptied_ids(), {"BlockNode:W"})
+
+
 class Outputs(Base):
     def with_block(self, pre):
         def go(files):
@@ -692,6 +795,9 @@ class Cli(Base):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("UNEXPECTED differences: 0", p.stdout)
         self.assertIn("28   Follow-up 1", p.stdout)
+        self.assertIn("29   Move 1", p.stdout)
+        self.assertIn("30   Sweeps 7", p.stdout)
+        self.assertIn("31   Refused 1", p.stdout)
         files = base()
         find(files, IDS["P"])["text"] = "x"
         out = os.path.join(self.tmp, "r.json")
@@ -703,7 +809,7 @@ class Cli(Base):
             j = json.load(h)
         self.assertEqual(j["unexpected"], 1)
         self.assertEqual(j["findings"][0]["field"], "text")
-        self.assertEqual(j["notSeenByADump"], [k for k in range(1, 29) if k not in (2, 3, 21, 23, 25)])
+        self.assertEqual(j["notSeenByADump"], [k for k in range(1, 32) if k not in (2, 3, 21, 23, 25)])
         self.assertEqual(j["seen"], {})
 
     def test_exit_2_on_a_usage_error(self):

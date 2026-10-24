@@ -53,14 +53,21 @@ export async function runStart(options: { startAnyway?: boolean } = {}): Promise
     return;
   }
   const lock = readLock();
-  if (lock?.status === 'starting' && isProcessAlive(lock.pid)) { // another start is under way: join its wait rather than clear its lock and start a second service
-    console.log(`[aperas service] Already starting (pid ${lock.pid}) — waiting for it.`);
+  if (lock && isProcessAlive(lock.pid)) { // a lock whose process lives is a service, not a leftover: never clear it and start a second one
+    if (lock.status === 'starting') { // another start is under way: join its wait
+      console.log(`[aperas service] Already starting (pid ${lock.pid}) — waiting for it.`);
+      await waitForReady();
+      const ready = readLock();
+      console.log(`[aperas service] Started — bound to ${ready ? describeBinding(ready.apeironRoot, ready.artifactsRoot) : describeBinding(lock.apeironRoot, lock.artifactsRoot)}.`);
+      return;
+    }
+    console.log(`[aperas service] Running (pid ${lock.pid}) but busy and not answering yet — waiting for it.`); // ready, and too busy to answer the ping in 300 ms
     await waitForReady();
-    const ready = readLock();
-    console.log(`[aperas service] Started — bound to ${ready ? describeBinding(ready.apeironRoot, ready.artifactsRoot) : describeBinding(lock.apeironRoot, lock.artifactsRoot)}.`);
+    const now = readLock() ?? lock;
+    console.log(`[aperas service] Already running (pid ${now.pid}), bound to ${describeBinding(now.apeironRoot, now.artifactsRoot)}.`);
     return;
   }
-  if (lock) clearLock(); // not actually answering — a stale leftover from a crash, not a live claim
+  if (lock) clearLock(); // its process is gone — a stale leftover from a crash, not a live claim
   const { apeironRoot, artifactsRoot } = await bindAndSpawn(options.startAnyway === true);
   console.log(`[aperas service] Started — bound to ${describeBinding(apeironRoot, artifactsRoot)}.`);
 }

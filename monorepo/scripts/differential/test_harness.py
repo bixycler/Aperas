@@ -10,8 +10,9 @@
   Live        a run of the demo list on the demo snapshot, with the new code on both sides, ends with no process left, the working service
               untouched, the reference copy unmigrated and the new copy migrated; a command with a status other than the one expected fails the run
 
-Only scratch directories are used. The live cases start two services of their own in a scratch runtime directory each, on ports of 2800 to 2899, a slice of 20 for each test class and each live case.
+Only scratch directories are used. The live cases start two services of their own in a scratch runtime directory each, on ports of 2800 to 2899, each claimed by a lock for as long as its test process lives and taken from a slice of 20 for each test class and each live case when it can.
 """
+import fcntl
 import json
 import os
 import random
@@ -46,22 +47,53 @@ def read(path):
 
 
 SLICE = 20
+CLAIM_DIR = os.path.join(tempfile.gettempdir(), "aperas-dh-ports")
+_claims = {}   # port -> the descriptor of the file whose lock this process holds on it until it ends
 
 
-def free_ports(n, slot):
-    """n different free ports in the slot-th slice of the harness's range (2800 + 20 * slot, 20 ports), in a random order. Each test class and each live case has a
-    slice of its own, so that the test processes of one run, which are concurrent, never choose each other's ports; two runs at the same time still can, and a
-    start that is refused for a port with a listener is repeated with other ports by `Live.run_list`."""
+def claim_port(port):
+    """True when this process now holds the claim on `port`: an exclusive `flock` on a file of its own in `CLAIM_DIR`, kept until the process ends (the kernel drops it then, so a
+    crashed test leaves none). The test processes of one run, and of two runs at the same time, are told apart by it, which the check that a port is free cannot do: that check is
+    true of a port a test has chosen but whose service has not yet bound it."""
+    if port in _claims:
+        return False
+    os.makedirs(CLAIM_DIR, exist_ok=True)
+    fd = os.open(os.path.join(CLAIM_DIR, str(port)), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    _claims[port] = fd
+    return True
+
+
+def release_ports(ports):
+    """Gives up the claims on `ports` (a test that is over, a start repeated with other ports)."""
+    for p in ports:
+        fd = _claims.pop(p, None)
+        if fd is not None:
+            os.close(fd)
+
+
+def free_ports(n, slot, owner=None):
+    """n different free ports, claimed (see `claim_port`), from the whole range of the harness (2800 to 2899), those of the slot-th slice (2800 + 20 * slot, 20 ports) first and each
+    group in a random order. The slice keeps the test classes and live cases of a run away from each other as far as it can; the claim is what makes it certain, and also
+    keeps two runs at the same time apart. The claims are given up when the `owner` test case is over, or at the end of the process. A start that is refused for a port with a listener (not a test of ours) is repeated with other ports by `Live.run_list`."""
     lo = harness.PORT_RANGE[0] + SLICE * slot
-    assert lo + SLICE - 1 <= harness.PORT_RANGE[1]
+    mine = list(range(lo, lo + SLICE))
+    others = [p for p in range(harness.PORT_RANGE[0], harness.PORT_RANGE[1] + 1) if p not in mine]
+    random.shuffle(mine)
+    random.shuffle(others)
     found = []
-    candidates = list(range(lo, lo + SLICE))
-    random.shuffle(candidates)
-    for p in candidates:
-        if p != harness.WORKING_PORT and harness.port_is_free(p):
+    for p in mine + others:
+        if p != harness.WORKING_PORT and harness.port_is_free(p) and claim_port(p):
             found.append(p)
         if len(found) == n:
+            if owner is not None:
+                owner.addCleanup(release_ports, found)
             return found
+    release_ports(found)
     raise RuntimeError("no free port")
 
 
@@ -85,7 +117,7 @@ class Assertions(unittest.TestCase):
     def setUp(self):
         self.out = scratch(self)
         self.world = harness.World(self.out, working_run_dirs=[], real_graph=os.path.join(self.out, "..", "no-such-real-graph"))
-        self.ports = free_ports(2, 0)
+        self.ports = free_ports(2, 0, self)
         self.ref = harness.Side("ref", harness.MONOREPO, self.out, self.ports[0], 509, "g")
         self.new = harness.Side("new", harness.MONOREPO, self.out, self.ports[1], 509, "g")
 
@@ -222,7 +254,7 @@ class Cli(unittest.TestCase):
         self.snap = os.path.join(self.dir, "snap")
         harness.write_demo_snapshot(self.snap)
         self.out = os.path.join(self.dir, "out")
-        self.ports = ",".join(str(p) for p in free_ports(2, 1))
+        self.ports = ",".join(str(p) for p in free_ports(2, 1, self))
 
     def refused(self, *args, pattern="", out_made=False):
         r = run_cli(*args)
@@ -335,6 +367,25 @@ class Start(unittest.TestCase):
         wait.assert_not_called()
 
 
+class Ports(unittest.TestCase):
+    """The ports the live cases choose are claimed: two test processes of one run, which choose at the same time, never get the same one."""
+
+    def test_a_claimed_port_is_refused_to_another_process_until_it_is_released(self):
+        [port] = free_ports(1, 1, self)
+        code = "import sys; sys.path.insert(0, %r); import test_harness as th; print(th.claim_port(%d))" % (HERE, port)
+        other = lambda: subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
+        self.assertEqual(other(), "False")
+        release_ports([port])
+        self.assertEqual(other(), "True")
+        self.assertTrue(claim_port(port))   # the child process is over: its claim went with it
+
+    def test_the_same_slice_gives_different_ports_and_the_range_is_used_when_the_slice_is_used_up(self):
+        first = free_ports(SLICE, 1, self)
+        second = free_ports(2, 1, self)
+        self.assertEqual(len(set(first + second)), SLICE + 2)
+        self.assertTrue(all(harness.PORT_RANGE[0] <= p <= harness.PORT_RANGE[1] for p in first + second))
+
+
 class LiveBase(unittest.TestCase):
     """Two services of the new code, one on each side, on the demo snapshot: the harness's own run, with the reference code standing in for `Aperas/`. The cases are in `Live`
     and, for the keys of a list that piece 4 added, in `test_steps.py`, which uses this class as its base (it has no case of its own)."""
@@ -345,18 +396,18 @@ class LiveBase(unittest.TestCase):
         harness.write_demo_snapshot(self.snap)
         self.out = os.path.join(self.dir, "out")
         self.slot = 2 + sorted(m for m in dir(self) if m.startswith("test_")).index(self._testMethodName)
-        self.ports = ",".join(str(p) for p in free_ports(2, self.slot))
+        self.ports = ",".join(str(p) for p in free_ports(2, self.slot, self))
         self.before = harness.manifest(self.snap)
 
-    def run_list(self, path):
+    def run_list(self, path, *extra):
         """The harness's run of `path` -> its process. A start refused because something listens on a port (a test run of another process at the same time took one of
         this case's ports between the choice and the start) writes and starts nothing that stays, so it is repeated with other ports, up to five times."""
         for attempt in range(5):
-            r = run_cli("--snapshot", self.snap, "--out", self.out, "--commands", path, "--ports", self.ports, "--reference-code", harness.MONOREPO)
+            r = run_cli("--snapshot", self.snap, "--out", self.out, "--commands", path, "--ports", self.ports, "--reference-code", harness.MONOREPO, *extra)
             if r.returncode != 2 or "something listens on the port" not in r.stderr + r.stdout:
                 return r
             shutil.rmtree(self.out, True)
-            self.ports = ",".join(str(p) for p in free_ports(2, self.slot))
+            self.ports = ",".join(str(p) for p in free_ports(2, self.slot, self))
         return r
 
     def own_processes(self):
@@ -399,6 +450,9 @@ class Live(LiveBase):
         self.assertTrue(res["working"]["untouched"])
         self.assertTrue(all(harness.is_alive(pid) for pid in working))
         self.assertEqual(harness.manifest(self.snap), self.before)
+        # every command was given to a service that answers; a wait of 0.5 s or more would be listed (a demo service is not busy), and every start is timed until it answers
+        self.assertEqual(res["busyBefore"], {"ref": [], "new": []})
+        self.assertTrue(all("answeringAfter" in s for s in res["starts"].values()))
         self.assertEqual(res["problems"], [])
 
     def test_an_unexpected_status_fails_the_run_and_the_services_are_still_stopped(self):

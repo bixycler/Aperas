@@ -1,7 +1,7 @@
 /**
  * ApeironNgn shared service client (Aperas-apeironngn-design.md §4 rollout step 5) — every
  * `kg:xxx` script uses this instead of loading and dumping the mirror itself.
- * `ensureServiceRunning` errors with instructions rather than auto-starting one (it waits for a service that is still starting, as a start does) (AperasKG/
+ * `ensureServiceRunning` errors with instructions rather than auto-starting one (it waits for a service that is still starting or busy, as a start does) (AperasKG/
  * artifacts/discussion/packaging.md's "Settled: no concurrency..." note: an implicit auto-spawn
  * meant whichever command happened to run first silently decided which graph the service bound to
  * for its whole lifetime — `aperas service start`/`restart` (`kgService.ts`) is now the only place
@@ -40,6 +40,8 @@ function sleep(ms: number): Promise<void> {
 function sendRaw(req: ServiceRequest, timeoutMs: number): Promise<ServiceResponse> {
   return new Promise((resolvePromise, reject) => {
     const socket = connect(getSocketPath());
+    // Decoded by the socket itself, which keeps the bytes of a character cut between two chunks until the rest arrives; `chunk.toString()` on each chunk would print U+FFFD for each half.
+    socket.setEncoding('utf8');
     let buffer = '';
     let settled = false;
     const timer = timeoutMs > 0 ? setTimeout(() => {
@@ -51,7 +53,7 @@ function sendRaw(req: ServiceRequest, timeoutMs: number): Promise<ServiceRespons
     socket.on('connect', () => socket.write(encodeMessage(req)));
     socket.on('data', (chunk) => {
       if (settled) return;
-      buffer += chunk.toString('utf-8');
+      buffer += chunk;
       const idx = buffer.indexOf('\n');
       if (idx === -1) return;
       settled = true;
@@ -120,6 +122,7 @@ function endedWithoutReady(startedAt: number, what: string): Error {
  * Waits for the service to answer, for `APERAS_READY_TIMEOUT_MS` (default 180 s) at most. While the process the lock names lives and the lock does not yet say `ready`, the service
  * is still starting, and the wait says so on stderr every ten seconds; a start fails with a message of its own only when that process died (a service that refuses to start clears
  * the lock the caller claimed and exits: the wait ends at once and says why from the log) or when the time is out, and a time out leaves the service running.
+ * A lock that says `ready` with a live process is a service that is busy, however long its last request has run: the wait says so in the same way, and never clears the lock.
  */
 export async function waitForReady(options: { timeoutMs?: number; noteEveryMs?: number } = {}): Promise<void> {
   const startedAt = Date.now();
@@ -130,21 +133,33 @@ export async function waitForReady(options: { timeoutMs?: number; noteEveryMs?: 
   let last: LockInfo | null = null;
   for (;;) {
     if (await ping()) return;
+    const before: LockInfo | null = last;
     last = readLock();
-    if (last === null) throw endedWithoutReady(startedAt, 'ended without becoming ready');
+    if (last === null) {
+      if (before?.status === 'ready') throw new Error(`ApeironNgn service (process ${before.pid}) stopped while it was not answering. Start one with: aperas service start`);
+      throw endedWithoutReady(startedAt, 'ended without becoming ready');
+    }
     if (!isProcessAlive(last.pid)) {
+      if (last.status === 'ready') throw new Error(`ApeironNgn service (process ${last.pid}) stopped while it was not answering. Start one with: aperas service start`);
       // a refusal clears the lock and then ends the process: the lock read now is the later word
       throw endedWithoutReady(startedAt, readLock() === null ? 'ended without becoming ready' : `process ${last.pid} died before it was ready`);
     }
     const now = Date.now();
     if (now >= deadline) break;
     if (now >= nextNote) {
-      console.error(`[aperas service] Still starting (process ${last.pid}, ${Math.round((now - startedAt) / 1000)} s)...`);
+      const secs = Math.round((now - startedAt) / 1000);
+      console.error(last.status === 'ready'
+        ? `[aperas service] The service (process ${last.pid}) is running but busy; still waiting for it to answer (${secs} s)...`
+        : `[aperas service] Still starting (process ${last.pid}, ${secs} s)...`);
       nextNote += noteEveryMs;
     }
     await sleep(READY_POLL_MS);
   }
-  throw new Error(`ApeironNgn service did not become ready in time: it is still ${last.status === 'starting' ? 'starting' : 'not answering'} after ${Math.round(timeoutMs / 1000 * 10) / 10} s (process ${last.pid} lives, the lock says "${last.status}"). It is left running; try again once it is up, see service.log in the run directory, or set APERAS_READY_TIMEOUT_MS (milliseconds) for a longer wait.`);
+  const secs = Math.round(timeoutMs / 1000 * 10) / 10;
+  if (last.status === 'ready') {
+    throw new Error(`ApeironNgn service (process ${last.pid}) is running but busy: it did not answer in ${secs} s. It is left running, and it is not stopped; run the command again once it is free, or set APERAS_READY_TIMEOUT_MS (milliseconds) for a longer wait.`);
+  }
+  throw new Error(`ApeironNgn service did not become ready in time: it is still ${last.status === 'starting' ? 'starting' : 'not answering'} after ${secs} s (process ${last.pid} lives, the lock says "${last.status}"). It is left running; try again once it is up, see service.log in the run directory, or set APERAS_READY_TIMEOUT_MS (milliseconds) for a longer wait.`);
 }
 
 /** Spawns the actual long-lived service process, bound to `apeironRoot`/`artifactsRoot` for its
@@ -201,7 +216,7 @@ export function spawnService(apeironRoot: string, artifactsRoot: string, httpPor
 export async function ensureServiceRunning(): Promise<void> {
   if (await ping()) return;
   const lock = readLock();
-  if (lock?.status === 'starting' && isProcessAlive(lock.pid)) { // a service on its way up: wait for it, as a start does
+  if (lock && isProcessAlive(lock.pid)) { // a service on its way up, or one too busy to answer the ping: wait for it, as a start does; a lock whose process lives is never "no service"
     await waitForReady();
     return;
   }

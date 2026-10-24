@@ -7,7 +7,7 @@ What is checked is the shape of the script and not its outcome, which is the wor
   Corpus   the snapshot holds the artifacts, the thread, the views, the ghost folder (a `children` entry with no document) and the three links of `# Delta`, each of six positions
   Lists    each list is accepted by the harness; the names are unique; every id a command names is in the snapshot (but for the ones that are absent on purpose); the main list holds every
            one of the 19 verbs with a flag or a refusal for most, the reference's three own verbs, one move into an own subtree, last and expected to hang on the reference's side only
-  Entries  each of the 28 entries of Layer 4 is aimed at by a case of a list, or named in `cmdrun.UNREACHABLE` with its reason, and no entry is in both
+  Entries  each of the 31 entries of Layer 4 is aimed at by a case of a list, or named in `cmdrun.UNREACHABLE` with its reason, and no entry is in both
 
 Only a scratch directory is used; the one service is on a port of 2800 to 2899.
 """
@@ -80,6 +80,17 @@ class Lists(unittest.TestCase):
             names = [c["name"] for c in commands]
             self.assertEqual(len(names), len(set(names)), part)
             self.assertEqual(final_flush, part == "lifecycle")
+
+    def test_the_edit_of_the_file_in_the_conflict_follows_its_update_in_one_step(self):
+        cmds = self.lists["main"]["commands"]
+        names = [c["name"] for c in cmds]
+        self.assertNotIn("edit-block-text-conflict", names)   # a step of its own would leave the gap of a whole command, in which the 10 s timer can flush the update
+        step = cmds[names.index("update-before-conflict")]
+        self.assertEqual(step["args"][0], "update")
+        self.assertFalse(step["flush"])
+        self.assertEqual([op["op"] for op in step["then_fs"]], ["modify-document"])
+        self.assertNotIn("fs", step)
+        self.assertEqual(names[names.index("update-before-conflict") + 1], "flush-conflict")
 
     def test_every_id_a_command_names_is_in_the_snapshot_but_for_the_absent_ones_on_purpose(self):
         docs = self.docs()

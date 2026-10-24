@@ -54,7 +54,7 @@ function handle(engine: Engine, settings: readonly GraphSettings[]): Db {
   const maps = createLookups(engine, graphs);
   const changed = new Set<GraphName>();
   const touch = (graph: GraphName | undefined): void => { if (graph === undefined) for (const g of graphs) changed.add(g); else changed.add(graph); };
-  return { engine, maps, mapping, settings, graphs, write: createWriteLayer(engine, maps, touch), changed };
+  return { engine, maps, mapping, settings, graphs, write: createWriteLayer(engine, maps, touch, graphs), changed };
 }
 
 /** What `openDb` gives besides the handle. */

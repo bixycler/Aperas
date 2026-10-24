@@ -16,7 +16,14 @@ import { wantsHelp, printHelp } from './kgHelp';
  *  `'text'` case's `aperas://tree/<path>` breadcrumb line, below). */
 export interface TreeRenderResult { path: string | null; tree: RenderNodeItem | null }
 
-export function runTree(store: Db, req: { pathArg?: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload?: boolean }): string[] | TreeRenderResult {
+type TreeReq = { pathArg?: string; maxDepth?: number; noHolders: boolean; showTombstoned: boolean; viewRef?: string; format?: 'text' | 'render-tree'; reload?: boolean };
+
+/** A `--view` that names the default view mints it on first use; a refusal after that takes what it minted with it. */
+export function runTree(store: Db, req: TreeReq): string[] | TreeRenderResult {
+  return store.write.guard(() => renderTree(store, req));
+}
+
+function renderTree(store: Db, req: TreeReq): string[] | TreeRenderResult {
   // Unlike `unfold`/`fold` (which always need *some* view to mutate, so an omitted `--view`
   // resolves to the default one), an omitted `--view` here means plain title-only rendering —
   // `view` stays `undefined` rather than falling back to `resolveTreeView`'s own default-view

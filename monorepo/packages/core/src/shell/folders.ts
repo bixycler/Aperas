@@ -43,6 +43,11 @@ export interface FolderSweepStats {
  *  `FolderReaders`, answered from the one map by path, same rename rule as the original); a tombstone sets one field
  *  directly rather than replacing the whole document. */
 export function ingestFolderTree(store: Db, force: boolean = false): { folderCount: number; sweep: FolderSweepStats; pendingRemovals: string[] } {
+  // The folder step is one unit: a refusal in it takes the folders it made with it (the write layer's `guard`). The steps of a command that were complete before it (a file tracked) stay.
+  return store.write.guard(() => ingestFolders(store, force));
+}
+
+function ingestFolders(store: Db, force: boolean): { folderCount: number; sweep: FolderSweepStats; pendingRemovals: string[] } {
   const artifactsDir = getArtifactsDir();
 
   const liveFolderIds = liveDocumentIdsOfKind(store, 'FolderNode');

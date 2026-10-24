@@ -10,7 +10,7 @@
 
 import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { wrap, linksInOrder, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { wrap, linksInOrder, resolveTreeView, type TreeNode, type BlockNode, type Link, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
 import { nodeKindFromId } from '@aperas/core/shell/nodeIds';
 import { nodeExists } from '@aperas/core/shell/db';
 import { displayLabel } from '@aperas/core/shell/tree';
@@ -124,6 +124,12 @@ function previewChildren(store: Db, node: TreeNode, showTombstoned: boolean): Un
  *  tombstoned node directly is refused (not just silently empty, since this command's whole job is
  *  revealing the *one* thing it was pointed at) unless the flag is passed; its children/link
  *  targets are filtered by `previewChildren` regardless. */
+/** The service's `unfold`: a peek reads, anything else resolves the view (minting the default one on first use) and unfolds in it; a refusal takes the view and the profile it minted with it. */
+export function runUnfoldOp(store: Db, req: { ref: string; viewRef?: string; peek?: boolean; showTombstoned: boolean }) {
+  if (req.peek) return runUnfold(store, req.ref, null, req.showTombstoned);
+  return store.write.guard(() => runUnfold(store, req.ref, resolveTreeView(store, req.viewRef), req.showTombstoned));
+}
+
 export function runUnfold(store: Db, pathArg: string, view: TreeView | null, showTombstoned: boolean = false) {
   // No try/catch around ref resolution here, deliberately — matches `kgCli.ts`'s plain
   // `resolveNodeRef`, which also lets an ambiguous-segment throw propagate uncaught.

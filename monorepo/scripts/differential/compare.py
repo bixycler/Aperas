@@ -29,7 +29,7 @@ What it does, in this order:
      same as no file.
   4. Each difference that is left is offered to the matchers. `MATCHERS` is the one table, keyed by the number of the entry in Layer 4 (1 to 12 of
      the flip, 13 to 19 of the order rules, 20 and 21 of ingest and track, 22 to 27 of the sweeps and the service lifecycle, 28 of the engine
-     follow-up). An entry that a dump can show has a function; one that a dump cannot tell (a message, the order of a render, a log line, a test)
+     follow-up, 29 of the move to `src/shell/`, 30 of the first boot's sweep of the graphs one at a time, 31 of a refused command that leaves nothing behind). An entry that a dump can show has a function; one that a dump cannot tell (a message, the order of a render, a log line, a test)
      has none, says why in its `note`, and is "not seen by a dump": piece 4 reaches it by a command. A difference that no matcher claims is a
      finding; so is one that more than one claims (the matchers must be exclusive); an entry is "seen" when it has claimed a difference.
 
@@ -57,6 +57,7 @@ TOKEN = r"[0-9A-HJKMNP-TV-Z]{13}"
 ID_KINDS = r"(?:[A-Za-z]+Node|Profile|TreeView|Link|StringProp)"
 PREFIXED = re.compile(r"(?<![A-Za-z0-9])(" + ID_KINDS + r"):(" + TOKEN + r")(?![0-9A-Za-z])")
 FULL_ID = re.compile(r"^" + ID_KINDS + ":" + TOKEN + r"(?::[A-Za-z]+:" + ID_KINDS + ":" + TOKEN + r")*$")
+LOWER = re.compile(r"(?<![0-9A-Za-z:~])(00[0-9a-hjkmnp-tv-z]{11})(?![0-9A-Za-z])")   # a token in a slug (a block titled by its own id has a path segment of it, lower-cased)
 BARE = re.compile(r"(?<![0-9A-Za-z:~])(" + TOKEN + r")(?![0-9A-Za-z])")
 ISO_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 ISO_IN_TEXT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z")
@@ -64,6 +65,7 @@ TIMESTAMP_FIELDS = {"lastTrackedAt", "lastIngestedAt", "tombstonedAt"}
 MASK = "<timestamp>"
 REJECTED_COPY = re.compile(r"\.rejected-\d{8}T\d{6}Z\.json$")
 MISSING = object()
+BLOCK_MAKERS = ("insert", "update")   # the verbs whose refusal can leave a block the command made
 
 
 class Failure(Exception):
@@ -124,6 +126,73 @@ def snapshot_tokens(snapshot):
         for d in docs:
             walk_ids(d, out)
     return out
+
+
+# The twelve documents that rule 3 of `migrate-mirror.py` deletes (kept in step with its `README_ARTIFACTS` and `README_PARAGRAPHS`; `test_compare.py` checks that they are the same).
+README_ARTIFACTS = ["ArtifactNode:00CN1QE950000", "ArtifactNode:00CN4ZQ8Y0000", "ArtifactNode:00CN4ZSF58000", "ArtifactNode:00CN4ZTZRR000", "ArtifactNode:00CN4ZWHCG000", "ArtifactNode:00CN4ZXWJ8000"]
+README_PARAGRAPHS = ["BlockNode:00CN1QEAGG001", "BlockNode:00CN4ZQAPG001", "BlockNode:00CN4ZSHMG001", "BlockNode:00CN4ZV1G8001", "BlockNode:00CN4ZWJMG001", "BlockNode:00CN4ZXXRR001"]
+
+
+class Facts:
+    """What the snapshot (the mirror the run started from, before any migration) says about the nodes that the migration and the new engine's first boot take out: the six README
+    documents, the tombstones (by the artifact whose tree they were listed in, by the graph that holds them), the tombstoned artifacts, and the unfolds of the views that name a tombstone.
+    The matchers of the outputs read it: the reference lists these nodes until its own sweep, and the new side does not. Built from the snapshot's files, `{relative name: documents}`."""
+
+    def __init__(self, files):
+        self.top, self.file = {}, {}
+        for rel, docs in files.items():
+            for d in docs:
+                self.top[d["@id"]] = d
+                self.file[d["@id"]] = rel
+        self.tomb = {i for i, d in self.top.items() if "tombstonedAt" in d}
+        self.readme_paths = sorted(self.top[i].get("path") for i in README_ARTIFACTS if i in self.top and self.top[i].get("path"))
+        self.readme_paragraphs = sum(1 for i in README_PARAGRAPHS if i in self.top and "tombstonedAt" not in self.top[i])
+        self._blocks, self._links = {}, {}
+        for i in sorted(self.tomb):
+            d = self.top[i]
+            if d.get("@type") != "BlockNode":
+                continue
+            path = self._artifact_path(i)
+            if path is None:
+                continue
+            self._blocks.setdefault(path, []).append((i, d.get("type"), d.get("title")))
+            self._links[path] = self._links.get(path, 0) + len(d.get("links", []))
+        self.tombstoned_artifacts = {d.get("path"): i for i, d in self.top.items() if i in self.tomb and d.get("@type") == "ArtifactNode" and d.get("path")}
+
+    def _artifact_path(self, cid):
+        for _ in range(500):
+            d = self.top.get(cid)
+            if d is None:
+                return None
+            if d.get("@type") == "ArtifactNode":
+                return d.get("path")
+            cid = d.get("parent")
+        return None
+
+    def graph_of(self, cid):
+        """`state` for a node of the thread graph (a file under `.state/`), `mirror` for the content graph, None when the snapshot does not hold it."""
+        rel = self.file.get(cid)
+        return None if rel is None else ("state" if rel.startswith(".state/") else "mirror")
+
+    def tomb_blocks(self, path):
+        """[(id, type, title)] of the blocks tombstoned in the snapshot whose tree was the artifact `path`'s."""
+        return list(self._blocks.get(path, []))
+
+    def tomb_links(self, path):
+        """The number of links that those tombstoned blocks hosted."""
+        return self._links.get(path, 0)
+
+    def tomb_unfolds(self, view_id):
+        """The ids that the `unfolds` of a view name and that the snapshot holds as tombstones."""
+        d = self.top.get(view_id)
+        return [u for u in (d or {}).get("unfolds", []) if u in self.tomb]
+
+
+def snapshot_facts(snapshot):
+    """`Facts` of a snapshot (a graph root, or its `Apeiron` directory)."""
+    base = os.path.join(snapshot, "Apeiron") if os.path.isdir(os.path.join(snapshot, "Apeiron")) else snapshot
+    files, _ = read_dump(base)
+    return Facts(files)
 
 
 def walk_ids(value, out):
@@ -188,12 +257,15 @@ class Side:
     def label(self, tok, snapshot):
         if tok in self.labels:
             return self.labels[tok]
-        return tok if tok in snapshot else "%s!%s" % (self.name, tok)
+        # a token the snapshot holds is the same on both sides; so is one that this side's dump does not define (an id written in a text as an example, or naming a node that is
+        # gone): only a token a document of this side carries and the snapshot lacks was minted in the run, and gets its side's label
+        return tok if tok in snapshot or tok not in self.tokens else "%s!%s" % (self.name, tok)
 
     def canon(self, text, snapshot):
         """The ids in a string with their tokens replaced by the labels; a bare token that has a label (a block is titled by its own id) is replaced too."""
         text = PREFIXED.sub(lambda m: "%s:%s" % (m.group(1), self.label(m.group(2), snapshot)), text)
-        return BARE.sub(lambda m: self.labels.get(m.group(1), m.group(1)), text)
+        text = BARE.sub(lambda m: self.labels.get(m.group(1), m.group(1)), text)
+        return LOWER.sub(lambda m: self.labels.get(m.group(1).upper(), m.group(1)), text)
 
 
 # --------------------------------------------------------------------------------------------------------------------- pairing of ids
@@ -505,8 +577,8 @@ def load_commands(out_dir):
 def printed_tokens(text, snapshot):
     """The minted tokens a text names, in order of first appearance (as the prefixed ids `Kind:TOKEN`)."""
     out = []
-    for m in PREFIXED.finditer(text):
-        t = m.group(2)
+    for m in re.finditer(PREFIXED.pattern + "|" + LOWER.pattern, text):
+        t = m.group(2) or m.group(3).upper()
         if t not in snapshot and t not in out:
             out.append(t)
     return out
@@ -551,7 +623,7 @@ def compare_outputs(ref, new, commands, snapshot, roots_ref, roots_new, diffs, c
         np_ = {"status": status(n), "stdout": norm_text(new, snapshot, n["stdout"], roots_new), "stderr": norm_text(new, snapshot, n["stderr"], roots_new)}
         if rp == np_:
             continue
-        applied, ra, na = explain.explain(c.get("argv") or [], rp, np_, ctx)
+        applied, ra, na = explain.explain(c.get("argv") or [], rp, np_, ctx, c["index"])
         residual = [f for f in ("status", "stdout", "stderr") if ra[f] != na[f]]
         if not residual and claims is not None:
             for key in dict.fromkeys(applied):
@@ -563,28 +635,51 @@ def compare_outputs(ref, new, commands, snapshot, roots_ref, roots_new, diffs, c
             diffs.append(Diff("output", "changed", field=f, ref=ra[f], new=na[f], command=name, extra={"argv": c.get("argv") or []}))
 
 
+def refused_alike(ref, new, commands, snapshot, roots_ref, roots_new):
+    """The indexes of the commands that make blocks (`insert`, `update`) and that both sides refused: the same non-zero status and the same text, once the ids and the roots are normalised."""
+    out = []
+    for c in commands:
+        argv = c.get("argv") or []
+        r, n = c["ref"], c["new"]
+        if not argv or argv[0] not in BLOCK_MAKERS or r.get("timedOut") or n.get("timedOut") or r["status"] in (0, None) or r["status"] != n["status"]:
+            continue
+        rt, nt = norm_text(ref, snapshot, r["stderr"], roots_ref), norm_text(new, snapshot, n["stderr"], roots_new)
+        if rt.strip() and rt == nt:
+            out.append(c["index"])
+    return out
+
+
 # --------------------------------------------------------------------------------------------------------------------- the matchers
 
 class Context:
     """What a matcher may read: both sides' normalised documents by canonical id, and the snapshot."""
 
-    def __init__(self, ref, new, snapshot, rejected=None, sides=None, artifacts=None, removed=()):
+    def __init__(self, ref, new, snapshot, rejected=None, sides=None, artifacts=None, removed=(), facts=None, refused=()):
         self.ref, self.new, self.snapshot = ref, new, snapshot
+        self.refused = sorted(refused)       # the indexes of the commands that make blocks (`insert`, `update`) and that both sides refused with the same status and text
+        self._leftovers = None
         self.removed = set(removed)         # the canonical ids that a `remove` command names
         self.rejected = rejected or {}       # token -> number of raw documents with that id in the new side's `.rejected-` copies
         self.sides = sides                   # (reference Side, new Side), for the canonical form of a text
         self.artifacts = artifacts or {}     # side name -> the root of its artifacts
+        self.facts = facts                   # `Facts` of the snapshot, or None when the run has no snapshot directory
         self._emptied = None
+
+    def new_has(self, cid):
+        """True when the new side's dump holds a document of this canonical id (a tombstone the first boot pruned is not held)."""
+        return cid in self.new
 
     def emptied_ids(self):
         """The containers (a `list`, or a textless `listItem`) that hold no live child in the reference's dump, that the new side does not hold live, and that no command removed
-        by its id: what a removal of their last child left empty. The reference tombstones them at a later sweep, or never, and the new side in the write of the removal
+        by its id, and that the snapshot did not hold as tombstones already: what a removal of their last child left empty. The reference tombstones them at a later sweep, or never, and the new side in the write of the removal
         ([the flip's Difference 3])."""
         if self._emptied is None:
             out = set()
             for cid, d in self.ref.items():
                 t = d.fields.get("type")
                 if d.kind != "BlockNode" or not (t == "list" or (t == "listItem" and not d.fields.get("text"))) or cid in self.removed:
+                    continue
+                if self.facts is not None and cid in self.facts.tomb:   # a tombstone the snapshot already held was emptied before the run, not by it
                     continue
                 n = self.new.get(cid)
                 if n is not None and n.live():
@@ -596,6 +691,24 @@ class Context:
 
     def is_emptied(self, cid):
         return cid in self.emptied_ids()
+
+    def leftovers(self):
+        """Entry 31: the blocks that a refused command left behind on the reference and not on the new side, as the canonical ids in the order of their tokens: live, minted in the run, held by the
+        reference only, with no `parent` and listed in no container's `children`. At most one per refused command, so the first ones by token (a token comes in the order of time) are the
+        ones the refused commands made; a block beyond that number is not claimed."""
+        if self._leftovers is None:
+            listed = {ch for d in self.ref.values() for ch in d.children}
+            found = [cid for cid, d in self.ref.items() if d.kind == "BlockNode" and d.live() and "parent" not in d.fields and cid not in listed and cid not in self.new
+                     and token_of(d.raw_id) not in self.snapshot]
+            found.sort(key=lambda cid: token_of(self.ref[cid].raw_id))
+            self._leftovers = found[:len(self.refused)]
+        return self._leftovers
+
+    def leftovers_before(self, index=None):
+        """Entry 31: how many of the leftovers a command of this index (`None`: the end of the run) can count: the k-th leftover is the k-th refused command's, so a command counts those
+        whose refused command ran before it."""
+        mine = self.leftovers()
+        return len(mine) if index is None else min(len(mine), len([i for i in self.refused if i < index]))
 
     def positionless(self):
         """The ids of the links of the new side's dump that hold no `position` prop."""
@@ -660,6 +773,17 @@ def m_pruned_tombstone(d, c):
     return d.scope == "doc" and d.op == "only-ref" and empty_tombstone(c.ref[d.id])
 
 
+def m_unfold_of_pruned_tombstone(d, c):
+    """Flip 2 on the views: an `unfolds` entry that names a tombstone the first boot pruned goes with it (the engine's `dropWithTarget` role), where the reference keeps the entry
+    until its own sweep. The entry is in the reference's dump, names a tombstone there, and no document of that id is in the new side's."""
+    t = c.ref.get(d.ref) if isinstance(d.ref, str) else None
+    return (d.scope == "element" and d.field == "unfolds" and d.op == "only-ref" and t is not None and "tombstonedAt" in t.fields and not c.new_has(d.ref))
+
+
+def m_pruned_tombstone_or_its_unfold(d, c):
+    return m_pruned_tombstone(d, c) or m_unfold_of_pruned_tombstone(d, c)
+
+
 def m_emptied_container(d, c):
     """Flip 3: a removal tombstones the container it empties, in the same write (and the sweep prunes it): the container's own fields, its place in its
     container's `children`, or the container gone from the new side."""
@@ -718,7 +842,7 @@ def _table():
         e.append(Entry(len(e) + 1, group, number, title, note, fn))
     # the deliberate differences of the flip (piece 6 of Batch 11): 1 to 12
     add("flip", 1, "a tombstone leaves the list of its container", "not seen by a dump: the render (`tree`, `unfold`) shows nothing in place, and the migration of the reference's dump already takes every tombstone out of its container's `children`.")
-    add("flip", 2, "a removed node is unreachable, so a sweep prunes it", "seen by a dump as an empty tombstone that only the reference holds (an artifact's too, which `track --reverse` forgets).", m_pruned_tombstone)
+    add("flip", 2, "a removed node is unreachable, so a sweep prunes it", "seen by a dump as an empty tombstone that only the reference holds (an artifact's too, which `track --reverse` forgets), and as an `unfolds` entry of a view that names such a tombstone.", m_pruned_tombstone_or_its_unfold)
     add("flip", 3, "a removal tombstones the container it empties", "seen by a dump as a `list` or textless `listItem` tombstoned (or pruned) in the new side and live and empty in the reference, with its place in its container's `children`.", m_emptied_container)
     add("flip", 4, "the first node found at a path is the live one", "not seen by a dump: which node a path names is a command's answer (`resolve`).")
     add("flip", 5, "a move into its own subtree is refused by the no-cycle rule", "not seen by a dump: the refusal is a message and a status, and a refused move changes nothing on either side.")
@@ -749,11 +873,17 @@ def _table():
     add("sweeps", 6, "the dangling ids are logged", "not seen by a dump: a warning in the log.")
     # the engine follow-up: 28
     add("follow-up", 1, "a document key the kind does not declare is refused even with an empty array", "not seen by a dump: a load that refuses; the dumps of a run that started hold no such key.")
+    # the move to `src/shell/` (Batch 15): 29
+    add("move", 1, "`aperas migrate-frontmatter` is gone from the new side", "not seen by a dump: a verb that is not there (`Unknown command` and its place in the list of verbs); the reference's run of it changes its mirror, so only its help is asked.")
+    # the first boot's sweep of the graphs one at a time (Batch 13, piece 5): 30
+    add("sweeps", 7, "a link of one graph to a tombstone of another does not keep it alive", "not seen by a dump: the tombstone pruned at the first boot is entry 2; what shows the link left dangling is the warning of `check-links` (its words and its list), an output.")
+    # a refused command leaves nothing behind (Batch 3, the write layer's `guard`): 31
+    add("refused", 1, "a refused command leaves nothing behind", "not seen by a dump alone: the live parentless block that only the reference holds is a difference of the dumps, but only a command's refusal tells it from a defect, so its matcher is `explain.m_refused_leftover` (`EXTRA_DUMP`, which reads the commands); the other face is the live-block count of `check-links`, an output (`explain.Rules.r_refused_leaves_nothing`).")
     return {x.key: x for x in e}
 
 
 MATCHERS = _table()
-LABELS = {"flip": "Flip", "order": "Order", "ingest": "Ingest", "sweeps": "Sweeps", "follow-up": "Follow-up"}
+LABELS = {"flip": "Flip", "order": "Order", "ingest": "Ingest", "sweeps": "Sweeps", "follow-up": "Follow-up", "move": "Move", "refused": "Refused"}
 
 
 # --------------------------------------------------------------------------------------------------------------------- the comparison
@@ -866,7 +996,8 @@ def compare_dumps(ref_dir, new_dir, snapshot=None, commands=None, migrate=True, 
             else:
                 compare_documents(r, n, result.diffs)
         removed = {ref.canon(a, snap) for c in (commands or []) if (c.get("argv") or [""])[0] == "remove" for a in c["argv"][1:] if not a.startswith("--")}
-        ctx = Context(rdocs, ndocs, snap, rejected=rejected_tokens(new_dir), sides=(ref, new), artifacts=artifacts, removed=removed)
+        ctx = Context(rdocs, ndocs, snap, rejected=rejected_tokens(new_dir), sides=(ref, new), artifacts=artifacts, removed=removed, facts=snapshot_facts(snapshot) if snapshot and os.path.isdir(snapshot) else None,
+                      refused=refused_alike(ref, new, commands or [], snap, roots_ref, roots_new))
         pre = []
         if commands:
             compare_outputs(ref, new, commands, snap, roots_ref, roots_new, result.diffs, pre, ctx)

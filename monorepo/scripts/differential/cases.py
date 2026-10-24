@@ -12,7 +12,7 @@ Writes the list of commands `harness.py` runs on both sides, naming the ids of t
   lifecycle  the starts that the main part cannot make: a service stopped and started again on a mirror that holds a duplicated id, a document with a key
              its kind does not declare, a file that is not JSON, and the options `--start-anyway`
 
-`CASES` is the table of what each case is for: its name, the entries of Layer 4 it is meant to reach (the keys of `compare.MATCHERS`, 1 to 28) and what it
+`CASES` is the table of what each case is for: its name, the entries of Layer 4 it is meant to reach (the keys of `compare.MATCHERS`, 1 to 31) and what it
 is. The driver (`cmdrun.py`) prints it beside what the run saw.
 """
 import argparse
@@ -28,7 +28,8 @@ CASES = []   # (name, entries, what)
 
 
 class Builder:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, start_timeout=60):
+        self.start_timeout = start_timeout   # the timeout of the commands that start a service: a copy of the real mirror takes minutes
         self.by_path, self.by_title = corpus.ids_of(snapshot)
         self.snapshot = snapshot
         self.commands = []
@@ -44,6 +45,18 @@ class Builder:
                 with open(f, encoding="utf-8") as h:
                     for d in json.load(h):
                         self.docs[d["@id"]] = d
+
+    def thread_path(self):
+        """The path of the artifact under `.threads/` that holds the corpus's own thread (`# Coder thread`, `## topic`): `.threads/coder.md` on the small corpus, and the one the overlay renamed on a copy of the real mirror."""
+        found = []
+        for d in self.docs.values():
+            if d["@type"] == "ArtifactNode" and d.get("path", "").startswith(".threads/"):
+                for top in d.get("children", []):
+                    if self.docs.get(top, {}).get("title") == "# Coder thread" and any(self.docs.get(k, {}).get("title") == "## topic" for k in self.docs[top].get("children", [])):
+                        found.append(d["path"])
+        if len(found) != 1:
+            raise ValueError("%d threads hold '# Coder thread' over '## topic': %s" % (len(found), found))
+        return found[0]
 
     def kids(self, id_):
         return list(self.docs[id_].get("children", []))
@@ -108,7 +121,7 @@ def main_part(b):
     a("show-delta", "show", "cmd_demo/delta.md/Delta", entries=(19,), what="three links of six positions")
     a("show-artifact", "show", "cmd_demo/alpha.md", entries=(8,), what="an artifact has no `type`")
     a("show-folder", "show", "cmd_demo", what="the folder that lists the ghost")
-    a("show-thread-block", "show", ".threads/coder.md/Coder-thread/topic/task/Turn-1/Ask")
+    a("show-thread-block", "show", b.thread_path() + "/Coder-thread/topic/task/Turn-1/Ask")
     a("show-link-id", "show", LINK_TO_SEC)
     a("show-profile", "show", PROFILE)
     a("show-reload", "show", "cmd_demo/beta.md", "--reload")
@@ -159,7 +172,7 @@ def main_part(b):
     # the verbs only the reference has
     a("link-removed", "link", "cmd_demo/alpha.md/Alpha", what="a verb of the reference only (the removal of manual links)")
     a("unlink-removed", "unlink", "cmd_demo/alpha.md/Alpha", "cmd_demo/beta.md", what="a verb of the reference only (the removal of manual links)")
-    a("migrate-frontmatter-removed", "migrate-frontmatter", "--help", what="a verb of the reference only; its run changes the reference's mirror, so only its help is asked")
+    a("migrate-frontmatter-removed", "migrate-frontmatter", "--help", entries=(29,), what="a verb of the reference only; its run changes the reference's mirror, so only its help is asked")
     a("unknown-verb", "frobnicate", what="a refusal")
     a("help", "--help")
     a("show-help", "show", "--help")
@@ -257,7 +270,7 @@ def writes_section(b, a, v):
     wrapper_inner = b.kids(wrapper_item)[0]
     LISTS = b.blk("cmd_demo/rich.md", "## Lists")
     QUOTE = b.blk("cmd_demo/rich.md", "## Quote and code")
-    THREAD_TURN = ".threads/coder.md/Coder-thread/topic/task/Turn-1"
+    THREAD_TURN = b.thread_path() + "/Coder-thread/topic/task/Turn-1"
     THREAD_ASK = THREAD_TURN + "/Ask"
     v.update(dict(BETA_H=BETA_H, OTHER=OTHER, ITEM_ONE=ITEM_ONE, ITEM_TWO=ITEM_TWO, DUP_H=DUP_H, single_item=single_item, SINGLE=SINGLE, wrapper_item=wrapper_item, wrapper_inner=wrapper_inner))
 
@@ -269,7 +282,7 @@ def writes_section(b, a, v):
     a("insert-before", "insert", "cmd_demo/beta.md/Beta", "--before", BS, stdin="Placed before Beta Section.\n")
     a("insert-base", "insert", "--base", "cmd_demo/beta.md", "Beta", stdin="Under Beta by a base.\n")
     a("insert-parent-missing", "insert", "cmd_demo/nothing.md/X", stdin="text\n", what="a refusal")
-    a("insert-anchor-missing", "insert", "cmd_demo/beta.md/Beta", "--after", "BlockNode:00ZZZZZZZZZZZ", stdin="text\n", what="a refusal")
+    a("insert-anchor-missing", "insert", "cmd_demo/beta.md/Beta", "--after", "BlockNode:00ZZZZZZZZZZZ", stdin="text\n", entries=(31,), what="a refusal: the reference leaves the block it made, the new side takes it out")
     a("insert-both-anchors", "insert", "cmd_demo/beta.md/Beta", "--after", BS, "--before", BS, stdin="text\n", what="a refusal")
     a("insert-no-arg", "insert", what="a refusal")
     a("insert-thread", "insert", THREAD_TURN, stdin="- **Note**: a note\n")
@@ -416,8 +429,10 @@ def sweeps_section(b, a, v):
     a("reload-external", "reload", what="picks up an edit made outside")
     a("show-delta-sec-external", "show", DELTA_SEC)
     # a conflict: the file changed on disk and the service holds a change of its own
-    a("update-before-conflict", "update", DELTA_SEC, stdin="Delta text, edited in the service.\n", flush=False)
-    a("edit-block-text-conflict", fs=[{"op": "modify-document", "path": "BlockNode.jsonld", "match": {"@id": DELTA_SEC}, "set": {"text": "Delta text, edited on disk again."}}])
+    # The edit of the file follows the update in the same step (`then_fs`: on each side right after its update, a gap of milliseconds), so that no timer of a service can flush the update first.
+    a("update-before-conflict", "update", DELTA_SEC, stdin="Delta text, edited in the service.\n", flush=False,
+      then_fs=[{"op": "modify-document", "path": "BlockNode.jsonld", "match": {"@id": DELTA_SEC}, "set": {"text": "Delta text, edited on disk again."}}],
+      what="a change of the service is pending and the file changes on disk right after it")
     a("flush-conflict", "flush", what="refused: the file changed outside since the service read it")
     a("reload-conflict", "reload", what="stuck on the conflict")
     a("reload-conflict-discard", "reload", "--discard", what="takes the disk's content")
@@ -463,15 +478,15 @@ def lifecycle_part(b):
     # a start of a mirror that holds a repeated id
     a("stop-1", "service", "stop")
     a("dup-on-disk-again", fs=dup, entries=(10,))
-    a("start-refused-dup", "service", "start", timeout=60, entries=(10, 24), what="a refused start: the new service says why at once and exits 1")
-    a("start-anyway-dup", "service", "start", "--start-anyway", timeout=60, entries=(25,), what="the load is accepted; the skipped documents are copied next to their file")
+    a("start-refused-dup", "service", "start", timeout=b.start_timeout, entries=(10, 24), what="a refused start: the new service says why at once and exits 1")
+    a("start-anyway-dup", "service", "start", "--start-anyway", timeout=b.start_timeout, entries=(25,), what="the load is accepted; the skipped documents are copied next to their file")
     a("tree-after-start-anyway", "tree", "cmd_demo/beta.md")
     a("flush-after-start-anyway", "flush")
     # a start of a mirror that holds a document with a key its kind does not declare
     a("stop-2", "service", "stop")
     a("bogus-key-on-disk", fs=bogus, entries=(28,))
-    a("start-refused-bogus", "service", "start", timeout=60, entries=(28, 10, 24), what="a key the kind does not declare is refused, even with an empty array")
-    a("start-anyway-bogus", "service", "start", "--start-anyway", timeout=60, entries=(28, 25))
+    a("start-refused-bogus", "service", "start", timeout=b.start_timeout, entries=(28, 10, 24), what="a key the kind does not declare is refused, even with an empty array")
+    a("start-anyway-bogus", "service", "start", "--start-anyway", timeout=b.start_timeout, entries=(28, 25))
     a("show-bogus", "show", DELTA_SEC)
     # a write on both sides, so that the reference rewrites the files that still hold a repeated id once
     a("update-end", "update", b.blk("cmd_demo/beta.md", "## Other"), stdin="Other text, edited.\n")
@@ -485,12 +500,12 @@ def broken_part(b):
     a("tree-start", "tree", "cmd_demo/beta.md")
     a("stop", "service", "stop")
     a("truncate-artifacts", fs=[{"op": "truncate", "path": "ArtifactNode.jsonld", "keep": 100}], entries=(24,))
-    a("start-broken", "service", "start", timeout=60, entries=(24,), what="a refused start: the time and the text")
+    a("start-broken", "service", "start", timeout=b.start_timeout, entries=(24,), what="a refused start: the time and the text")
     return b.commands
 
 
-def build_list(snapshot, part):
-    b = Builder(snapshot)
+def build_list(snapshot, part, start_timeout=60):
+    b = Builder(snapshot, start_timeout)
     cmds = {"main": main_part, "lifecycle": lifecycle_part, "broken": broken_part}[part](b)
     return {"final_flush": part == "lifecycle", "commands": cmds}
 

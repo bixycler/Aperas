@@ -5,7 +5,7 @@
 
 In order: the snapshot (`corpus.py`, built with the reference's own service), then for each part the list of commands (`cases.py`), the harness run on a fresh copy of the
 snapshot (`harness.py`: two services apart, one per side, in scratch directories under `<dir>`), and the comparison (`compare.py` with the rules of `explain.py`): the dumps, the
-commands' status, stdout and stderr, the services' logs. It ends with the table of the 28 entries of Layer 4 and of the entries of its own paragraph that carry no number, each
+commands' status, stdout and stderr, the services' logs. It ends with the table of the 31 entries of Layer 4 and of the entries of its own paragraph that carry no number, each
 seen by a command (with the cases that reached it) or named as unreachable by a command with its reason, the coverage of the 19 verbs, and `UNEXPLAINED differences: N`.
 Exit 0 when N is 0 and every entry is seen or named; 1 otherwise; 2 for a usage error or a refusal of the harness.
 
@@ -31,6 +31,7 @@ import harness  # noqa: E402
 PARTS = ("main", "lifecycle", "broken")
 VERBS = ["backlinks", "check-links", "flush", "fold", "ingest", "insert", "path", "profile", "project", "reload", "remove", "resolve", "retype", "show", "track", "tree", "unfold", "update", "zoom"]
 NO_PROGRESS_SECONDS = 300
+CONTENT_FLUSH_MS = 3_600_000
 
 # The entries that no command reaches, with the reason. An entry that a run sees is not listed as unreachable, whatever is written here.
 UNREACHABLE = {
@@ -38,6 +39,7 @@ UNREACHABLE = {
     7: "no verb removes a pair: `link` and `unlink` are gone from the new side, and the removal of an embed pair is the engine's own (`removePair`)",
     11: "retired and deleted code and tests (the smoke test, `verifyDanglingUnfolds`, `Lookups.subtreeTombstoned`); nothing a command reaches",
     12: "one sequencing change in a test (`lifecycle.test.ts`, `flush --clobber` first)",
+    30: "it needs a link stored in a thread (`.threads/`) to a tombstone of the content graph; the small corpus has none, and no verb writes one (a link is made by the ingest of a text that cites the node, and a thread is written by its author); the real copy holds 9 (`check-links` on it prints the warning)",
 }
 # The entries the cases reached and on which the two sides do not differ on this corpus: named, with what was seen.
 AGREE = {
@@ -74,18 +76,21 @@ def end_own_process(proc):
 
 def run_part(part, snapshot, out, ports, args, log):
     lst = os.path.join(out, part + ".json")
-    commands = cases.build_list(snapshot, part)
+    commands = cases.build_list(snapshot, part, args.start_timeout)
     with open(lst, "w", encoding="utf-8") as h:
         json.dump(commands, h, indent=1, ensure_ascii=False)
         h.write("\n")
     run_dir = os.path.join(out, part)
     cmd = [sys.executable, os.path.join(HERE, "harness.py"), "--snapshot", snapshot, "--out", run_dir, "--commands", lst, "--ports", ports,
-           "--reference-code", args.reference_code, "--new-code", args.new_code]
+           "--reference-code", args.reference_code, "--new-code", args.new_code,
+           "--command-timeout", str(args.command_timeout), "--start-timeout", str(args.start_timeout)]
+    if args.content_flush_ms is not None:
+        cmd += ["--content-flush-ms", str(args.content_flush_ms)]
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
     log("part %s: %d commands" % (part, len(commands["commands"])))
     t = time.time()
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    wd = Watchdog(proc, os.path.join(run_dir, "commands"), NO_PROGRESS_SECONDS)
+    wd = Watchdog(proc, os.path.join(run_dir, "commands"), args.no_progress)
     stalled = False
     while proc.poll() is None:
         time.sleep(2)
@@ -95,7 +100,7 @@ def run_part(part, snapshot, out, ports, args, log):
     text = proc.stdout.read()
     with open(os.path.join(out, part + ".harness.txt"), "w", encoding="utf-8") as h:
         h.write(text)
-    log("part %s: harness status %s in %.0f s%s" % (part, proc.returncode, time.time() - t, " (no progress for %d s: ended)" % NO_PROGRESS_SECONDS if stalled else ""))
+    log("part %s: harness status %s in %.0f s%s" % (part, proc.returncode, time.time() - t, " (no progress for %d s: ended)" % args.no_progress if stalled else ""))
     return run_dir, proc.returncode, stalled
 
 
@@ -182,6 +187,10 @@ def main(argv=None):
     p.add_argument("--reference-code", default=harness.DEFAULT_REFERENCE)
     p.add_argument("--new-code", default=harness.MONOREPO)
     p.add_argument("--parts", default=",".join(PARTS))
+    p.add_argument("--command-timeout", type=float, default=120, help="the timeout of a command, in seconds (the harness's default); a copy of the real mirror needs far more")
+    p.add_argument("--start-timeout", type=float, default=120, help="the timeout of a start of a service, and of the wait for a restart (the harness's default); a copy of the real mirror needs minutes")
+    p.add_argument("--content-flush-ms", type=float, default=CONTENT_FLUSH_MS, help="the flush interval of the content graph on the new side (written into its scratch config; the reference keeps its 10 s timer); default %d, so that no timer flushes a case's pending write there" % CONTENT_FLUSH_MS)
+    p.add_argument("--no-progress", type=float, default=NO_PROGRESS_SECONDS, help="seconds without a new file in the part's `commands/` before the part is ended")
     p.add_argument("--snapshot", help="use this snapshot (built by corpus.py) instead of building one")
     args = p.parse_args(argv)
     out = os.path.abspath(args.out)
@@ -220,7 +229,7 @@ def main(argv=None):
         res = json.load(open(os.path.join(run_dir, "results.json"), encoding="utf-8"))
         problems += ["part %s: %s" % (part, x) for x in res.get("problems", [])]
         if stalled:
-            problems.append("part %s was ended: no progress for %d s" % (part, NO_PROGRESS_SECONDS))
+            problems.append("part %s was ended: no progress for %d s" % (part, args.no_progress))
         if part == "broken":
             ev = probe_broken(run_dir)
             if ev:

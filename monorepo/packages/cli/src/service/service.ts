@@ -57,7 +57,7 @@ import { MAIN_GRAPH, documentsText } from '@aperas/core/shell/mirrorFiles';
 import type { GraphName } from '@aperas/core/apeironNgn/interface';
 import type { GraphSettings } from '@aperas/core/graphConfig';
 import { computeFileHash, getArtifactsDir } from '@aperas/core/artifacts';
-import { resolveTreeView, sweepTombstones, tombstoneVacuousContainers, wrap, type TreeNode } from '@aperas/core/shell/node';
+import { sweepTombstones, tombstoneVacuousContainers, wrap, type TreeNode } from '@aperas/core/shell/node';
 import { checkLinkIntegrity, checkArtifactLinkIntegrity, owningArtifactId, repairLinkIntegrity, type LinkIntegrityReport } from '@aperas/core/shell/linkIntegrity';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { resolveEffectiveApeironRoot, resolveEffectiveThreadSizeCap, resolveGraphSettings } from '@aperas/core/graphConfig';
@@ -83,9 +83,9 @@ function resolveWebRoot(): string {
 }
 import { runTrack, runReverseTrack } from '../kgTrack';
 import { runIngest } from '../kgIngest';
-import { runUnfold } from '../kgUnfold';
-import { runFold } from '../kgFold';
-import { runZoom } from '../kgZoom';
+import { runUnfoldOp } from '../kgUnfold';
+import { runFoldOp } from '../kgFold';
+import { runZoomOp } from '../kgZoom';
 import { runResolve } from '../kgResolve';
 import { runInsert } from '../kgInsert';
 import { runUpdate } from '../kgUpdate';
@@ -547,9 +547,9 @@ export function main(): void {
         // `peek` (no `--view` at all on the CLI call): read-only, matching `kg:tree`'s own
         // no-`--view` default — resolves and previews without bootstrapping or mutating the
         // default view (issues/treeview.md's "bare unfold mutates the default view" gap).
-        if (req.peek) return runUnfold(store, req.ref, null, req.showTombstoned);
-        const view = resolveTreeView(store, req.viewRef);
-        const result = runUnfold(store, req.ref, view, req.showTombstoned);
+        // A refusal takes the view and the profile it minted with it (`runUnfoldOp`).
+        if (req.peek) return runUnfoldOp(store, req);
+        const result = runUnfoldOp(store, req);
         // `resolveTreeView`'s `ensureDefaultView` fallback may have just minted a first-use
         // `Profile` as a side effect -- `Profile` lives in the main graph (Aperas-treeview-design.md
         // §8/§11): the write layer marks the graph it was written in, so the flush finds it.
@@ -558,15 +558,13 @@ export function main(): void {
       }
       case 'fold': {
         if (req.reload) reloadStore();
-        const view = resolveTreeView(store, req.viewRef);
-        const result = runFold(store, req.ref, view);
+        const result = runFoldOp(store, req);
         if (req.flush) flushAll();
         return result;
       }
       case 'zoom': {
         if (req.reload) reloadStore();
-        const view = resolveTreeView(store, req.viewRef);
-        const result = runZoom(store, req.ref, view);
+        const result = runZoomOp(store, req);
         if (req.flush) flushAll();
         return result;
       }
@@ -680,9 +678,11 @@ export function main(): void {
   }
 
   function handleConnection(socket: Socket): void {
+    // Decoded by the socket, which holds the bytes of a character cut between two chunks until the rest arrives (a request over one chunk, about 64 KiB, would otherwise reach the graph with U+FFFD for each half).
+    socket.setEncoding('utf8');
     let buffer = '';
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf-8');
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
       const idx = buffer.indexOf('\n');
       if (idx === -1) return;
       const line = buffer.slice(0, idx);
@@ -778,8 +778,11 @@ export function main(): void {
     for (const [key, value] of Object.entries(asset.headers)) res.setHeader(key, value);
     res.end(asset.body);
   });
-  httpServer.on('error', (err) => {
-    console.error('[ApeironNgn service] HTTP listener error:', err);
+  let httpListening = false;
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    // A port that cannot be bound ends the start like any other refusal: the reason goes to the log, the lock this start claimed is cleared, and `aperas service start` says why.
+    if (!httpListening) refuseToStart(`the HTTP port ${httpPort} (127.0.0.1) could not be bound: ${err.code ?? 'error'} ${err.message}`);
+    logService(`[ApeironNgn service] HTTP listener error: ${err.message}`);
     process.exit(1);
   });
 
@@ -787,13 +790,24 @@ export function main(): void {
   process.on('SIGINT', () => shutdown(0));
 
   const socketPath = getSocketPath();
-  try {
-    unlinkSync(socketPath);
-  } catch (err: any) {
-    if (err.code !== 'ENOENT') throw err;
+  // Order: the HTTP port first, then the unix socket, then `markReady`. A client's wait (`waitForReady`) takes the first answer of the socket for a service that is up, so the socket must not
+  // answer while the port is still unbound or refused: were the socket first, a start whose port is in use would be told "ready" in the gap and the service would then end. The lock is the claim
+  // (made by the starting CLI before this process exists), so nothing but the order of the two listeners is changed; both are local binds that take milliseconds.
+  httpServer.listen(httpPort, '127.0.0.1', () => {
+    httpListening = true;
+    listenOnSocket();
+  });
+
+  function listenOnSocket(): void {
+    try {
+      unlinkSync(socketPath);
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+    server.listen(socketPath, onReady);
   }
-  server.listen(socketPath, () => {
-    httpServer.listen(httpPort, '127.0.0.1');
+
+  function onReady(): void {
     markReady(contentDir, artifactsDir, httpPort);
     resetIdleTimer();
     // Deliberately *after* `markReady`, and queued rather than run inline: `waitForReady` gives a
@@ -804,7 +818,7 @@ export function main(): void {
     // arriving a fraction of a second late costs nothing. `enqueue` keeps it from interleaving with
     // a request already in flight.
     enqueue(() => corpusLinkSweep('startup')).catch(() => {});
-  });
+  }
 }
 
 if (process.argv[1]?.endsWith('service.ts')) main();

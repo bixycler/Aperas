@@ -107,20 +107,28 @@ class StepsLive(th.LiveBase):
                 {"name": "edit", "fs": [{"op": "write", "root": "artifacts", "path": "cmd_demo/extra.md", "text": "# Extra\n"}]},
                 {"name": "track", "args": ["track", "cmd_demo/extra.md"]},
                 {"name": "missing", "args": ["show", "cmd_demo/none.md"], "status_ref": 1, "status_new": 1},
+                {"name": "tree-then-edit", "args": ["tree", "cmd_demo/beta.md"], "then_fs": [{"op": "write", "root": "artifacts", "path": "cmd_demo/after.md", "text": "# After\n"}]},
                 {"name": "pause", "wait": 0.2, "capture": True},
                 {"name": "slow", "args": ["tree", "cmd_demo/beta.md"], "timeout": 0.05, "hangs": ["ref", "new"]}]}, h)
-        r = self.run_list(path)
+        r = self.run_list(path, "--content-flush-ms", "3600000")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         res = self.results()
         self.assertEqual(res["problems"], [])
         self.assertEqual(res["hung"], ["new", "ref"])
-        self.assertEqual([c["name"] for c in res["commands"]], ["edit", "track", "missing", "pause", "slow"])
-        self.assertTrue(res["commands"][4]["ref"]["expectedHang"])
+        self.assertEqual([c["name"] for c in res["commands"]], ["edit", "track", "missing", "tree-then-edit", "pause", "slow"])
+        self.assertTrue(res["commands"][5]["ref"]["expectedHang"])
         self.assertNotIn("ref", res["commands"][0])
         for side in ("ref", "new"):
             self.assertTrue(os.path.isfile(os.path.join(self.out, side, "artifacts", "cmd_demo", "extra.md")))
-            self.assertTrue(os.path.isdir(os.path.join(self.out, res["commands"][3]["capture"], side, "Apeiron")))
+            self.assertTrue(os.path.isfile(os.path.join(self.out, side, "artifacts", "cmd_demo", "after.md")))   # the edit that follows a command on each side
+            self.assertTrue(os.path.isdir(os.path.join(self.out, res["commands"][4]["capture"], side, "Apeiron")))
             self.assertTrue(os.path.isfile(os.path.join(self.out, "logs", side + ".service.log")))
+        self.assertEqual(res["commands"][3]["thenFs"][0]["path"], "cmd_demo/after.md")
+        self.assertEqual({k: v["count"] for k, v in res["retries"].items()}, {"ref": 0, "new": 0})
+        # the long interval is the new side's alone: its service reads it from the scratch config; the reference's has no such setting and no config
+        self.assertEqual(res["newConfig"]["graphs"], {"tree": {"flushIntervalMs": 3600000}})
+        self.assertIn("Flush intervals: tree 3600000 ms,", read(os.path.join(self.out, "logs", "new.service.log")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "ref", "aperas.config.json")))
         self.assertEqual(self.own_processes(), [])
 
     def test_a_hang_that_was_not_expected_and_a_command_that_follows_a_hang_are_problems(self):

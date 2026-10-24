@@ -2,9 +2,9 @@
 """What the differential run's commands and logs may differ in, and why (Python 3, standard library only; planning/core.md, Batch 13, piece 4).
 
 `compare.py` (piece 3) explains the differences of two dumps. This module explains the differences of what the commands printed and of what the two services logged,
-and adds the few differences of a dump that only a command makes. Every explanation is a rule that names its entry of Layer 4 (`1` to `28`, the keys of
+and adds the few differences of a dump that only a command makes. Every explanation is a rule that names its entry of Layer 4 (`1` to `31`, the keys of
 `compare.MATCHERS`), or one of the differences that Layer 4's own paragraph lists without a number (`H1` to `H10`), or an observation that Layer 4 records as not a
-difference (`N1`, `N2`), or a difference proposed to the grapher (`P1`, `P2`): `EXTRA` names them all. A rule rewrites the reference's text into what the new engine prints
+difference (`N1` to `N3`), or a decision of the user that is not a numbered entry (`D1`), or a difference proposed to the grapher (`P1`, `P2` ... when there is one): `EXTRA` names them all. A rule rewrites the reference's text into what the new engine prints
 when the difference is the deliberate one, and a rule's entry is claimed only when the rewrite makes the two texts equal: a text that is not equal after every rule is a finding,
 with what is left of it.
 
@@ -12,6 +12,7 @@ with what is left of it.
   explain_logs(ref_text, new_text) -> (claims, findings) the services' logs, line by line
   EXTRA_DUMP                                              [(key, function(diff, context))] for the differences of a dump that a command makes
 """
+import difflib
 import json
 import re
 
@@ -30,12 +31,28 @@ EXTRA = {
     "H10": ("Layer 4", "the removal of `aperas link` and `aperas unlink` (manual links are dropped)"),
     "N1": ("Layer 4 (noted, not a difference)", "the set fields (`links`, `props`, `unfolds`) read in the engine's insertion order"),
     "N2": ("an observation", "a content hash (`fileHash`, `ingestedHash`, `projectedHash`) taken over a text that holds ids minted in the run"),
-    "P1": ("proposed to the grapher", "the verb `migrate-frontmatter` is gone from the new side (Layer 4 lists `link` and `unlink` only)"),
+    "N3": ("an observation", "the reference's client decodes each chunk of a response (64 KiB) on its own, so a character cut between two chunks is printed as 2 to 4 U+FFFD"),
+    "N4": ("a decision of the harness", "the new side's scratch config sets a long flush interval for the content graph, and its service warns that the graphs table has an entry named `tree`"),
+    "D1": ("a decision", "a start waits for the service to be ready: the reference's client gives up after 5 s with `did not become ready in time` while its service goes on loading"),
 }
 
+FFFD = "\ufffd"
+NOT_READY = "[aperas] Failed: ApeironNgn service did not become ready in time"
 LINK_LINE = re.compile(r"\[Link\]")
 VERB_LINE = re.compile(r"^  (\S+)\s+(.*)$")
-REMOVED_VERBS = {"link": "H10", "unlink": "H10", "migrate-frontmatter": "P1"}
+REMOVED_VERBS = {"link": "H10", "unlink": "H10", "migrate-frontmatter": 29}
+
+
+def cut_character(x, y):
+    """True when the line `x` is the line `y` with each run of U+FFFD standing for one character of `y`: a run of 2 to 4 for one character of at least as many bytes as the run is long (a run of 2
+    stands for a character of 2 to 4 bytes, of 3 for one of 3 or 4, of 4 for one of 4)."""
+    parts = re.split("(" + FFFD + "+)", x)
+    rx = "".join(re.escape(p) if i % 2 == 0 else "(.)" for i, p in enumerate(parts))
+    m = re.fullmatch(rx, y)
+    if not m:
+        return False
+    runs = [p for i, p in enumerate(parts) if i % 2 == 1]
+    return all(2 <= len(r) <= 4 and len(c.encode("utf-8")) >= len(r) for r, c in zip(runs, m.groups()))
 
 
 def verb_of(argv):
@@ -254,10 +271,11 @@ class Rules:
             for d in (ref, new):
                 d["status"], d["stdout"], d["stderr"] = "<a reload of a mirror not read in full>", "", ""
             return keys()
-        if v == "service" and argv[1:2] in (["start"], ["restart"]) and ref["status"] == 0 and failed and "REFUSING TO START: the mirror was not read in full" in nerr:
+        gave_up = ref["status"] == 1 and ref["stderr"].strip() == NOT_READY   # the reference's client gives up after 5 s on a mirror its service takes in anyway (D1)
+        if v == "service" and argv[1:2] in (["start"], ["restart"]) and (ref["status"] == 0 or gave_up) and failed and "REFUSING TO START: the mirror was not read in full" in nerr:
             for d in (ref, new):
                 d["status"], d["stdout"], d["stderr"] = "<a start of a mirror not read in full>", "", ""
-            return keys() + [24]
+            return keys() + [24] + (["D1"] if gave_up else [])
         if v == "service" and "--start-anyway" in argv and "Already running" in ref["stdout"] and "Started" in new["stdout"] and ref["status"] == new["status"] == 0:
             ref["stdout"] = new["stdout"] = "<started anyway>"
             return [25]
@@ -294,6 +312,306 @@ class Rules:
                     out.append(line)
             new["stdout"] = join(out)
         return applied
+
+    # ---- a character cut between two chunks of a response by the reference's client
+    def r_split_character(self, argv, ref, new, ctx):
+        """N3: the reference's client decodes each chunk of a response on its own, so a character of 2 to 4 bytes that falls on the boundary of two chunks is printed as 2 to 4 U+FFFD
+        (the cut leaves a lone lead byte, one U+FFFD, and one U+FFFD for each byte after the cut); the new side's client decodes whole. Only a line of the reference that holds U+FFFD, where the new
+        side's line in the same place is the same text with each run of U+FFFD replaced by one character of that many bytes or more (`cut_character`), is rewritten."""
+        applied = []
+        for stream in ("stdout", "stderr"):
+            a, b = ref[stream], new[stream]
+            if FFFD not in a or a == b:
+                continue
+            la, lb = lines_of(a), lines_of(b)
+            out, hit = list(la), False
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, la, lb, autojunk=False).get_opcodes():
+                if tag == "replace" and i2 - i1 == j2 - j1:
+                    for k in range(i2 - i1):
+                        x, y = la[i1 + k], lb[j1 + k]
+                        if FFFD in x and FFFD not in y and cut_character(x, y):
+                            out[i1 + k] = y
+                            hit = True
+            if hit:
+                ref[stream] = join(out)
+                applied.append("N3")
+        return applied
+
+    # ---- a refused command leaves nothing behind (entry 31)
+    def r_refused_leaves_nothing(self, argv, ref, new, ctx):
+        """Entry 31: the reference leaves the blocks a refused command made live and parentless, and the new side takes them out, so a count of live blocks in `check-links` is one higher per such
+        block on the reference's side. Rewritten when the gap, less the blocks that the refused commands before this one left (`ctx.leftovers_before`), is one that the rules for the README
+        paragraphs (H3) and the emptied containers (entry 3) explain or none: any other gap is left to be a finding."""
+        if ctx is None or verb_of(argv) != "check-links" or not hasattr(ctx, "leftovers_before"):
+            return []
+        k = ctx.leftovers_before(self.index)
+        if k <= 0:
+            return []
+        facts = getattr(ctx, "facts", None)
+        p = facts.readme_paragraphs if facts is not None else 0
+        e = len(ctx.emptied_ids())
+        applied = []
+        for pat in (r"(Scanned )(\d+)( live blocks)", r'("totalLiveBlocks": )(\d+)()'):
+            ma, mb = re.search(pat, ref["stdout"]), re.search(pat, new["stdout"])
+            if ma and mb:
+                gap = int(ma.group(2)) - int(mb.group(2))
+                if gap - k in {0, e, p, p + e}:
+                    ref["stdout"] = ref["stdout"].replace(ma.group(0), ma.group(1) + str(int(ma.group(2)) - k) + ma.group(3), 1)
+                    applied.append(31)
+        return applied
+
+    # ---- the six README documents (H3)
+    def r_readme(self, argv, ref, new, ctx):
+        """H3: the migration deleted the six `README.md` artifacts and their six paragraphs from the reference's copy of the mirror, where the reference's own store (the run starts it on the
+        unmigrated copy) still holds them. They are listed by the sweeps of `track` and `ingest` as paths with no file on disk and as removed, and counted as live blocks by `check-links`.
+        Only the six paths the snapshot holds as those artifacts, only in the reference's lists, and only the counts that differ by exactly their number are rewritten."""
+        facts = getattr(ctx, "facts", None)
+        if facts is None or not facts.readme_paths:
+            return []
+        v = verb_of(argv)
+        applied = []
+        paths = set(facts.readme_paths)
+        if v in ("track", "ingest"):
+            lines = lines_of(ref["stdout"])
+            keep, dropped = [], 0
+            new_has = set(lines_of(new["stdout"]))
+            for line in lines:
+                m = re.match(r"^  '(.+)'(?: \(untracked from disk\))?$", line)
+                if m and m.group(1) in paths and line not in new_has:
+                    dropped += 1
+                    continue
+                keep.append(line)
+            if dropped:
+                ref["stdout"] = join(keep)
+                applied.append("H3")
+                if v == "track":
+                    pat = re.compile(r"(Tracked \d+ artifact\(s\), skipped \d+ unchanged, \d+ renamed, )(\d+)( removed\.)")
+                    ma, mb = pat.search(ref["stdout"]), pat.search(new["stdout"])
+                    if ma and mb and int(ma.group(2)) - int(mb.group(2)) == dropped:
+                        ref["stdout"] = ref["stdout"].replace(ma.group(0), ma.group(1) + mb.group(2) + ma.group(3))
+        if v == "check-links":
+            p = facts.readme_paragraphs
+            emptied = len(ctx.emptied_ids()) if hasattr(ctx, "emptied_ids") else 0
+            for stream, pat in (("stdout", r"(Scanned )(\d+)( live blocks)"), ("stdout", r'("totalLiveBlocks": )(\d+)()')):
+                ma, mb = re.search(pat, ref[stream]), re.search(pat, new[stream])
+                if ma and mb and p > 0:
+                    gap = int(ma.group(2)) - int(mb.group(2))
+                    if gap >= p and gap - p in {0, emptied}:
+                        ref[stream] = ref[stream].replace(ma.group(0), ma.group(1) + str(gap - p + int(mb.group(2))) + ma.group(3), 1)
+                        applied.append("H3")
+        return applied
+
+    # ---- the tombstones the reference still lists (H9)
+    def r_tombstones_listed(self, argv, ref, new, ctx):
+        """H9: the migration strips the tombstones from the tree, and the new engine's first boot prunes them; the reference keeps all of them listed in their containers until its own sweep.
+        Four shapes, each for a node the snapshot holds as a tombstone and the new side's dump does not hold: the line `<id>  [?]  <not found>` of `tree`/`unfold`/`zoom`; the tombstoned artifact in
+        the "Removed in-graph but still on disk" list of `track --reverse`; the blocks of an artifact's tree that `ingest` lists as removed and counts (and the links they hosted, as changed);
+        the `unfolds` of a view that name such a tombstone, in the counts of `profile list-view`."""
+        facts = getattr(ctx, "facts", None)
+        if facts is None:
+            return []
+        v = verb_of(argv)
+        applied = []
+        gone = lambda cid: cid in facts.tomb and not ctx.new_has(cid)
+        if v in ("tree", "unfold", "zoom"):
+            have = lines_of(new["stdout"])
+            keep, dropped = [], 0
+            for line in lines_of(ref["stdout"]):
+                m = re.match(r"^[│ ]*(\S+)  \[\?\]  <not found>$", line)
+                if m and gone(m.group(1)) and line not in have:
+                    dropped += 1
+                    continue
+                keep.append(line)
+            if dropped:
+                ref["stdout"] = join(keep)
+                applied.append("H9")
+        if v == "track" and "--reverse" in argv:
+            lines = lines_of(ref["stdout"])
+            have = set(lines_of(new["stdout"]))
+            keep, dropped = [], 0
+            for line in lines:
+                m = re.match(r"^  '(.+)'$", line)
+                if m and m.group(1) in facts.tombstoned_artifacts and gone(facts.tombstoned_artifacts[m.group(1)]) and line not in have:
+                    dropped += 1
+                    continue
+                keep.append(line)
+            if dropped:
+                # a list left with no entry is a heading that the new side does not print
+                out = []
+                for i, line in enumerate(keep):
+                    if line.startswith("[aperas track --reverse] Removed in-graph but still on disk") and not (i + 1 < len(keep) and keep[i + 1].startswith("  ")) and line not in have:
+                        continue
+                    out.append(line)
+                ref["stdout"] = join(out)
+                applied.append("H9")
+        if v == "ingest":
+            applied += self._ingest_tombstones(ref, new, facts, gone)
+        if v == "profile" and argv[1:2] == ["list-view"]:
+            view = re.compile(r"^(\S+)  profile: (\S+)  \((\d+) unfold\(s\)\)  (TreeView:\S+)$")
+            news = {}
+            for line in lines_of(new["stdout"]):
+                m = view.match(line)
+                if m:
+                    news[m.group(4)] = m
+            out, hit = [], False
+            for line in lines_of(ref["stdout"]):
+                m = view.match(line)
+                n = news.get(m.group(4)) if m else None
+                if m and n:
+                    k = len([u for u in facts.tomb_unfolds(m.group(4)) if gone(u)])
+                    if k and int(m.group(3)) - int(n.group(3)) == k:
+                        line = "%s  profile: %s  (%s unfold(s))  %s" % (m.group(1), m.group(2), n.group(3), m.group(4))
+                        hit = True
+                out.append(line)
+            if hit:
+                ref["stdout"] = join(out)
+                applied.append(2)
+        return applied
+
+    def _ingest_tombstones(self, ref, new, facts, gone):
+        """The artifact trees that `ingest` lists as removed: the tombstoned blocks of the artifact's tree that the reference still holds make its total larger by exactly their number. The ten
+        lines it prints are a sample of the list, in the store's order for the reference and in id order for the new side, so they are compared as far as a line of the reference's is not one of those
+        tombstones (by type and title) and the two totals as counted; and the counts of `Ingested ...` (removed, and changed links up to the number of links those blocks hosted)."""
+        applied = []
+        head = re.compile(r"^  '(.+)':$")
+        sample = re.compile(r"^    - \[(\S+)\] (.*)$")
+        more = re.compile(r"^    \.\.\.and (\d+) more$")
+
+        def blocks(text):
+            lines, i, out = lines_of(text), 0, []
+            while i < len(lines):
+                m = head.match(lines[i])
+                if not m:
+                    i += 1
+                    continue
+                j, items, extra = i + 1, [], 0
+                while j < len(lines) and (sample.match(lines[j]) or more.match(lines[j])):
+                    sm, mm = sample.match(lines[j]), more.match(lines[j])
+                    if sm:
+                        items.append((sm.group(1), sm.group(2)))
+                    else:
+                        extra = int(mm.group(1))
+                    j += 1
+                out.append((m.group(1), i, j, items, extra))
+                i = j
+            return out
+        rb, nb = {b[0]: b for b in blocks(ref["stdout"])}, {b[0]: b for b in blocks(new["stdout"])}
+        r_lines, n_lines = lines_of(ref["stdout"]), lines_of(new["stdout"])
+        tombs = {}
+        for path, (_, ri, rj, ritems, rextra) in rb.items():
+            if path not in nb:
+                continue
+            _, ni, nj, nitems, nextra = nb[path]
+            held_gone = [(t, ti) for i, t, ti in facts.tomb_blocks(path) if gone(i)]
+            k = len(held_gone)
+            total_r, total_n = len(ritems) + rextra, len(nitems) + nextra
+            if not k or total_r - total_n != k:
+                continue
+            rest, pool = [], list(held_gone)
+            for it in ritems:
+                if it in pool:
+                    pool.remove(it)
+                else:
+                    rest.append(it)
+            if any(it not in nitems for it in rest):
+                continue
+            tombs[path] = k
+            label = "  '%s': %d block(s), sample not compared" % (path, total_n)
+            for lines, i, j in ((r_lines, ri, rj), (n_lines, ni, nj)):
+                lines[i:j] = [label] + [None] * (j - i - 1)
+        if tombs:
+            ref["stdout"] = join([x for x in r_lines if x is not None])
+            new["stdout"] = join([x for x in n_lines if x is not None])
+            applied.append("H9")
+        pat = re.compile(r"Ingested '(.+?)' fractal tree \((\d+) blocks\) \(reconciled: (\d+) matched, (\d+) moved, (\d+) changed, (\d+) added, (\d+) removed\)\.\n(\[aperas ingest\]   Links: (\d+) resolved, (\d+) dangling, )(\d+)( changed\.)")
+        rm, nm = {m.group(1): m for m in pat.finditer(ref["stdout"])}, {m.group(1): m for m in pat.finditer(new["stdout"])}
+        text = ref["stdout"]
+        for path, m in rm.items():
+            n = nm.get(path)
+            if n is None:
+                continue
+            k = len([1 for i, _, _ in facts.tomb_blocks(path) if gone(i)])
+            hosted = facts.tomb_links(path)
+            same = [m.group(i) == n.group(i) for i in (2, 3, 4, 5, 6, 9, 10)]
+            if k and int(m.group(7)) - int(n.group(7)) == k and all(same) and 0 <= int(m.group(11)) - int(n.group(11)) <= hosted:
+                text = text.replace(m.group(0), n.group(0), 1)
+        if text != ref["stdout"]:
+            ref["stdout"] = text
+            applied.append("H9")
+        return applied
+
+    # ---- a link of one graph to a tombstone of another (entry 30)
+    def r_dangling_to_pruned(self, argv, ref, new, ctx):
+        """Entry 30: a stored link of one graph to a tombstone of another is not kept alive, so the first boot of the new side prunes the tombstone and `check-links` warns of the link, where the
+        reference's single-store mark phase keeps the tombstone and prints a clean pass. A warned link is taken out of the new side's output when its host is a node of the thread graph and its target a
+        tombstone of the content graph (both as the snapshot holds them) that the new side's dump no longer holds; the count in the warning follows, and a warning left with no link is the
+        reference's clean pass (the new side prints no clean pass line when it warns)."""
+        facts = getattr(ctx, "facts", None)
+        if facts is None or verb_of(argv) != "check-links":
+            return []
+        applied = []
+
+        def pruned(host, target):
+            return facts.graph_of(host) == "state" and target in facts.tomb and facts.graph_of(target) == "mirror" and not ctx.new_has(target)
+        text = new["stderr"]
+        head = re.compile(r"^(\[ApeironNgn check-links\] WARNING: Found )(\d+)( stored link\(s\) whose target names no node.*)$")
+        lines = lines_of(text)
+        idx = next((i for i, l in enumerate(lines) if head.match(l)), None)
+        if idx is not None:
+            m = head.match(lines[idx])
+            out, i, removed, left = lines[:idx], idx + 1, 0, 0
+            while i < len(lines) and lines[i].startswith("  • Node "):
+                blk = lines[i:i + 3]
+                host = re.match(r"^  • Node (\S+) \(.*\): id-names-no-node$", blk[0])
+                tgt = re.match(r"^    Target: (\S+)$", blk[2]) if len(blk) == 3 else None
+                if host and tgt and blk[1].startswith("    Link: ") and pruned(host.group(1), tgt.group(1)):
+                    removed += 1
+                else:
+                    out += blk
+                    left += 1
+                i += 3
+            if removed and removed <= int(m.group(2)) and i - idx - 1 == 3 * int(m.group(2)):
+                rest = lines[i:]
+                if left:
+                    out.insert(idx, "%s%d%s" % (m.group(1), left, m.group(3)))
+                    new["stderr"] = join(out + rest)
+                else:
+                    new["stderr"] = join(out + rest)
+                    cp = "[ApeironNgn check-links] Clean pass: 0 link integrity discrepancies found."
+                    if cp in lines_of(ref["stdout"]) and cp not in lines_of(new["stdout"]):
+                        ref["stdout"] = join([l for l in lines_of(ref["stdout"]) if l != cp])
+                applied.append(30)
+        a, b = parse_json(ref["stdout"]), parse_json(new["stdout"])
+        if isinstance(a, dict) and isinstance(b, dict) and isinstance(b.get("unresolvedTargets"), list):
+            keep = [u for u in b["unresolvedTargets"] if not (isinstance(u, dict) and pruned(u.get("blockId"), u.get("targetId")))]
+            if len(keep) != len(b["unresolvedTargets"]):
+                b["unresolvedTargets"] = keep
+                new["stdout"] = json.dumps(b, indent=2, ensure_ascii=False)
+                if a.get("unresolvedTargets") is not None:
+                    ref["stdout"] = json.dumps(a, indent=2, ensure_ascii=False)
+                applied.append(30)
+        return applied
+
+    # ---- the wait of a start (D1)
+    def r_start_wait(self, argv, ref, new, ctx):
+        """D1: the reference's client gives up a start or restart after 5 s with status 1 and `ApeironNgn service did not become ready in time`, while its service goes on loading (15 to 21 s
+        on the real copy); the new side waits and answers 0 with `Started` or `Restarted`. Rewritten only for that exact pair: the reference's whole stderr is the one message and nothing else of
+        its output differs from the new side's but the closing line."""
+        if verb_of(argv) != "service" or argv[1:2] not in (["start"], ["restart"]):
+            return []
+        if not (ref["status"] == 1 and ref["stderr"].strip() == NOT_READY and new["status"] == 0 and new["stderr"] == ""):
+            return []
+        closing = re.compile(r"^\[aperas service\] (Started|Restarted) — .*bound to graph: .*$")
+        nl = lines_of(new["stdout"])
+        tail = [i for i, l in enumerate(nl) if closing.match(l)]
+        if len(tail) != 1:
+            return []
+        rest = [l for i, l in enumerate(nl) if i != tail[0]]
+        if join(rest).rstrip("\n") != ref["stdout"].rstrip("\n"):
+            return []
+        for d in (ref, new):
+            d["status"], d["stdout"], d["stderr"] = "<a start that waited for the service>", "", ""
+        return ["D1"]
 
     # ---- a move into the node's own subtree
     def r_move_into_own_subtree(self, argv, ref, new, ctx):
@@ -559,7 +877,14 @@ class Rules:
                     changed = True
             if changed:
                 applied.append(15)
-        if v == "track" and "--reverse" in argv:
+        if v == "ingest":
+            # the artifacts whose links were re-resolved are listed in the store's order by the reference and in order by the new side (Order 3)
+            pat = re.compile(r"(Re-resolved links in \d+ artifact\(s\) whose own text didn't change but a target they reference just did: )(.+)\.$", re.M)
+            ma, mb = pat.search(ref["stdout"]), pat.search(new["stdout"])
+            if ma and mb and ma.group(0) != mb.group(0) and sorted(ma.group(2).split(", ")) == sorted(mb.group(2).split(", ")):
+                ref["stdout"] = ref["stdout"].replace(ma.group(0), mb.group(0), 1)
+                applied.append(15)
+        if v == "track":
             pred = lambda l: l.startswith("  ")
             a, b = sort_runs(ref["stdout"], pred), sort_runs(new["stdout"], pred)
             if (a != ref["stdout"] or b != new["stdout"]) and a == b:
@@ -647,13 +972,15 @@ def sort_link_children(x):
 
 RULES = [getattr(Rules, n) for n in sorted(dir(Rules)) if n.startswith("r_")]
 # the rules apply in the order of this list, which is the order of the table above and not the alphabet
-RULE_ORDER = ["r_removed_verbs", "r_predicate", "r_type_root", "r_kind_human", "r_path_message", "r_load_refusals", "r_skipped_nodes", "r_move_into_own_subtree", "r_ghost", "r_tombstone_listing", "r_emptied_container", "r_sweep_words", "r_position_prop_ids", "r_canonical_place", "r_dangling_text", "r_order"]
+RULE_ORDER = ["r_split_character", "r_removed_verbs", "r_predicate", "r_type_root", "r_kind_human", "r_path_message", "r_load_refusals", "r_skipped_nodes", "r_move_into_own_subtree", "r_ghost", "r_tombstone_listing", "r_refused_leaves_nothing", "r_readme", "r_tombstones_listed", "r_start_wait", "r_emptied_container", "r_sweep_words", "r_position_prop_ids", "r_canonical_place", "r_dangling_to_pruned", "r_dangling_text", "r_order"]
 
 
-def explain(argv, ref, new, ctx=None):
-    """-> (claims, ref', new'): the entries whose rule was needed, and the two outputs after every rule has been applied (equal when everything was explained)."""
+def explain(argv, ref, new, ctx=None, index=None):
+    """-> (claims, ref', new'): the entries whose rule was needed, and the two outputs after every rule has been applied (equal when everything was explained). `index`: the index of the command
+    in the run, for the rules that depend on what ran before it (`None`: after every command)."""
     ref, new = dict(ref), dict(new)
     rules = Rules()
+    rules.index = index
     claims = []
     for name in RULE_ORDER:
         claims += getattr(rules, name)(argv, ref, new, ctx)
@@ -674,6 +1001,7 @@ LOG_RULES = [
     ("ref", r"^Timed flush: Refusing to flush: .*$", [22]),
     ("new", r"^Timed flush of (tree|threads\.tree|treeviews): Refusing to flush: .*$", [22]),
     ("new", r"^Flush intervals: tree <n> ms, threads\.tree <n> ms, treeviews <n> ms\.$", [22]),
+    ("new", r"^WARNING: <root> the graphs table has an entry named tree; .*$", ["N4"]),
     ("new", r"^WARNING: <n> id\(s\) referenced and never defined: .*$", [27]),
     ("ref", r"^WARNING: <n> duplicate @id\(s\) in the mirror — quads from every occurrence merged onto one subject, so at most one document per id survives the next dehydrate: .*$", ["H7"]),
     ("new", r"^WARNING: the id \S+ is carried <n> times \(.*\): every document that carries it is rejected$", ["H7", 10]),
@@ -760,8 +1088,15 @@ def m_hash_of_minted_ids(d, c):
     return bool(path) and c.same_file_up_to_ids(path)
 
 
+def m_refused_leftover(d, c):
+    """Entry 31: a block that a refused command left live and parentless on the reference, where the new side's write layer took it out. Only the reference holds it; it is minted in the run, has no
+    `parent` and no container, and there is a refused `insert` or `update` for it (the same status and text on both sides): `ctx.leftovers`."""
+    return d.scope == "doc" and d.op == "only-ref" and d.kind == "BlockNode" and d.id in c.leftovers()
+
+
 EXTRA_DUMP = [
     (20, m_ghost_document),
+    (31, m_refused_leftover),
     (10, m_repeated_id_rejected),
     (28, m_refused_document),
     ("N2", m_hash_of_minted_ids),

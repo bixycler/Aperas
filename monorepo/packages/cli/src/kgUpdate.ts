@@ -79,7 +79,12 @@ export interface UpdateResult {
   linkResolution: LinkResolutionStats;
 }
 
+/** `kg:update`: a refused update leaves no record of its own behind (the write layer's `guard` takes out the blocks it made when anything throws). */
 export function runUpdate(store: Db, req: UpdateReq): UpdateResult {
+  return store.write.guard(() => updateNode(store, req));
+}
+
+function updateNode(store: Db, req: UpdateReq): UpdateResult {
   let targetId: string | null;
   try {
     targetId = resolveDeepPath(store, req.path, { base: req.base });

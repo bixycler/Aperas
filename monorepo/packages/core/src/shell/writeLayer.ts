@@ -41,6 +41,12 @@ export interface WriteLayer {
   removeNode(graph: GraphName, id: Id): void;
   /** Sweep the unreachable tombstones of a graph and tell the maps of each id removed; gives the ids. */
   sweep(graph: GraphName): Id[];
+  /**
+   * Runs `fn` and gives what it gives. When `fn` throws, the nodes created through this layer while it ran are taken out, newest first (the list that holds one lets it go, the
+   * maps are told), and the error passes on: a command that made records and then met a refusal leaves no record of its own behind. Only the nodes `fn` created are
+   * undone; a change to a node that was there before is not. A guard inside a guard undoes its own nodes when it throws, and the outer one the rest when it throws in turn.
+   */
+  guard<T>(fn: () => T): T;
 }
 
 /** The ids of the subtree of `id` over the containment of the schema, the node first, in pre-order; the members of this graph only, each once. */
@@ -64,20 +70,53 @@ function subtreeIds(engine: Engine, graph: GraphName, id: Id): Id[] {
 /** Which graphs a write changed: one graph, or `undefined` for every graph. */
 export type Touch = (graph: GraphName | undefined) => void;
 
-/** The write layer over an engine and its maps; `touch` is told the graphs each write changed. */
-export function createWriteLayer(engine: Engine, maps: Lookups, touch: Touch = () => {}): WriteLayer {
+/** The write layer over an engine and its maps; `touch` is told the graphs each write changed. `graphs` are the graphs of the mapping, which `guard` looks through for the container of a node it takes out. */
+export function createWriteLayer(engine: Engine, maps: Lookups, touch: Touch = () => {}, graphs: readonly GraphName[] = []): WriteLayer {
   /** The graph of an item whose document states its container; a ghost, which no graph holds, changes no file. */
   const touchItem = (item: Id): void => {
     const graph = engine.graphOf(item);
     if (graph !== undefined) touch(graph);
   };
+  /** The nodes created through this layer while a guard is open, in the order they were made; a guard that ends truncates it to where it began. */
+  const created: Array<{ graph: GraphName; id: Id }> = [];
+  let guards = 0;
+  const containment = engine.schema.roles.containment;
+  /** Takes a node made by the guarded function out: from the list that holds it, then outright. An embedded node goes with its owner's pair, so its record may be gone already. */
+  const undo = (graph: GraphName, id: Id): void => {
+    if (!engine.exists(graph, id)) return;
+    if (containment !== undefined) {
+      for (const g of graphs.includes(graph) ? graphs : [graph, ...graphs]) {
+        for (const host of engine.subjectsOf(g, containment, id)) {
+          engine.removeItem(g, host, containment, id);
+          touch(g);
+        }
+      }
+    }
+    engine.removeNode(graph, id);
+    touch(undefined);
+    maps.removed(graph, id);
+  };
   return {
     createNode(id, node) {
       const graph = graphOfNewNode(engine, node);
       engine.createNode(graph, id, node.kind);
+      if (guards > 0) created.push({ graph, id });
       touch(graph);
       maps.built(graph, id);
       return graph;
+    },
+    guard(fn) {
+      const from = created.length;
+      guards++;
+      try {
+        return fn();
+      } catch (error) {
+        for (const { graph, id } of created.splice(from).reverse()) undo(graph, id);
+        throw error;
+      } finally {
+        guards--;
+        if (guards === 0) created.length = 0;
+      }
     },
     addPair(graph, subject, field, value) {
       engine.addPair(graph, subject, field, value);

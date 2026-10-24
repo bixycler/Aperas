@@ -26,6 +26,7 @@ describe('the differential harness', { concurrency: true }, () => {
     ['refuses a start whose variables are the working service\'s or the live roots\' (and signals only its own service)', 'Assertions', 12],
     ['refuses a bad command line and writes nothing', 'Cli', 7],
     ['waits out a start call that gave up early until the service is ready, and still fails a service that ends or never gets ready', 'Start', 3],
+    ['claims the ports of the live cases, so that no two test processes choose the same one', 'Ports', 2],
     ['runs the demo list on both sides and leaves no process', 'Live.test_the_demo_list_runs_on_both_sides_and_leaves_nothing', 1],
     ['fails the run on an unexpected status and still stops its services', 'Live.test_an_unexpected_status_fails_the_run_and_the_services_are_still_stopped', 1],
     ['kills a command that outlives its timeout and reports it', 'Live.test_a_command_that_outlives_its_timeout_is_killed_and_reported', 1],

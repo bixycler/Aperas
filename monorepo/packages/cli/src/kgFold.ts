@@ -8,9 +8,14 @@
 import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
 import { nodeExists } from '@aperas/core/shell/db';
-import type { TreeView } from '@aperas/core/shell/node';
+import { resolveTreeView, type TreeView } from '@aperas/core/shell/node';
 import { ensureServiceRunning, request } from './service/serviceClient';
 import { wantsHelp, printHelp } from './kgHelp';
+
+/** The service's `fold`: resolves the view (minting the default one on first use) and folds in it; a refusal takes what it minted with it. */
+export function runFoldOp(store: Db, req: { ref: string; viewRef?: string }) {
+  return store.write.guard(() => runFold(store, req.ref, resolveTreeView(store, req.viewRef)));
+}
 
 export function runFold(store: Db, pathArg: string, view: TreeView) {
   // No try/catch around ref resolution — see `kgUnfold.ts`'s matching comment.

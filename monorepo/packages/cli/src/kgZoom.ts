@@ -11,7 +11,7 @@
 
 import type { Db } from '@aperas/core/shell/db';
 import { resolveDeepPath } from '@aperas/core/shell/resolve';
-import { wrap, type TreeNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
+import { wrap, resolveTreeView, type TreeNode, type TreeView, type ApeironNode } from '@aperas/core/shell/node';
 import { nodeExists } from '@aperas/core/shell/db';
 import { displayLabel } from '@aperas/core/shell/tree';
 import { nodeAbstract } from './kgUnfold';
@@ -20,6 +20,11 @@ import { wantsHelp, printHelp } from './kgHelp';
 
 function isTombstoned(node: { tombstonedAt?: string } | undefined): boolean {
   return node?.tombstonedAt !== undefined;
+}
+
+/** The service's `zoom`: resolves the view (minting the default one on first use) and zooms it; a refusal takes what it minted with it. */
+export function runZoomOp(store: Db, req: { ref: string; viewRef?: string }) {
+  return store.write.guard(() => runZoom(store, req.ref, resolveTreeView(store, req.viewRef)));
 }
 
 export function runZoom(store: Db, ref: string, view: TreeView) {

@@ -790,13 +790,31 @@ export function main(): void {
   process.on('SIGINT', () => shutdown(0));
 
   const socketPath = getSocketPath();
-  // Order: the HTTP port first, then the unix socket, then `markReady`. A client's wait (`waitForReady`) takes the first answer of the socket for a service that is up, so the socket must not
-  // answer while the port is still unbound or refused: were the socket first, a start whose port is in use would be told "ready" in the gap and the service would then end. The lock is the claim
-  // (made by the starting CLI before this process exists), so nothing but the order of the two listeners is changed; both are local binds that take milliseconds.
+  // Order: the HTTP port first, then the startup link sweep, then the unix socket, then `markReady`. A client's wait (`waitForReady`) takes the first answer of the socket for a service that is up,
+  // so the socket must not answer while the port is still unbound or refused: were the socket first, a start whose port is in use would be told "ready" in the gap and the service would then end.
+  // The lock is the claim (made by the starting CLI before this process exists). The sweep comes before the socket because it holds the event loop for seconds on a large mirror: a socket bound
+  // before it would accept a ping that is answered only when the sweep ends, and a lock marked `ready` before it would say `ready` while the service does not answer. So the lock says `starting`
+  // during the sweep (a client waits, with "Still starting"), and `ready` only when the socket is bound and a request is answered at once; the lock is truthful. All the other binds take milliseconds.
   httpServer.listen(httpPort, '127.0.0.1', () => {
     httpListening = true;
+    try {
+      startupSweep();
+    } catch (err: any) {
+      refuseToStart(`the startup link-integrity sweep failed: ${err?.message ?? err}`);
+    }
     listenOnSocket();
   });
+
+  /** The link-integrity sweep of the start, with the two hooks of the tests: `APERAS_TEST_SWEEP_HOLD_MS` holds the event loop for that long first (the sweep of a large mirror does, for seconds), and
+   *  `APERAS_TEST_SWEEP_FAULT=1` makes the sweep throw. The service does not use either in production. */
+  function startupSweep(): void {
+    const began = Date.now();
+    const hold = Number(process.env.APERAS_TEST_SWEEP_HOLD_MS);
+    if (hold > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, hold);
+    if (process.env.APERAS_TEST_SWEEP_FAULT === '1') throw new Error('a fault injected by APERAS_TEST_SWEEP_FAULT');
+    corpusLinkSweep('startup');
+    logService(`[ApeironNgn service] Startup link-integrity sweep done in ${Date.now() - began} ms.`);
+  }
 
   function listenOnSocket(): void {
     try {
@@ -810,14 +828,6 @@ export function main(): void {
   function onReady(): void {
     markReady(contentDir, artifactsDir, httpPort);
     resetIdleTimer();
-    // Deliberately *after* `markReady`, and queued rather than run inline: `waitForReady` gives a
-    // starting service 5s, and this sweep costs ~0.6s of that budget on an idle machine and more
-    // under load — enough to turn `aperas service start` into a spurious "did not become ready in
-    // time" failure (hit exactly once, on a loaded machine, before this was moved). Nothing depends
-    // on the result being ready before the first request: it rides on responses until it clears, so
-    // arriving a fraction of a second late costs nothing. `enqueue` keeps it from interleaving with
-    // a request already in flight.
-    enqueue(() => corpusLinkSweep('startup')).catch(() => {});
   }
 }
 
